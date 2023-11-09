@@ -21,6 +21,9 @@ fn main() -> std::io::Result<()> {
         Commands::Observe { media_dir ,output} => {
             get_classifications(path_enumerate(media_dir), output);
         }
+        Commands::Rename { project_dir, dryrun} => {
+            rename_deployments(project_dir, dryrun);
+        }
 
     }
     Ok(())
@@ -59,6 +62,15 @@ enum Commands {
         /// Directory for output files
         #[arg(short, long, value_name = "FILE", required = true)]
         output: PathBuf,
+    },
+    /// Rename deployment directory to deployment_id, in the manner of combining collection_name of deployment_name
+    #[command(arg_required_else_help = true)]
+    Rename {
+        project_dir: PathBuf,
+
+        /// Dry run
+        #[arg(long)]
+        dryrun: bool,
     }
 
 }
@@ -213,4 +225,30 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
 }
 
 
+fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
+    for entry in project_dir.read_dir().unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            let collection = path;
+            for deployment in collection.read_dir().unwrap() {
+                let mut deployment_dir = deployment.unwrap().path();
+                if deployment_dir.is_file() {
+                    continue;
+                }
+                let collection_name = deployment_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
+                let deployment_name = deployment_dir.file_name().unwrap().to_str().unwrap();
+                if deployment_name.contains(collection_name) == false {
+                    if dry_run {
+                        println!("Will rename {} to {}_{}", deployment_name, deployment_name, collection_name);
+                    } else {
+                        deployment_dir.set_file_name(
+                            format!("{}_{}", deployment_name, collection_name)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 // fn digikam_tag_parser(tags: String) 
