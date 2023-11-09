@@ -139,11 +139,17 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf) {
 }
 
 fn deployments_align(project_dir: PathBuf, output_dir: PathBuf) {
+    // TODO: add file/path filter
     for entry in project_dir.read_dir().unwrap() {
-        let deploy_path = entry.unwrap().path();
-        // let deploy_name = deploy_path.file_name().unwrap();
-        // let output_deploy_path = output_dir.join(deploy_name);
-        resources_align(deploy_path, output_dir.clone());
+        let collection_path = entry.unwrap().path();
+            for entry in collection_path.read_dir().unwrap() {
+                let deploy_path = entry.unwrap().path();
+                // let deploy_name = deploy_path.file_name().unwrap();
+                // let output_deploy_path = output_dir.join(deploy_name);
+
+                // TODO: Fix directory layout (output to <project_name>/<collection_name>/<deployment_id>)
+                resources_align(deploy_path, output_dir.clone());
+            }
     }
 }
 
@@ -226,6 +232,7 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
 
 
 fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
+    let mut count = 0;
     for entry in project_dir.read_dir().unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
@@ -236,6 +243,7 @@ fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
                 if deployment_dir.is_file() {
                     continue;
                 }
+                count += 1;
                 let collection_name = deployment_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
                 let deployment_name = deployment_dir.file_name().unwrap().to_str().unwrap();
                 if deployment_name.contains(collection_name) == false {
@@ -252,5 +260,6 @@ fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
             }
         }
     }
+    println!("Total directories: {}", count);
 }
 // fn digikam_tag_parser(tags: String) 
