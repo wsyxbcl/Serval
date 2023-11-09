@@ -19,7 +19,7 @@ fn main() -> std::io::Result<()> {
             }
         }
         Commands::Observe { media_dir ,output} => {
-            get_classifications(path_enumerate(media_dir), output);
+            get_classifications(image_path_enumerate(media_dir), output);
         }
         Commands::Rename { project_dir, dryrun} => {
             rename_deployments(project_dir, dryrun);
@@ -83,7 +83,7 @@ fn is_image(path: &Path) -> bool {
     }
 }
 
-fn path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
+fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     // Find all image in given dir recursivly
     if root_dir.is_file() {
         if is_image(&root_dir) {
@@ -100,7 +100,7 @@ fn path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     
             if path.is_dir() {
                 // println!("{:?}", path.to_str());
-                image_paths.extend(path_enumerate(path));
+                image_paths.extend(image_path_enumerate(path));
             } else if path.is_file() && is_image(&path) {
                 image_paths.push(path);
             }
@@ -117,7 +117,7 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf) {
     let output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(output_dir.clone()).unwrap();
 
-    let resource_paths = path_enumerate(deploy_dir.clone());
+    let resource_paths = image_path_enumerate(deploy_dir.clone());
     println!("{} images found: ", resource_paths.len());
     // println!("{:?}", resource_paths);
 
