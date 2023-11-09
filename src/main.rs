@@ -232,7 +232,7 @@ fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
         if path.is_dir() {
             let collection = path;
             for deployment in collection.read_dir().unwrap() {
-                let mut deployment_dir = deployment.unwrap().path();
+                let deployment_dir = deployment.unwrap().path();
                 if deployment_dir.is_file() {
                     continue;
                 }
@@ -242,9 +242,11 @@ fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
                     if dry_run {
                         println!("Will rename {} to {}_{}", deployment_name, deployment_name, collection_name);
                     } else {
-                        deployment_dir.set_file_name(
+                        let mut deployment_id_dir = deployment_dir.clone();
+                        deployment_id_dir.set_file_name(
                             format!("{}_{}", deployment_name, collection_name)
                         );
+                        fs::rename(deployment_dir, deployment_id_dir).unwrap();
                     }
                 }
             }
