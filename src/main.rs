@@ -271,7 +271,7 @@ fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
                 count += 1;
                 let collection_name = deploy_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
                 let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
-                if deploy_name.contains(collection_name) == false {
+                if !deploy_name.contains(collection_name) {
                     if dry_run {
                         println!("Will rename {} to {}_{}", deploy_name, deploy_name, collection_name);
                     } else {
