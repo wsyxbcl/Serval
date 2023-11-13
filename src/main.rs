@@ -9,13 +9,13 @@ fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Align { path, output, project} => {
+        Commands::Align { path, output, project,deploy_table, dryrun} => {
             if project {
                 println!("Aligning deployments in {}", path.display());
-                deployments_align(path, output);
+                deployments_align(path, output, deploy_table, dryrun);
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(path, output);
+                resources_align(path, output, dryrun);
             }
         }
         Commands::Observe { media_dir ,output} => {
@@ -53,6 +53,14 @@ enum Commands {
         /// Aligh resources for entire project
         #[arg(short, long)]
         project: bool,
+
+        /// Path for deployments table (deployments.csv)
+        #[arg(short, long, value_name = "FILE", required = true)]
+        deploy_table: PathBuf,
+
+        /// Dry run
+        #[arg(long)]
+        dryrun: bool,
     },
     /// Read media EXIF for observation data
     #[command(arg_required_else_help = true)]
@@ -94,6 +102,7 @@ fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     } else {
         let mut image_paths: Vec<PathBuf> = vec![];
 
+        println!("{:?}", root_dir);
         for entry in root_dir.read_dir().unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -110,7 +119,7 @@ fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     }
 }
 
-fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf) { 
+fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) { 
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
@@ -133,24 +142,39 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf) {
         };
         output_path.push(output_dir.join(resource_name));
         println!("copy {} to {}", resource.display(), output_path.display());
-        fs::copy(resource, output_path).unwrap();
+        if !dry_run {
+            fs::copy(resource, output_path).unwrap();
+        }
     }
 
 }
 
-fn deployments_align(project_dir: PathBuf, output_dir: PathBuf) {
+fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool) {
     // TODO: add file/path filter
-    for entry in project_dir.read_dir().unwrap() {
-        let collection_path = entry.unwrap().path();
-            for entry in collection_path.read_dir().unwrap() {
-                let deploy_path = entry.unwrap().path();
-                // let deploy_name = deploy_path.file_name().unwrap();
-                // let output_deploy_path = output_dir.join(deploy_name);
+    let deploy_df = CsvReader::from_path(deploy_table).unwrap().finish().unwrap();
+    let deploy_array = deploy_df["deploymentID"].utf8().unwrap();
+    
+    // deploy_array.into_iter()
+    //     .for_each(|deploy| println!("{:?}", deploy))
 
-                // TODO: Fix directory layout (output to <project_name>/<collection_name>/<deployment_id>)
-                resources_align(deploy_path, output_dir.clone());
-            }
+    let deploy_iter = deploy_array.into_iter();
+    for deploy_id in deploy_iter {
+        let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
+        let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
+        let collection_output_dir = output_dir.join(collection_name);
+        resources_align(deploy_dir, collection_output_dir.clone(), dry_run);
     }
+    // for entry in project_dir.read_dir().unwrap() {
+    //     let collection_path = entry.unwrap().path();
+    //         for entry in collection_path.read_dir().unwrap() {
+    //             let deploy_path = entry.unwrap().path();
+    //             // let deploy_name = deploy_path.file_name().unwrap();
+    //             // let output_deploy_path = output_dir.join(deploy_name);
+
+    //             // TODO: Fix directory layout (output to <project_name>/<collection_name>/<deployment_id>)
+    //             resources_align(deploy_path, output_dir.clone());
+    //         }
+    // }
 }
 
 
@@ -232,29 +256,30 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
 
 
 fn rename_deployments(project_dir: PathBuf, dry_run: bool) {
+    // rename deployment path name to <deployment_name>_<collection_name>
     let mut count = 0;
     for entry in project_dir.read_dir().unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
         if path.is_dir() {
             let collection = path;
-            for deployment in collection.read_dir().unwrap() {
-                let deployment_dir = deployment.unwrap().path();
-                if deployment_dir.is_file() {
+            for deploy in collection.read_dir().unwrap() {
+                let deploy_dir = deploy.unwrap().path();
+                if deploy_dir.is_file() {
                     continue;
                 }
                 count += 1;
-                let collection_name = deployment_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
-                let deployment_name = deployment_dir.file_name().unwrap().to_str().unwrap();
-                if deployment_name.contains(collection_name) == false {
+                let collection_name = deploy_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
+                let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
+                if deploy_name.contains(collection_name) == false {
                     if dry_run {
-                        println!("Will rename {} to {}_{}", deployment_name, deployment_name, collection_name);
+                        println!("Will rename {} to {}_{}", deploy_name, deploy_name, collection_name);
                     } else {
-                        let mut deployment_id_dir = deployment_dir.clone();
-                        deployment_id_dir.set_file_name(
-                            format!("{}_{}", deployment_name, collection_name)
+                        let mut deploy_id_dir = deploy_dir.clone();
+                        deploy_id_dir.set_file_name(
+                            format!("{}_{}", deploy_name, collection_name)
                         );
-                        fs::rename(deployment_dir, deployment_id_dir).unwrap();
+                        fs::rename(deploy_dir, deploy_id_dir).unwrap();
                     }
                 }
             }
