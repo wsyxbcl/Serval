@@ -46,15 +46,15 @@ enum Commands {
     Align {
         path: PathBuf,
 
-        /// Directory for output files
+        /// Directory for output(aligned) resources
         #[arg(short, long, value_name = "FILE", required = true)]
         output: PathBuf,
 
-        /// Aligh resources for entire project
+        /// If the given path is a Project
         #[arg(short, long)]
         project: bool,
 
-        /// Path for deployments table (deployments.csv)
+        /// Path for the deployments table (deployments.csv)
         #[arg(short, long, value_name = "FILE", required = true)]
         deploy_table: PathBuf,
 
@@ -102,7 +102,7 @@ fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     } else {
         let mut image_paths: Vec<PathBuf> = vec![];
 
-        println!("{:?}", root_dir);
+        println!("Find {:?}", root_dir);
         for entry in root_dir.read_dir().unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -177,23 +177,27 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
     // }
 }
 
+fn read_image_tags(image: PathBuf, tag: &str) -> Result<String, rexiv2::Rexiv2Error> {
+    let meta = rexiv2::Metadata::new_from_path(image).unwrap();
+    meta.get_tag_string(tag)
+}
 
 fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
     // Get tag info from the old digikam workflow in shanshui
-    let image_names: Vec<String> = image_paths.clone().into_iter().map(|x| x.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    let image_names: Vec<String> = image_paths.clone()
+        .into_iter()
+        .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
     let mut image_tags: Vec<Option<String>> = Vec::new();
     let s_filenames = Series::new("filename", image_names.clone());
     for path in image_paths {
-        let meta = rexiv2::Metadata::new_from_path(path.clone()).unwrap();
-        match meta.get_tag_string(TAG) {
+        match read_image_tags(path.clone(), TAG) {
             Ok(tag) => image_tags.push(Some(tag)),
             Err(error) => {
                 println!("{:?} in {:?}", error, path.display());
                 image_tags.push(None)
             },
-
-        };
-        // println!("{:?}: {:?}", path.file_name().unwrap(), meta.get_tag_multiple_strings(tag).unwrap());
+        }
     }
     let s_tags = Series::new("tags", image_tags);
     let df_raw = DataFrame::new(vec![s_filenames, s_tags]).unwrap();
@@ -233,25 +237,6 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
 
     let mut file = std::fs::File::create(output_dir.join("tags.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_flatten).unwrap();
-    
-    // extract_groups, issue also described in #11857
-    // let df_extract_groups = df_raw
-    //     .clone()
-    //     .lazy()
-    //     // .with_columns([col("tags").str().split(lit(",")),])
-    //     .with_columns([col("tags")
-    //         .str()
-    //         .extract_groups(r"Species\/(.*?)(?:,|$)")
-    //         .unwrap()
-    //         .alias("Species")])
-    //     .with_columns([col("tags")
-    //         .str()
-    //         .extract_groups(r"Individual\/(.*?)(?:,|$)")
-    //         .unwrap()
-    //         .alias("Individuals")])
-    //     .collect()
-    //     .unwrap();
-
 }
 
 
