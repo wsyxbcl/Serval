@@ -210,7 +210,6 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
     let s_tags = Series::new("tags", image_tags);
     let df_raw = DataFrame::new(vec![s_filenames, s_tags]).unwrap();
     
-    // STACK OVERFLOW here
     let df_extract_all = df_raw
         .clone()
         .lazy()
@@ -221,13 +220,13 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
             // extract_all can't select regex groups: https://github.com/pola-rs/polars/issues/11857
             // so using manual strip here
             .list()
-            .eval(col("").str().strip_prefix(lit("Species/")).str().strip_suffix(lit(",")), true)
+            .eval(col("").str().strip_prefix(lit("Species/")).str().strip_suffix(lit(",")), false)
             .alias("species")])
         .with_columns([col("tags")
             .str()
             .extract_all(lit(r"Individual\/(.*?)(?:,|$)"))
             .list()
-            .eval(col("").str().strip_prefix(lit("Individual/")).str().strip_suffix(lit(",")), true)
+            .eval(col("").str().strip_prefix(lit("Individual/")).str().strip_suffix(lit(",")), false)
             .alias("individuals")])
         .collect()
         .unwrap();
