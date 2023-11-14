@@ -178,8 +178,16 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
 }
 
 fn read_image_tags(image: PathBuf, tag: &str) -> Result<String, rexiv2::Rexiv2Error> {
-    let meta = rexiv2::Metadata::new_from_path(image).unwrap();
-    meta.get_tag_string(tag)
+    match rexiv2::Metadata::new_from_path(image) {
+        Ok(meta) => {
+            meta.get_tag_string(tag)
+        },
+        Err(e) => {
+            Err(e)
+        }
+    }
+    // let meta = rexiv2::Metadata::new_from_path(image).unwrap();
+    // meta.get_tag_string(tag)
 }
 
 fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
@@ -202,6 +210,7 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
     let s_tags = Series::new("tags", image_tags);
     let df_raw = DataFrame::new(vec![s_filenames, s_tags]).unwrap();
     
+    // STACK OVERFLOW here
     let df_extract_all = df_raw
         .clone()
         .lazy()
