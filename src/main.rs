@@ -47,7 +47,7 @@ enum Commands {
         path: PathBuf,
 
         /// Directory for output(aligned) resources
-        #[arg(short, long, value_name = "FILE", required = true)]
+        #[arg(short, long, value_name = "DIR", required = true)]
         output: PathBuf,
 
         /// If the given path is a Project
@@ -67,8 +67,8 @@ enum Commands {
     Observe {
         media_dir: PathBuf,
 
-        /// Directory for output files
-        #[arg(short, long, value_name = "FILE", required = true)]
+        /// Directory for output(tags.csv)
+        #[arg(short, long, value_name = "DIR", required = true)]
         output: PathBuf,
     },
     /// Rename deployment directory to deployment_id, in the manner of combining collection_name of deployment_name
@@ -123,6 +123,7 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) {
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
+    let collection_name = working_dir.file_name().unwrap();
     let output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(output_dir.clone()).unwrap();
 
@@ -133,17 +134,24 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) {
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_name = if resource.parent().unwrap().to_str() == deploy_path {
-            resource.file_name().unwrap().to_os_string()
+            let mut resource_name = collection_name.to_os_string();
+            resource_name.push("-");
+            resource_name.push(resource.file_name().unwrap());
+            resource_name
         } else {
-            let mut resource_name = resource.parent().unwrap().file_name().unwrap().to_owned();
+            let mut resource_name = collection_name.to_os_string();
+            resource_name.push("-");
+            resource_name.push(resource.parent().unwrap().file_name().unwrap());
             resource_name.push("-");
             resource_name.push(resource.file_name().unwrap());
             resource_name
         };
         output_path.push(output_dir.join(resource_name));
-        println!("copy {} to {}", resource.display(), output_path.display());
         if !dry_run {
+            println!("copy {} to {}", resource.display(), output_path.display());
             fs::copy(resource, output_path).unwrap();
+        } else {
+            println!("DRYRUN: copy {} to {}", resource.display(), output_path.display());
         }
     }
 
