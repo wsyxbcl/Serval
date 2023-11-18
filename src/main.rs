@@ -253,6 +253,23 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
 
     let mut file = std::fs::File::create(output_dir.join("tags.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_flatten).unwrap();
+    println!("Saved to {}/tags.csv", output_dir.to_string_lossy());
+
+    let mut df_count_species = df_flatten
+        .lazy()
+        .select([col("species").value_counts(true, true)])
+        .unnest(["species"])
+        .collect()
+        .unwrap();
+    println!("{:?}", df_count_species);
+
+    let mut file = std::fs::File::create(output_dir.join("species_stats.csv")).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df_count_species).unwrap();
+    println!("Saved to {}/species_stats.csv", output_dir.to_string_lossy());
+
+    // let species_list = &df_count_species.get_columns()[0];
+    // println!("{:?}", species_list);
+
 }
 
 
