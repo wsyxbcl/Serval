@@ -8,5 +8,5 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.4.7", features = ["derive"] }
 polars = { version = "0.34.2", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct"] }
-rexiv2 = "0.10.0"
+xmp_toolkit = "1.6.0"
 

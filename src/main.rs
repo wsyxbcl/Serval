@@ -2,8 +2,7 @@ use std::{path::{PathBuf, Path}, fs};
 
 use clap::{Parser, Subcommand};
 use polars::prelude::*;
-
-const TAG: &str = "Xmp.digiKam.TagsList";
+use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta};
 
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
@@ -89,6 +88,35 @@ fn is_image(path: &Path) -> bool {
         None => false,
         Some(x) => ["jpg", "jpeg", "png"].contains(&x.to_str().unwrap().to_lowercase().as_str()),
     }
+}
+
+fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), xmp_toolkit::XmpError> {
+    // Retrieve digikam taglist from image xmp metadata
+    let mut f = XmpFile::new().unwrap();
+    match f.open_file(image_path, OpenFileOptions::default().only_xmp().use_smart_handler()) {
+        Ok(_) => {
+            let xmp = f.xmp().unwrap();
+            // Register the digikam namespace
+            let ns_digikam = "http://www.digikam.org/ns/1.0/";
+            XmpMeta::register_namespace(ns_digikam, "digiKam").unwrap();
+        
+            let mut species: Vec<String> = Vec::new();
+            let mut individuals: Vec<String> = Vec::new();
+            for property in xmp.property_array(ns_digikam, "TagsList") {
+                let tag = property.value;
+                if tag.starts_with("Species") {
+                    species.push(tag.strip_prefix("Species/").unwrap().to_string());
+                } else if tag.starts_with("Individual") {
+                    individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+                }
+            }
+            Ok((species, individuals))
+        },
+        Err(e) => {
+            Err(e)
+        }
+    }
+
 }
 
 fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
@@ -185,66 +213,62 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
     // }
 }
 
-fn read_image_tags(image: PathBuf, tag: &str) -> Result<String, rexiv2::Rexiv2Error> {
-    match rexiv2::Metadata::new_from_path(image) {
-        Ok(meta) => {
-            meta.get_tag_string(tag)
-        },
-        Err(e) => {
-            Err(e)
-        }
-    }
-    // let meta = rexiv2::Metadata::new_from_path(image).unwrap();
-    // meta.get_tag_string(tag)
-}
 
 fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
     // Get tag info from the old digikam workflow in shanshui
+    let image_path_strings: Vec<String> = image_paths.clone()
+        .into_iter()
+        .map(|x| x.to_string_lossy().into_owned())
+        .collect();
     let image_names: Vec<String> = image_paths.clone()
         .into_iter()
         .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
         .collect();
-    let mut image_tags: Vec<Option<String>> = Vec::new();
-    let s_filenames = Series::new("filename", image_names.clone());
+
+    let mut species_tags: Vec<String> = Vec::new();
+    let mut individual_tags: Vec<String> = Vec::new();
     for path in image_paths {
-        match read_image_tags(path.clone(), TAG) {
-            Ok(tag) => image_tags.push(Some(tag)),
+        match retrieve_taglist(&path.to_string_lossy().into_owned()) {
+            Ok((species, individuals)) => {
+                // println!("{:?} {:?}", species, individuals);
+                species_tags.push(species.join(","));
+                individual_tags.push(individuals.join(","));
+            },
             Err(error) => {
                 println!("{:?} in {:?}", error, path.display());
-                image_tags.push(None)
-            },
+                species_tags.push("".to_string());
+                individual_tags.push("".to_string());
+            }
         }
     }
-    let s_tags = Series::new("tags", image_tags);
-    let df_raw = DataFrame::new(vec![s_filenames, s_tags]).unwrap();
-    
-    let df_extract_all = df_raw
+    let s_species = Series::new("species_tags", species_tags);
+    let s_individuals = Series::new("individual_tags", individual_tags);
+
+    let df_raw = DataFrame::new(vec![
+        Series::new("path", image_path_strings),
+        Series::new("filename",image_names),
+        s_species,
+        s_individuals]).unwrap();
+    println!("{:?}", df_raw);
+
+    let df_split = df_raw
         .clone()
         .lazy()
-        // .with_columns([col("tags").str().split(lit(",")),])
-        .with_columns([col("tags")
-            .str()
-            .extract_all(lit(r"Species\/(.*?)(?:,|$)"))
-            // extract_all can't select regex groups: https://github.com/pola-rs/polars/issues/11857
-            // so using manual strip here
-            .list()
-            .eval(col("").str().strip_prefix(lit("Species/")).str().strip_suffix(lit(",")), false)
-            .alias("species")])
-        .with_columns([col("tags")
-            .str()
-            .extract_all(lit(r"Individual\/(.*?)(?:,|$)"))
-            .list()
-            .eval(col("").str().strip_prefix(lit("Individual/")).str().strip_suffix(lit(",")), false)
-            .alias("individuals")])
+        .select([
+            col("path"),
+            col("filename"),
+            col("species_tags").str().split(lit(",")).alias("species"),
+            col("individual_tags").str().split(lit(",")).alias("individuals")
+        ])
         .collect()
         .unwrap();
-    println!("{}", df_extract_all);
+    println!("{:?}", df_split);
 
     // Note that there's only individual info for P. uncia
-    let mut df_flatten = df_extract_all
+    let mut df_flatten = df_split
         .clone()
         .lazy()
-        .select([col("*").exclude(["tags"])])
+        .select([col("*")])
         .explode(["individuals"])
         .explode(["species"])
         .collect()
@@ -266,10 +290,6 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
     let mut file = std::fs::File::create(output_dir.join("species_stats.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_count_species).unwrap();
     println!("Saved to {}/species_stats.csv", output_dir.to_string_lossy());
-
-    // let species_list = &df_count_species.get_columns()[0];
-    // println!("{:?}", species_list);
-
 }
 
 
