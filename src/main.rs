@@ -1,6 +1,7 @@
 use std::{path::{PathBuf, Path}, fs};
 
 use clap::{Parser, Subcommand};
+use indicatif::ProgressBar;
 use polars::prelude::*;
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta};
 
@@ -224,9 +225,13 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
         .into_iter()
         .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
         .collect();
+    let num_images = image_paths.len();
+    println!("{} images in total.", num_images);
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let pb = ProgressBar::new(num_images as u64);
+
     for path in image_paths {
         match retrieve_taglist(&path.to_string_lossy().into_owned()) {
             Ok((species, individuals)) => {
@@ -240,7 +245,9 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
                 individual_tags.push("".to_string());
             }
         }
+        pb.inc(1);
     }
+
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
 
