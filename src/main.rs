@@ -47,7 +47,7 @@ enum Commands {
         path: PathBuf,
 
         /// Directory for output(aligned) resources
-        #[arg(short, long, value_name = "DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
 
         /// If the given path is a Project
@@ -68,7 +68,7 @@ enum Commands {
         media_dir: PathBuf,
 
         /// Directory for output(tags.csv)
-        #[arg(short, long, value_name = "DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
     },
     /// Rename deployment directory to deployment_id, in the manner of combining collection_name of deployment_name
@@ -216,6 +216,8 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
 
 
 fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
+    fs::create_dir_all(output_dir.clone()).unwrap();
+
     // Get tag info from the old digikam workflow in shanshui
     let image_path_strings: Vec<String> = image_paths.clone()
         .into_iter()
