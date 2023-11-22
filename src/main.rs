@@ -32,8 +32,7 @@ fn main() -> std::io::Result<()> {
 
 #[derive(Parser, Debug)]
 #[command(name = "Serval")]
-#[command(version = "0.1.0")]
-#[command(about = "Serval helps you prepare data for trapper", long_about = None )]
+#[command(author, version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
