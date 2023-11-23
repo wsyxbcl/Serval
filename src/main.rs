@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
             }
         }
         Commands::Observe { media_dir ,output} => {
-            get_classifications(image_path_enumerate(media_dir), output);
+            get_classifications(media_dir, output);
         }
         Commands::Rename { project_dir, dryrun} => {
             rename_deployments(project_dir, dryrun);
@@ -96,14 +96,18 @@ fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), x
     let mut f = XmpFile::new().unwrap();
     match f.open_file(image_path, OpenFileOptions::default().only_xmp().use_smart_handler()) {
         Ok(_) => {
-            let xmp = f.xmp().unwrap();
+            let mut species: Vec<String> = Vec::new();
+            let mut individuals: Vec<String> = Vec::new();
+
+            let xmp = f.xmp();
+            if xmp.is_none() {
+                return Ok((species, individuals));
+            }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
             XmpMeta::register_namespace(ns_digikam, "digiKam").unwrap();
         
-            let mut species: Vec<String> = Vec::new();
-            let mut individuals: Vec<String> = Vec::new();
-            for property in xmp.property_array(ns_digikam, "TagsList") {
+            for property in xmp.unwrap().property_array(ns_digikam, "TagsList") {
                 let tag = property.value;
                 if tag.starts_with("Species/") {
                     species.push(tag.strip_prefix("Species/").unwrap().to_string());
@@ -198,7 +202,9 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
 }
 
 
-fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
+fn get_classifications(media_dir: PathBuf, output_dir: PathBuf) {
+    let image_paths = image_path_enumerate(media_dir);
+
     fs::create_dir_all(output_dir.clone()).unwrap();
 
     // Get tag info from the old digikam workflow in shanshui
@@ -225,7 +231,7 @@ fn get_classifications(image_paths: Vec<PathBuf>, output_dir: PathBuf) {
                 individual_tags.push(individuals.join(","));
             },
             Err(error) => {
-                println!("{:?} in {:?}", error, path.display());
+                pb.println(format!("{} in {}", error, path.display()));
                 species_tags.push("".to_string());
                 individual_tags.push("".to_string());
             }
