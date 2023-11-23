@@ -104,9 +104,9 @@ fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), x
             let mut individuals: Vec<String> = Vec::new();
             for property in xmp.property_array(ns_digikam, "TagsList") {
                 let tag = property.value;
-                if tag.starts_with("Species") {
+                if tag.starts_with("Species/") {
                     species.push(tag.strip_prefix("Species/").unwrap().to_string());
-                } else if tag.starts_with("Individual") {
+                } else if tag.starts_with("Individual/") {
                     individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
                 }
             }
