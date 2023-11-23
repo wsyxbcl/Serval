@@ -3,6 +3,7 @@ use std::{path::{PathBuf, Path}, fs};
 use clap::{Parser, Subcommand};
 use indicatif::ProgressBar;
 use polars::prelude::*;
+use walkdir::WalkDir;
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta};
 
 fn main() -> std::io::Result<()> {
@@ -120,31 +121,14 @@ fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), x
 }
 
 fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
-    // Find all image in given dir recursivly
-    if root_dir.is_file() {
-        if is_image(&root_dir) {
-            vec![root_dir]
-        } else {
-            vec![]
+    let mut image_paths: Vec<PathBuf> = vec![];
+    for entry in WalkDir::new(root_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| is_image(e.path())) {
+            image_paths.push(entry.into_path());
         }
-    } else {
-        let mut image_paths: Vec<PathBuf> = vec![];
-
-        println!("Find {:?}", root_dir);
-        for entry in root_dir.read_dir().unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-    
-            if path.is_dir() {
-                // println!("{:?}", path.to_str());
-                image_paths.extend(image_path_enumerate(path));
-            } else if path.is_file() && is_image(&path) {
-                image_paths.push(path);
-            }
-        }
-
-        image_paths
-    }
+    image_paths
 }
 
 fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) { 
