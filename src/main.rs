@@ -3,6 +3,7 @@ use std::{path::{PathBuf, Path}, fs};
 use clap::{Parser, Subcommand};
 use indicatif::ProgressBar;
 use polars::prelude::*;
+use rayon::prelude::*;
 use walkdir::WalkDir;
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta};
 
@@ -19,8 +20,8 @@ fn main() -> std::io::Result<()> {
                 resources_align(path, output, dryrun);
             }
         }
-        Commands::Observe { media_dir ,output} => {
-            get_classifications(media_dir, output);
+        Commands::Observe { media_dir ,output, parallel} => {
+            get_classifications(media_dir, output, parallel);
         }
         Commands::Rename { project_dir, dryrun} => {
             rename_deployments(project_dir, dryrun);
@@ -70,6 +71,10 @@ enum Commands {
         /// Directory for output(tags.csv)
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
+
+        /// Parallel mode
+        #[arg(short, long)]
+        parallel: bool,
     },
     /// Rename deployment directory to deployment_id, in the manner of combining collection_name of deployment_name
     #[command(arg_required_else_help = true)]
@@ -202,7 +207,7 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
 }
 
 
-fn get_classifications(media_dir: PathBuf, output_dir: PathBuf) {
+fn get_classifications(media_dir: PathBuf, output_dir: PathBuf, parallel: bool) {
     let image_paths = image_path_enumerate(media_dir);
 
     fs::create_dir_all(output_dir.clone()).unwrap();
@@ -223,20 +228,44 @@ fn get_classifications(media_dir: PathBuf, output_dir: PathBuf) {
     let mut individual_tags: Vec<String> = Vec::new();
     let pb = ProgressBar::new(num_images as u64);
 
-    for path in image_paths {
-        match retrieve_taglist(&path.to_string_lossy().into_owned()) {
-            Ok((species, individuals)) => {
-                // println!("{:?} {:?}", species, individuals);
-                species_tags.push(species.join(","));
-                individual_tags.push(individuals.join(","));
-            },
-            Err(error) => {
-                pb.println(format!("{} in {}", error, path.display()));
-                species_tags.push("".to_string());
-                individual_tags.push("".to_string());
+    // try parallel with Rayon here
+    if parallel {
+        let result: Vec<_> = (0..num_images).into_par_iter().map(|i| {
+            match retrieve_taglist(&image_paths[i].to_string_lossy().into_owned()) {
+                Ok((species, individuals)) => {
+                    // println!("{:?} {:?}", species, individuals);
+                    pb.inc(1);
+                    (species.join(","), individuals.join(","))
+                },
+                Err(error) => {
+                    pb.println(format!("{} in {}", error, image_paths[i].display()));
+                    pb.inc(1);
+                    ("".to_string(), "".to_string())
+                }
             }
+        })
+        .collect();
+        for tag in result {
+            species_tags.push(tag.0);
+            individual_tags.push(tag.1);
         }
-        pb.inc(1);
+
+    } else {
+        for path in image_paths {
+            match retrieve_taglist(&path.to_string_lossy().into_owned()) {
+                Ok((species, individuals)) => {
+                    // println!("{:?} {:?}", species, individuals);
+                    species_tags.push(species.join(","));
+                    individual_tags.push(individuals.join(","));
+                },
+                Err(error) => {
+                    pb.println(format!("{} in {}", error, path.display()));
+                    species_tags.push("".to_string());
+                    individual_tags.push("".to_string());
+                }
+            }
+            pb.inc(1);
+        }
     }
 
     let s_species = Series::new("species_tags", species_tags);
@@ -275,7 +304,7 @@ fn get_classifications(media_dir: PathBuf, output_dir: PathBuf) {
 
     let mut file = std::fs::File::create(output_dir.join("tags.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_flatten).unwrap();
-    println!("Saved to {}/tags.csv", output_dir.to_string_lossy());
+    println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
 
     let mut df_count_species = df_flatten
         .lazy()
@@ -287,7 +316,7 @@ fn get_classifications(media_dir: PathBuf, output_dir: PathBuf) {
 
     let mut file = std::fs::File::create(output_dir.join("species_stats.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_count_species).unwrap();
-    println!("Saved to {}/species_stats.csv", output_dir.to_string_lossy());
+    println!("Saved to {}", output_dir.join("species_stats.csv").to_string_lossy());
 }
 
 

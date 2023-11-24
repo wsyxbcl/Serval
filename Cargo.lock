@@ -1305,11 +1305,12 @@ dependencies = [
 
 [[package]]
 name = "serval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "indicatif",
  "polars",
+ "rayon",
  "walkdir",
  "xmp_toolkit",
 ]
