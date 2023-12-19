@@ -11,13 +11,13 @@ fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Align { path, output, project,deploy_table, dryrun} => {
+        Commands::Align { path, output, project,deploy_table, dryrun, move_mode} => {
             if project {
                 println!("Aligning deployments in {}", path.display());
-                deployments_align(path, output, deploy_table, dryrun);
+                deployments_align(path, output, deploy_table, dryrun, move_mode);
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(path, output, dryrun);
+                resources_align(path, output, dryrun, move_mode);
             }
         }
         Commands::Observe { media_dir ,output, parallel} => {
@@ -62,6 +62,10 @@ enum Commands {
         /// Dry run
         #[arg(long)]
         dryrun: bool,
+
+        /// Move (instead of copy)
+        #[arg(short, long)]
+        move_mode: bool,
     },
     /// Read media EXIF for observation data
     #[command(arg_required_else_help = true)]
@@ -140,7 +144,7 @@ fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
     image_paths
 }
 
-fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) { 
+fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool, move_mode: bool) { 
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
@@ -169,16 +173,26 @@ fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool) {
         };
         output_path.push(output_dir.join(resource_name));
         if !dry_run {
-            println!("copy {} to {}", resource.display(), output_path.display());
-            fs::copy(resource, output_path).unwrap();
+            if move_mode {
+                println!("move {} to {}", resource.display(), output_path.display());
+                fs::rename(resource, output_path).unwrap();
+            } else {
+                println!("copy {} to {}", resource.display(), output_path.display());
+                fs::copy(resource, output_path).unwrap();
+            }
         } else {
-            println!("DRYRUN: copy {} to {}", resource.display(), output_path.display());
+            if move_mode {
+                println!("DRYRUN: move {} to {}", resource.display(), output_path.display());
+
+            } else {
+                println!("DRYRUN: copy {} to {}", resource.display(), output_path.display());
+            }
         }
     }
 
 }
 
-fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool) {
+fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool, move_mode: bool) {
     // TODO: add file/path filter
     let deploy_df = CsvReader::from_path(deploy_table).unwrap().finish().unwrap();
     let deploy_array = deploy_df["deploymentID"].utf8().unwrap();
@@ -191,7 +205,7 @@ fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: Pa
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
         let collection_output_dir = output_dir.join(collection_name);
-        resources_align(deploy_dir, collection_output_dir.clone(), dry_run);
+        resources_align(deploy_dir, collection_output_dir.clone(), dry_run, move_mode);
     }
     // for entry in project_dir.read_dir().unwrap() {
     //     let collection_path = entry.unwrap().path();
