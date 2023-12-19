@@ -42,7 +42,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Align resources in given directory for deployment or project(recursive)
+    /// Align resources in given Deployment or Project (recursively)
     #[command(arg_required_else_help = true)]
     Align {
         path: PathBuf,
@@ -55,7 +55,7 @@ enum Commands {
         #[arg(short, long)]
         project: bool,
 
-        /// Path for the deployments table (deployments.csv)
+        /// Path for deployments table (deployments.csv)
         #[arg(short, long, value_name = "FILE", required = true)]
         deploy_table: PathBuf,
 
@@ -63,16 +63,16 @@ enum Commands {
         #[arg(long)]
         dryrun: bool,
 
-        /// Move (instead of copy)
+        /// Move mode (instead of copy)
         #[arg(short, long)]
         move_mode: bool,
     },
-    /// Read media EXIF for observation data
+    /// Analyze media metadata
     #[command(arg_required_else_help = true)]
     Observe {
         media_dir: PathBuf,
 
-        /// Directory for output(tags.csv)
+        /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
 
@@ -80,7 +80,7 @@ enum Commands {
         #[arg(short, long)]
         parallel: bool,
     },
-    /// Rename deployment directory to deployment_id, in the manner of combining collection_name of deployment_name
+    /// Rename deployment directory name, from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
     Rename {
         project_dir: PathBuf,
