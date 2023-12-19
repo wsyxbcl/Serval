@@ -1,7 +1,7 @@
 mod utils;
 mod tags;
 
-use std::path::{PathBuf, Path};
+use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use utils::{
     deployments_align, resources_align, deployments_rename
@@ -29,7 +29,7 @@ fn main() -> std::io::Result<()> {
         Commands::Rename { project_dir, dryrun} => {
             deployments_rename(project_dir, dryrun);
         }
-        Commands::Tag2img { taglist_path, image_path } => {
+        Commands::Tags2img { taglist_path, image_path } => {
             write_taglist(taglist_path, image_path).unwrap();
         }
 
@@ -97,8 +97,10 @@ enum Commands {
     },
     /// Write taglist to a (dummy) image file
     #[command(arg_required_else_help = true)]
-    Tag2img {
+    Tags2img {
+        /// Path for the taglist csv file
         taglist_path: PathBuf,
+        /// Path for the dummy image
         image_path: PathBuf,
     }
 }

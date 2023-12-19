@@ -1,4 +1,4 @@
-use std::{path::PathBuf, fs};
+use std::{path::PathBuf, fs, str::FromStr};
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
@@ -14,9 +14,12 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), x
         Ok(_) => {
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
             XmpMeta::register_namespace(ns_digikam, "digiKam").unwrap();
-            let mut meta = XmpMeta::new().unwrap();
-            for i in 1..=tags.len() {
-                meta.set_array_item(ns_digikam, "TagsList", xmp_toolkit::ItemPlacement::InsertBeforeIndex(1), &XmpValue::new(tags.get(i).unwrap().to_string())).unwrap();
+            let dummy_xmp = include_str!("../assets/dummy.xmp");
+            let mut meta = XmpMeta::from_str(dummy_xmp).unwrap();
+            for tag in tags.utf8().unwrap() {
+                meta.set_array_item(ns_digikam, "TagsList", 
+                    xmp_toolkit::ItemPlacement::InsertBeforeIndex(1), 
+                    &XmpValue::new(format!("Species/{}",tag.unwrap()))).unwrap();   
             }
             f.put_xmp(&meta).unwrap();
             f.close();
