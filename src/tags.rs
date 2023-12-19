@@ -1,9 +1,32 @@
 use std::{path::PathBuf, fs};
-use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta};
+use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use polars::prelude::*;
 use crate::utils::image_path_enumerate;
+
+pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
+    // Write taglist to the dummy image metadata (digiKam.TagsList)
+    let mut f = XmpFile::new().unwrap();
+    let tag_df = CsvReader::from_path(taglist_path).unwrap().finish().unwrap();
+    let tags = tag_df.column("species").unwrap();
+    match f.open_file(image_path, OpenFileOptions::default().for_update()) {
+        Ok(_) => {
+            let ns_digikam = "http://www.digikam.org/ns/1.0/";
+            XmpMeta::register_namespace(ns_digikam, "digiKam").unwrap();
+            let mut meta = XmpMeta::new().unwrap();
+            for i in 1..=tags.len() {
+                meta.set_array_item(ns_digikam, "TagsList", xmp_toolkit::ItemPlacement::InsertBeforeIndex(1), &XmpValue::new(tags.get(i).unwrap().to_string())).unwrap();
+            }
+            f.put_xmp(&meta).unwrap();
+            f.close();
+            Ok(())
+        },
+        Err(e) => {
+            Err(e)
+        }
+    }
+}
 
 fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), xmp_toolkit::XmpError> {
     // Retrieve digikam taglist from image xmp metadata
