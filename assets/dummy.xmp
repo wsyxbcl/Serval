@@ -29,22 +29,22 @@
    </digiKam:TagsList>
    <MicrosoftPhoto:LastKeywordXMP>
     <rdf:Bag>
-     <rdf:li>Species/Blank</rdf:li>
+     <rdf:li>Dummy</rdf:li>
     </rdf:Bag>
    </MicrosoftPhoto:LastKeywordXMP>
    <lr:hierarchicalSubject>
     <rdf:Bag>
-     <rdf:li>Species|Blank</rdf:li>
+     <rdf:li>Dummy</rdf:li>
     </rdf:Bag>
    </lr:hierarchicalSubject>
    <mediapro:CatalogSets>
     <rdf:Bag>
-     <rdf:li>Species|Blank</rdf:li>
+     <rdf:li>Dummy</rdf:li>
     </rdf:Bag>
    </mediapro:CatalogSets>
    <dc:subject>
     <rdf:Bag>
-     <rdf:li>Blank</rdf:li>
+     <rdf:li>Dummy</rdf:li>
     </rdf:Bag>
    </dc:subject>
   </rdf:Description>
