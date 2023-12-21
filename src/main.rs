@@ -23,8 +23,13 @@ fn main() -> std::io::Result<()> {
                 resources_align(path, output, dryrun, move_mode);
             }
         }
-        Commands::Observe { media_dir ,output, parallel} => {
-            get_classifications(media_dir, output, parallel);
+        Commands::Observe { media_dir ,output, parallel, xmp} => {
+            if xmp {
+                get_classifications(media_dir, output, parallel, utils::ResourceType::Xmp);
+            } else {
+                // Image only currently
+                get_classifications(media_dir, output, parallel, utils::ResourceType::Image);
+            }
         }
         Commands::Rename { project_dir, dryrun} => {
             deployments_rename(project_dir, dryrun);
@@ -85,6 +90,10 @@ enum Commands {
         /// Parallel mode
         #[arg(short, long)]
         parallel: bool,
+
+        /// Read from XMP
+        #[arg(long)]
+        xmp: bool,
     },
     /// Rename deployment directory name, from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]

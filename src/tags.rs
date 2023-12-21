@@ -3,7 +3,7 @@ use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use polars::prelude::*;
-use crate::utils::image_path_enumerate;
+use crate::utils::{ResourceType, path_enumerate};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
@@ -31,10 +31,10 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), x
     }
 }
 
-fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), xmp_toolkit::XmpError> {
-    // Retrieve digikam taglist from image xmp metadata
+fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>), xmp_toolkit::XmpError> {
+    // Retrieve digikam taglist from file
     let mut f = XmpFile::new().unwrap();
-    match f.open_file(image_path, OpenFileOptions::default().only_xmp().use_smart_handler()) {
+    match f.open_file(file_path, OpenFileOptions::default().only_xmp()) {
         Ok(_) => {
             let mut species: Vec<String> = Vec::new();
             let mut individuals: Vec<String> = Vec::new();
@@ -64,21 +64,21 @@ fn retrieve_taglist(image_path: &String) -> Result<(Vec<String>, Vec<String>), x
 
 }
 
-pub fn get_classifications(media_dir: PathBuf, output_dir: PathBuf, parallel: bool) {
-    let image_paths = image_path_enumerate(media_dir);
+pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: bool, resource_type: ResourceType) {
+    let file_paths = path_enumerate(file_dir, resource_type);
 
     fs::create_dir_all(output_dir.clone()).unwrap();
 
     // Get tag info from the old digikam workflow in shanshui
-    let image_path_strings: Vec<String> = image_paths.clone()
+    let image_path_strings: Vec<String> = file_paths.clone()
         .into_iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
-    let image_names: Vec<String> = image_paths.clone()
+    let image_names: Vec<String> = file_paths.clone()
         .into_iter()
         .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
         .collect();
-    let num_images = image_paths.len();
+    let num_images = file_paths.len();
     println!("{} images in total.", num_images);
 
     let mut species_tags: Vec<String> = Vec::new();
@@ -88,14 +88,14 @@ pub fn get_classifications(media_dir: PathBuf, output_dir: PathBuf, parallel: bo
     // try parallel with Rayon here
     if parallel {
         let result: Vec<_> = (0..num_images).into_par_iter().map(|i| {
-            match retrieve_taglist(&image_paths[i].to_string_lossy().into_owned()) {
+            match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
                 Ok((species, individuals)) => {
                     // println!("{:?} {:?}", species, individuals);
                     pb.inc(1);
                     (species.join(","), individuals.join(","))
                 },
                 Err(error) => {
-                    pb.println(format!("{} in {}", error, image_paths[i].display()));
+                    pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     ("".to_string(), "".to_string())
                 }
@@ -108,7 +108,7 @@ pub fn get_classifications(media_dir: PathBuf, output_dir: PathBuf, parallel: bo
         }
 
     } else {
-        for path in image_paths {
+        for path in file_paths {
             match retrieve_taglist(&path.to_string_lossy().into_owned()) {
                 Ok((species, individuals)) => {
                     // println!("{:?} {:?}", species, individuals);

@@ -2,23 +2,41 @@ use std::{path::{PathBuf, Path}, fs};
 use walkdir::WalkDir;
 use polars::prelude::*;
 
-fn is_image(path: &Path) -> bool {
-    match path.extension() {
-        None => false,
-        Some(x) => ["jpg", "jpeg", "png"].contains(&x.to_str().unwrap().to_lowercase().as_str()),
+#[derive(Clone, Copy)]
+pub enum ResourceType {
+    Xmp,
+    Image,
+    Video,
+}
+
+impl ResourceType {
+    fn extension(self) -> Vec<&'static str>{
+        match self {
+            ResourceType::Image => vec!["jpg", "jpeg", "png"],
+            ResourceType::Video => vec!["avi", "mp4"],
+            ResourceType::Xmp => vec!["xmp"],
+        }
+    }
+
+    fn is_resource(self, path: &Path) -> bool {
+        match path.extension() {
+            None => false,
+            Some(x) => self.extension().contains(&x.to_str().unwrap().to_lowercase().as_str()),
+        }
     }
 }
 
-pub fn image_path_enumerate(root_dir: PathBuf) -> Vec<PathBuf> {
-    let mut image_paths: Vec<PathBuf> = vec![];
+pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = vec![];
     for entry in WalkDir::new(root_dir)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| is_image(e.path())) {
-            image_paths.push(entry.into_path());
+        .filter(|e| resource_type.is_resource(e.path())) {
+            paths.push(entry.into_path());
         }
-    image_paths
+        paths
 }
+
 
 pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool, move_mode: bool) { 
     let deploy_id = deploy_dir.file_name().unwrap();
@@ -28,7 +46,7 @@ pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool,
     let output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(output_dir.clone()).unwrap();
 
-    let resource_paths = image_path_enumerate(deploy_dir.clone());
+    let resource_paths = path_enumerate(deploy_dir.clone(), ResourceType::Image);
     println!("{} images found: ", resource_paths.len());
     // println!("{:?}", resource_paths);
 
