@@ -1,8 +1,8 @@
 use std::{path::PathBuf, fs, str::FromStr};
-use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue};
+use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue, xmp_ns};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
-use polars::prelude::*;
+use polars::{prelude::*, lazy::dsl::datetime};
 use crate::utils::{ResourceType, path_enumerate};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
@@ -31,23 +31,29 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), x
     }
 }
 
-fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>), xmp_toolkit::XmpError> {
-    // Retrieve digikam taglist from file
+fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>, String), xmp_toolkit::XmpError> {
+    // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new().unwrap();
     match f.open_file(file_path, OpenFileOptions::default().only_xmp()) {
         Ok(_) => {
             let mut species: Vec<String> = Vec::new();
             let mut individuals: Vec<String> = Vec::new();
+            let mut datetime_original = String::new();
 
-            let xmp = f.xmp();
-            if xmp.is_none() {
-                return Ok((species, individuals));
+            let xmp = match f.xmp() {
+                Some(xmp) => xmp,
+                None => return Ok((species, individuals, datetime_original)),
+            };
+            
+            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                datetime_original = value.value.to_string();
             }
+
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
             XmpMeta::register_namespace(ns_digikam, "digiKam").unwrap();
         
-            for property in xmp.unwrap().property_array(ns_digikam, "TagsList") {
+            for property in xmp.property_array(ns_digikam, "TagsList") {
                 let tag = property.value;
                 if tag.starts_with("Species/") {
                     species.push(tag.strip_prefix("Species/").unwrap().to_string());
@@ -55,7 +61,7 @@ fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>), xm
                     individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
                 }
             }
-            Ok((species, individuals))
+            Ok((species, individuals, datetime_original))
         },
         Err(e) => {
             Err(e)
@@ -83,21 +89,22 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let mut datetime_originals: Vec<String> = Vec::new();
     let pb = ProgressBar::new(num_images as u64);
 
     // try parallel with Rayon here
     if parallel {
         let result: Vec<_> = (0..num_images).into_par_iter().map(|i| {
             match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
-                Ok((species, individuals)) => {
+                Ok((species, individuals, datetime_original)) => {
                     // println!("{:?} {:?}", species, individuals);
                     pb.inc(1);
-                    (species.join(","), individuals.join(","))
+                    (species.join(","), individuals.join(","), datetime_original)
                 },
                 Err(error) => {
                     pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
-                    ("".to_string(), "".to_string())
+                    ("".to_string(), "".to_string(), "".to_string())
                 }
             }
         })
@@ -110,15 +117,17 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
     } else {
         for path in file_paths {
             match retrieve_taglist(&path.to_string_lossy().into_owned()) {
-                Ok((species, individuals)) => {
+                Ok((species, individuals, datetime_original)) => {
                     // println!("{:?} {:?}", species, individuals);
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
+                    datetime_originals.push(datetime_original);
                 },
                 Err(error) => {
                     pb.println(format!("{} in {}", error, path.display()));
                     species_tags.push("".to_string());
                     individual_tags.push("".to_string());
+                    datetime_originals.push("".to_string());
                 }
             }
             pb.inc(1);
@@ -127,12 +136,14 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
 
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
+    let s_datetime = Series::new("datetime_original", datetime_originals);
 
     let df_raw = DataFrame::new(vec![
         Series::new("path", image_path_strings),
         Series::new("filename",image_names),
         s_species,
-        s_individuals]).unwrap();
+        s_individuals,
+        s_datetime]).unwrap();
     println!("{:?}", df_raw);
 
     let df_split = df_raw
@@ -141,6 +152,7 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         .select([
             col("path"),
             col("filename"),
+            col("datetime_original"),
             col("species_tags").str().split(lit(",")).alias("species"),
             col("individual_tags").str().split(lit(",")).alias("individuals")
         ])
