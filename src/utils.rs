@@ -1,19 +1,26 @@
+use core::fmt;
 use std::{path::{PathBuf, Path}, fs};
 use walkdir::WalkDir;
 use polars::prelude::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ResourceType {
     Xmp,
     Image,
-    Video,
+    _Video, // TODO: video support
+}
+
+impl fmt::Display for ResourceType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)        
+    }
 }
 
 impl ResourceType {
     fn extension(self) -> Vec<&'static str>{
         match self {
             ResourceType::Image => vec!["jpg", "jpeg", "png"],
-            ResourceType::Video => vec!["avi", "mp4"],
+            ResourceType::_Video => vec!["avi", "mp4"],
             ResourceType::Xmp => vec!["xmp"],
         }
     }

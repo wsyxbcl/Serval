@@ -2,7 +2,7 @@ use std::{path::PathBuf, fs, str::FromStr};
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue, xmp_ns};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
-use polars::{prelude::*, lazy::dsl::datetime};
+use polars::prelude::*;
 use crate::utils::{ResourceType, path_enumerate};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
@@ -85,7 +85,7 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
         .collect();
     let num_images = file_paths.len();
-    println!("{} images in total.", num_images);
+    println!("Total {}: {}.", resource_type, num_images);
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
@@ -112,6 +112,7 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         for tag in result {
             species_tags.push(tag.0);
             individual_tags.push(tag.1);
+            datetime_originals.push(tag.2);
         }
 
     } else {
