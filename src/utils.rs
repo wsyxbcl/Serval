@@ -1,4 +1,5 @@
 use core::fmt;
+use chrono::NaiveDateTime;
 use std::{path::{PathBuf, Path}, fs};
 use walkdir::WalkDir;
 use polars::prelude::*;
@@ -30,6 +31,18 @@ impl ResourceType {
             None => false,
             Some(x) => self.extension().contains(&x.to_str().unwrap().to_lowercase().as_str()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TagType {
+    Species,
+    Individual,
+}
+
+impl fmt::Display for TagType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)        
     }
 }
 
@@ -152,3 +165,11 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) {
     println!("Total directories: {}", count);
 }
 
+pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> bool {
+    // TODO Timezone
+    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
+    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
+    let diff = dt - dt_ref;
+    
+    diff.num_minutes() > min_delta_time.into()
+}

@@ -1,9 +1,9 @@
-use std::{path::PathBuf, fs, str::FromStr};
+use std::{path::{Path, PathBuf}, fs, str::FromStr, io};
 use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue, xmp_ns};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use polars::prelude::*;
-use crate::utils::{ResourceType, path_enumerate};
+use crate::utils::{ResourceType, TagType, path_enumerate, is_temporal_independent};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
@@ -70,7 +70,7 @@ fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>, Str
 
 }
 
-pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: bool, resource_type: ResourceType) {
+pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: bool, resource_type: ResourceType, independent: bool) {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
 
@@ -169,11 +169,13 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         .unwrap();
     println!("{}", df_flatten);
 
-    let mut file = std::fs::File::create(output_dir.join("tags.csv")).unwrap();
+    let tags_csv_path = output_dir.join("tags.csv");
+    let mut file = std::fs::File::create(tags_csv_path.clone()).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_flatten).unwrap();
     println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
 
     let mut df_count_species = df_flatten
+        .clone()
         .lazy()
         .select([col("species").value_counts(true, true)])
         .unnest(["species"])
@@ -184,5 +186,130 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
     let mut file = std::fs::File::create(output_dir.join("species_stats.csv")).unwrap();
     CsvWriter::new(&mut file).finish(&mut df_count_species).unwrap();
     println!("Saved to {}", output_dir.join("species_stats.csv").to_string_lossy());
+
+    if independent {
+        get_temporal_independence(tags_csv_path, output_dir);
+    }
 }
 
+pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
+    // Remove non-independent records
+    // min_delta_time: the minimum time (minutes) difference betwween two independent captures
+    // target: "species"
+    // exclude: species individuals to be excluded
+    // deploy_path_index: index used to determine deployments from paths
+    let df = CsvReader::from_path(csv_path)
+        .unwrap()
+        .infer_schema(None)
+        .has_header(true)
+        .with_try_parse_dates(true)
+        .finish()
+        .unwrap();
+    // Parameters setup
+    // TODO: improve input parser
+    let mut input = String::new();
+    println!("Input the Minimum Time Difference (betwween two independent captures) in minutes:");
+    io::stdin().read_line(&mut input).unwrap();
+    let min_delta_time = input.trim().parse().expect("Not a valid input");
+    input.clear();
+
+    println!("Perform analysis on:");
+    println!("1) species 2) individual");
+    println!("Enter a selection: (default: species)");
+    io::stdin().read_line(&mut input).unwrap();
+    let target_input: i32 = input.trim().parse().expect("Not a valid input");
+    let target = match target_input {
+        1 => TagType::Species,
+        2 => TagType::Individual,
+        _ => TagType::Species,
+    };
+    input.clear();
+
+    let path_sample = df.column("path").unwrap().get(0).unwrap().to_string();
+    println!("Here is a sample of the directory layout ({}): ", path_sample);
+    for (i, entry) in Path::new(&path_sample).iter().enumerate() {
+        if entry.to_string_lossy().len() > 0 {
+            println!("{}): {}", i, entry.to_string_lossy().replace("\"", ""));
+        }
+    }
+    println!("Select the entry corresponding to deployment:");
+    io::stdin().read_line(&mut input).unwrap();
+    let deploy_path_index:i32 = input.trim().parse().expect("Not a valid input");
+
+    let exclude = ["", "Blank", "Useless data", "Human"]; // TODO: configurable
+    let target = match target {
+        TagType::Individual => "individuals",
+        TagType::Species => "species",
+    };
+
+    let tag_exclude = Series::new("tag_exclude", exclude);
+    let df_cleaned = df
+        .clone()
+        .lazy()
+        .select([
+            col("path").str().split(lit("/")).list().get(lit(deploy_path_index)).alias("deployment"),
+            col("filename"),
+            col("datetime_original").alias("time"),
+            col(target)])
+        .drop_nulls(None)
+        .filter(col("species").is_in(lit(tag_exclude)).not())
+        .collect()
+        .unwrap();
+
+    let mut df_sorted = df_cleaned
+        .lazy()
+        .sort("time", Default::default())
+        .sort("species", Default::default())
+        .sort("deployment", Default::default())
+        .collect()
+        .unwrap();
+
+    // Row iterator as a temporary solution
+    df_sorted.as_single_chunk_par();
+    let mut iters = df_sorted.columns(["time", "species", "deployment"]).unwrap()
+        .iter().map(|s| s.iter()).collect::<Vec<_>>();
+
+    let mut capture = Vec::new();
+    for _row in 0..df_sorted.height() {
+        for iter in &mut iters {
+            let value = iter.next().expect("should have as many iterations as rows");
+            capture.push(value);
+        }
+    }
+    let capture_time: Vec<&AnyValue<'_>> = capture.iter().step_by(3).collect();
+    let capture_species: Vec<&AnyValue<'_>> = capture.iter().skip(1).step_by(3).collect();
+    let capture_deployment: Vec<&AnyValue<'_>> = capture.iter().skip(2).step_by(3).collect();
+
+    // Get temporal independent records
+    let mut capture_independent = Vec::new();
+    let mut last_indep_time = capture_time[0].to_string();
+    let mut last_indep_species = capture_species[0].to_string();
+    let mut last_indep_deployment = capture_deployment[0].to_string();
+    for i in 0..capture_time.len() {
+        let time = capture_time[i].to_string();
+        let species = capture_species[i].to_string();
+        let deployment = capture_deployment[i].to_string();
+
+        if i == 0 || species != last_indep_species || deployment != last_indep_deployment || is_temporal_independent(last_indep_time.clone(), time, min_delta_time){
+            capture_independent.push(true);
+            last_indep_time = capture_time[i].to_string();
+            last_indep_species = capture_species[i].to_string();
+            last_indep_deployment = capture_deployment[i].to_string();
+        } else {
+            capture_independent.push(false);
+        }
+    }
+
+    let mut df_capture_independent = df_sorted
+        .lazy()
+        .filter(Series::new("independent", capture_independent).lit())
+        .collect()
+        .unwrap();
+    println!("{}", df_capture_independent);
+
+    fs::create_dir_all(output_dir.clone()).unwrap();
+    let filename = format!("{}_temporal_independent.csv", target);
+    let mut file = std::fs::File::create(output_dir.join(filename.clone())).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df_capture_independent).unwrap();
+    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+}

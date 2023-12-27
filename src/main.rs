@@ -7,7 +7,7 @@ use utils::{
     deployments_align, resources_align, deployments_rename
 };
 use tags::{
-    get_classifications, write_taglist
+    get_classifications, write_taglist, get_temporal_independence
 };
 
 fn main() -> std::io::Result<()> {
@@ -23,12 +23,12 @@ fn main() -> std::io::Result<()> {
                 resources_align(path, output, dryrun, move_mode);
             }
         }
-        Commands::Observe { media_dir ,output, parallel, xmp} => {
+        Commands::Observe { media_dir ,output, parallel, xmp, independent} => {
             if xmp {
-                get_classifications(media_dir, output, parallel, utils::ResourceType::Xmp);
+                get_classifications(media_dir, output, parallel, utils::ResourceType::Xmp, independent);
             } else {
                 // Image only currently
-                get_classifications(media_dir, output, parallel, utils::ResourceType::Image);
+                get_classifications(media_dir, output, parallel, utils::ResourceType::Image, independent);
             }
         }
         Commands::Rename { project_dir, dryrun} => {
@@ -37,7 +37,9 @@ fn main() -> std::io::Result<()> {
         Commands::Tags2img { taglist_path, image_path } => {
             write_taglist(taglist_path, image_path).unwrap();
         }
-
+        Commands::Capture { csv_path, output } => {
+            get_temporal_independence(csv_path, output);
+        }
     }
     Ok(())
 }
@@ -94,6 +96,10 @@ enum Commands {
         /// Read from XMP
         #[arg(long)]
         xmp: bool,
+
+        /// Temporal independence analysis after retrieving
+        #[arg(short, long)]
+        independent: bool,
     },
     /// Rename deployment directory name, from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
@@ -111,5 +117,14 @@ enum Commands {
         taglist_path: PathBuf,
         /// Path for the dummy image
         image_path: PathBuf,
+    },
+    /// Perform temporal independence analysis (on csv file)
+    #[command(arg_required_else_help = true)]
+    Capture {
+        /// Path for tags.csv
+        csv_path: PathBuf,
+        /// Output directory
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        output: PathBuf,
     }
 }
