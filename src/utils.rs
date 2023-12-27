@@ -1,6 +1,6 @@
 use core::fmt;
 use chrono::NaiveDateTime;
-use std::{path::{PathBuf, Path}, fs};
+use std::{path::{PathBuf, Path}, fs, env};
 use walkdir::WalkDir;
 use polars::prelude::*;
 
@@ -172,4 +172,8 @@ pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i
     let diff = dt - dt_ref;
     
     diff.num_minutes() > min_delta_time.into()
+}
+
+pub fn is_windows() -> bool {
+    env::consts::OS == "windows"
 }

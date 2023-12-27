@@ -3,7 +3,7 @@ use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue, xmp_ns};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use polars::prelude::*;
-use crate::utils::{ResourceType, TagType, path_enumerate, is_temporal_independent};
+use crate::utils::{ResourceType, TagType, path_enumerate, is_temporal_independent, is_windows};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
@@ -229,7 +229,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
     println!("Here is a sample of the directory layout ({}): ", path_sample);
     for (i, entry) in Path::new(&path_sample).iter().enumerate() {
         if entry.to_string_lossy().len() > 0 {
-            println!("{}): {}", i, entry.to_string_lossy().replace("\"", ""));
+            println!("{}): {}", i, entry.to_string_lossy().replace('"', ""));
         }
     }
     println!("Select the entry corresponding to deployment:");
@@ -243,11 +243,12 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
     };
 
     let tag_exclude = Series::new("tag_exclude", exclude);
+    let sep = if is_windows() {r"\"} else {r"/"};
     let df_cleaned = df
         .clone()
         .lazy()
         .select([
-            col("path").str().split(lit("/")).list().get(lit(deploy_path_index)).alias("deployment"),
+            col("path").str().split(lit(sep)).list().get(lit(deploy_path_index)).alias("deployment"),
             col("filename"),
             col("datetime_original").alias("time"),
             col(target)])
