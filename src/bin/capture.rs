@@ -65,7 +65,7 @@ fn main() {
         let species = capture_species[i].to_string();
         let deployment = capture_deployment[i].to_string();
 
-        if i == 0 || species != last_indep_species || deployment != last_indep_deployment || is_time_independent(last_indep_time.clone(), time, min_delta_time){
+        if i == 0 || species != last_indep_species || deployment != last_indep_deployment || is_temporal_independent(last_indep_time.clone(), time, min_delta_time){
             capture_independence.push(true);
             last_indep_time = capture_time[i].to_string();
             last_indep_species = capture_species[i].to_string();
@@ -87,7 +87,8 @@ fn main() {
     CsvWriter::new(&mut file).finish(&mut df_capture_independence).unwrap();
 }
 
-fn is_time_independent(time_ref: String, time: String, min_delta_time: i32) -> bool {
+fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> bool {
+    // TODO Timezone
     let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;

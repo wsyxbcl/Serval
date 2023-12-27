@@ -71,12 +71,12 @@ fn retrieve_taglist(file_path: &String) -> Result<(Vec<String>, Vec<String>, Str
 }
 
 pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: bool, resource_type: ResourceType) {
-    let file_paths = path_enumerate(file_dir, resource_type);
-
-    fs::create_dir_all(output_dir.clone()).unwrap();
-
     // Get tag info from the old digikam workflow in shanshui
-    let image_path_strings: Vec<String> = file_paths.clone()
+    // by enumerating file_dir and read xmp metadata from resources
+
+    let file_paths = path_enumerate(file_dir, resource_type);
+    fs::create_dir_all(output_dir.clone()).unwrap();
+    let image_paths: Vec<String> = file_paths.clone()
         .into_iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
@@ -86,18 +86,17 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         .collect();
     let num_images = file_paths.len();
     println!("Total {}: {}.", resource_type, num_images);
+    let pb = ProgressBar::new(num_images as u64);
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
-    let pb = ProgressBar::new(num_images as u64);
 
     // try parallel with Rayon here
     if parallel {
         let result: Vec<_> = (0..num_images).into_par_iter().map(|i| {
             match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
                 Ok((species, individuals, datetime_original)) => {
-                    // println!("{:?} {:?}", species, individuals);
                     pb.inc(1);
                     (species.join(","), individuals.join(","), datetime_original)
                 },
@@ -114,12 +113,10 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
             individual_tags.push(tag.1);
             datetime_originals.push(tag.2);
         }
-
     } else {
         for path in file_paths {
             match retrieve_taglist(&path.to_string_lossy().into_owned()) {
                 Ok((species, individuals, datetime_original)) => {
-                    // println!("{:?} {:?}", species, individuals);
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
                     datetime_originals.push(datetime_original);
@@ -135,17 +132,17 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
         }
     }
 
+    // Analysis
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
     let s_datetime = Series::new("datetime_original", datetime_originals);
 
     let df_raw = DataFrame::new(vec![
-        Series::new("path", image_path_strings),
+        Series::new("path", image_paths),
         Series::new("filename",image_names),
         s_species,
         s_individuals,
         s_datetime]).unwrap();
-    println!("{:?}", df_raw);
 
     let df_split = df_raw
         .clone()
@@ -188,3 +185,4 @@ pub fn get_classifications(file_dir: PathBuf, output_dir: PathBuf, parallel: boo
     CsvWriter::new(&mut file).finish(&mut df_count_species).unwrap();
     println!("Saved to {}", output_dir.join("species_stats.csv").to_string_lossy());
 }
+
