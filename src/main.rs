@@ -17,28 +17,28 @@ fn main() -> std::io::Result<()> {
         Commands::Align { path, output, project,deploy_table, dryrun, move_mode} => {
             if project {
                 println!("Aligning deployments in {}", path.display());
-                deployments_align(path, output, deploy_table, dryrun, move_mode);
+                deployments_align(path.canonicalize().unwrap(), output, deploy_table, dryrun, move_mode);
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(path, output, dryrun, move_mode);
+                resources_align(path.canonicalize().unwrap(), output, dryrun, move_mode);
             }
         }
         Commands::Observe { media_dir ,output, parallel, xmp, independent} => {
             if xmp {
-                get_classifications(media_dir, output, parallel, utils::ResourceType::Xmp, independent);
+                get_classifications(media_dir.canonicalize().unwrap(), output, parallel, utils::ResourceType::Xmp, independent);
             } else {
                 // Image only currently
-                get_classifications(media_dir, output, parallel, utils::ResourceType::Image, independent);
+                get_classifications(media_dir.canonicalize().unwrap(), output, parallel, utils::ResourceType::Image, independent);
             }
         }
         Commands::Rename { project_dir, dryrun} => {
-            deployments_rename(project_dir, dryrun);
+            deployments_rename(project_dir.canonicalize().unwrap(), dryrun);
         }
         Commands::Tags2img { taglist_path, image_path } => {
-            write_taglist(taglist_path, image_path).unwrap();
+            write_taglist(taglist_path.canonicalize().unwrap(), image_path).unwrap();
         }
         Commands::Capture { csv_path, output } => {
-            get_temporal_independence(csv_path, output);
+            get_temporal_independence(csv_path.canonicalize().unwrap(), output);
         }
     }
     Ok(())
