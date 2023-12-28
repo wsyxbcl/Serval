@@ -171,7 +171,7 @@ pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
     
-    diff.num_minutes() > min_delta_time.into()
+    diff >= chrono::Duration::minutes(min_delta_time.into())
 }
 
 pub fn is_windows() -> bool {
