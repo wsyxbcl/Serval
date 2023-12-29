@@ -3,7 +3,7 @@ use xmp_toolkit::{ OpenFileOptions, XmpFile, XmpMeta, XmpValue, xmp_ns};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use polars::prelude::*;
-use crate::utils::{ResourceType, TagType, path_enumerate, is_temporal_independent, is_windows};
+use crate::utils::{ResourceType, TagType, path_enumerate, is_temporal_independent, get_path_seperator};
 
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> Result<(), xmp_toolkit::XmpError> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
@@ -205,17 +205,30 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
         .with_try_parse_dates(true)
         .finish()
         .unwrap();
-    // Parameters setup
+    
+    // Readlines for parameter setup
     // TODO: improve input parser
     let mut input = String::new();
-    println!("Input the Minimum Time Difference (betwween two independent captures) in minutes:");
+    println!("Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
     io::stdin().read_line(&mut input).unwrap();
     let min_delta_time = input.trim().parse().expect("Not a valid input");
     input.clear();
 
+    println!("The Minimum Time Difference should be compared with?");
+    println!("1) Last independent record 2) Last record");
+    println!("Enter a selection (e.g. 1): ");
+    io::stdin().read_line(&mut input).unwrap();
+    let target_input: i32 = input.trim().parse().expect("Not a valid input");
+    let delta_time_compared_to = match target_input {
+        1 => "LastIndependentRecord",
+        2 => "LastRecord",
+        _ => "LastRecord",
+    };
+    input.clear();
+
     println!("Perform analysis on:");
     println!("1) species 2) individual");
-    println!("Enter a selection: (default: species)");
+    println!("Enter a selection (default=1): ");
     io::stdin().read_line(&mut input).unwrap();
     let target_input: i32 = input.trim().parse().expect("Not a valid input");
     let target = match target_input {
@@ -236,24 +249,23 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
     io::stdin().read_line(&mut input).unwrap();
     let deploy_path_index:i32 = input.trim().parse().expect("Not a valid input");
 
-    let exclude = ["", "Blank", "Useless data", "Human"]; // TODO: configurable
-    let target = match target {
-        TagType::Individual => "individuals",
-        TagType::Species => "species",
-    };
-
+    let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
-    let sep = if is_windows() {r"\"} else {r"/"};
+
+    // Data processing
     let df_cleaned = df
         .clone()
         .lazy()
         .select([
-            col("path").str().split(lit(sep)).list().get(lit(deploy_path_index)).alias("deployment"),
+            col("path").str().split(lit(get_path_seperator())).list().get(lit(deploy_path_index)).alias("deployment"),
             col("filename"),
             col("datetime_original").alias("time"),
-            col(target)])
+            col(target.col_name())])
         .drop_nulls(None)
         .filter(col("species").is_in(lit(tag_exclude)).not())
+        .unique(
+            Some(vec!["deployment".to_string(), "time".to_string(), target.col_name().to_string()]), 
+            UniqueKeepStrategy::Any)
         .collect()
         .unwrap();
 
@@ -264,50 +276,70 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
         .sort("deployment", Default::default())
         .collect()
         .unwrap();
-
-    // Row iterator as a temporary solution
-    // TODO: use group_by_dynamic
-    df_sorted.as_single_chunk_par();
-    let mut iters = df_sorted.columns(["time", "species", "deployment"]).unwrap()
-        .iter().map(|s| s.iter()).collect::<Vec<_>>();
-
-    let mut capture = Vec::new();
-    for _row in 0..df_sorted.height() {
-        for iter in &mut iters {
-            let value = iter.next().expect("should have as many iterations as rows");
-            capture.push(value);
+    
+    let mut df_capture_independent;
+    if delta_time_compared_to == "LastRecord" {
+        df_capture_independent = df_sorted
+            .clone()
+            .lazy()
+            .group_by_rolling(
+                col("time"),
+                [col("deployment"), col("species")],
+                RollingGroupOptions {
+                    period: Duration::parse(format!("{}m", min_delta_time).as_str()),
+                    offset: Duration::parse("0"),
+                    ..Default::default()
+                },
+            )
+            .agg([col("species").count().alias("count"), col("filename").last()])
+            .filter(col("count").eq(lit(1)))
+            .select([col("deployment"), col("filename"), col("time"), col("species")])
+            .collect()
+            .unwrap();
+        println!("{}", df_capture_independent);
+    } else {
+        df_sorted.as_single_chunk_par();
+        let mut iters = df_sorted.columns(["time", "species", "deployment"]).unwrap()
+            .iter().map(|s| s.iter()).collect::<Vec<_>>();
+    
+        let mut capture = Vec::new();
+        for _row in 0..df_sorted.height() {
+            for iter in &mut iters {
+                let value = iter.next().expect("should have as many iterations as rows");
+                capture.push(value);
+            }
         }
-    }
-    let capture_time: Vec<&AnyValue<'_>> = capture.iter().step_by(3).collect();
-    let capture_species: Vec<&AnyValue<'_>> = capture.iter().skip(1).step_by(3).collect();
-    let capture_deployment: Vec<&AnyValue<'_>> = capture.iter().skip(2).step_by(3).collect();
-
-    // Get temporal independent records
-    let mut capture_independent = Vec::new();
-    let mut last_indep_time = capture_time[0].to_string();
-    let mut last_indep_species = capture_species[0].to_string();
-    let mut last_indep_deployment = capture_deployment[0].to_string();
-    for i in 0..capture_time.len() {
-        let time = capture_time[i].to_string();
-        let species = capture_species[i].to_string();
-        let deployment = capture_deployment[i].to_string();
-
-        if i == 0 || species != last_indep_species || deployment != last_indep_deployment || is_temporal_independent(last_indep_time.clone(), time, min_delta_time){
-            capture_independent.push(true);
-            last_indep_time = capture_time[i].to_string();
-            last_indep_species = capture_species[i].to_string();
-            last_indep_deployment = capture_deployment[i].to_string();
-        } else {
-            capture_independent.push(false);
+        let capture_time: Vec<&AnyValue<'_>> = capture.iter().step_by(3).collect();
+        let capture_species: Vec<&AnyValue<'_>> = capture.iter().skip(1).step_by(3).collect();
+        let capture_deployment: Vec<&AnyValue<'_>> = capture.iter().skip(2).step_by(3).collect();
+    
+        // Get temporal independent records
+        let mut capture_independent = Vec::new();
+        let mut last_indep_time = capture_time[0].to_string();
+        let mut last_indep_species = capture_species[0].to_string();
+        let mut last_indep_deployment = capture_deployment[0].to_string();
+        for i in 0..capture_time.len() {
+            let time = capture_time[i].to_string();
+            let species = capture_species[i].to_string();
+            let deployment = capture_deployment[i].to_string();
+    
+            if i == 0 || species != last_indep_species || deployment != last_indep_deployment || is_temporal_independent(last_indep_time.clone(), time, min_delta_time){
+                capture_independent.push(true);
+                last_indep_time = capture_time[i].to_string();
+                last_indep_species = capture_species[i].to_string();
+                last_indep_deployment = capture_deployment[i].to_string();
+            } else {
+                capture_independent.push(false);
+            }
         }
+    
+        df_capture_independent = df_sorted
+            .lazy()
+            .filter(Series::new("independent", capture_independent).lit())
+            .collect()
+            .unwrap();
+        println!("{}", df_capture_independent);
     }
-
-    let mut df_capture_independent = df_sorted
-        .lazy()
-        .filter(Series::new("independent", capture_independent).lit())
-        .collect()
-        .unwrap();
-    println!("{}", df_capture_independent);
 
     fs::create_dir_all(output_dir.clone()).unwrap();
     let filename = format!("{}_temporal_independent.csv", target);

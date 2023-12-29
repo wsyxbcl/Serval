@@ -46,6 +46,15 @@ impl fmt::Display for TagType {
     }
 }
 
+impl TagType {
+    pub fn col_name(self) -> &'static str {
+        match self {
+            TagType::Individual => "individuals",
+            TagType::Species => "species",
+        }
+    }
+}
+
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = vec![];
     for entry in WalkDir::new(root_dir)
@@ -174,6 +183,6 @@ pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i
     diff >= chrono::Duration::minutes(min_delta_time.into())
 }
 
-pub fn is_windows() -> bool {
-    env::consts::OS == "windows"
+pub fn get_path_seperator() -> &'static str {
+    if env::consts::OS == "windows" {r"\"} else {r"/"}
 }
