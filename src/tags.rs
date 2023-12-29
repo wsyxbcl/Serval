@@ -266,6 +266,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
         .unwrap();
 
     // Row iterator as a temporary solution
+    // TODO: use group_by_dynamic
     df_sorted.as_single_chunk_par();
     let mut iters = df_sorted.columns(["time", "species", "deployment"]).unwrap()
         .iter().map(|s| s.iter()).collect::<Vec<_>>();
@@ -311,6 +312,28 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) {
     fs::create_dir_all(output_dir.clone()).unwrap();
     let filename = format!("{}_temporal_independent.csv", target);
     let mut file = std::fs::File::create(output_dir.join(filename.clone())).unwrap();
-    CsvWriter::new(&mut file).finish(&mut df_capture_independent).unwrap();
+    CsvWriter::new(&mut file)
+        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .finish(&mut df_capture_independent)
+        .unwrap();
+    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+
+    let mut df_count_independent = df_capture_independent
+        .clone()
+        .lazy()
+        .group_by_stable([col("deployment"), col("species")])
+        .agg([
+            col("species").count().alias("count"),
+        ])
+        .collect()
+        .unwrap();
+    println!("{}", df_count_independent);
+
+    let filename = format!("{}_temporal_independent_count.csv", target);
+    let mut file = std::fs::File::create(output_dir.join(filename.clone())).unwrap();
+    CsvWriter::new(&mut file)
+        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .finish(&mut df_count_independent)
+        .unwrap();
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
 }
