@@ -67,13 +67,13 @@ pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<Pat
 }
 
 
-pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool, move_mode: bool) { 
+pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool, move_mode: bool) -> anyhow::Result<()>{ 
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
     let collection_name = working_dir.file_name().unwrap();
     let output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(output_dir.clone()).unwrap();
+    fs::create_dir_all(output_dir.clone())?;
 
     let resource_paths = path_enumerate(deploy_dir.clone(), ResourceType::Image);
     println!("{} images found: ", resource_paths.len());
@@ -98,10 +98,10 @@ pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool,
         if !dry_run {
             if move_mode {
                 println!("move {} to {}", resource.display(), output_path.display());
-                fs::rename(resource, output_path).unwrap();
+                fs::rename(resource, output_path)?;
             } else {
                 println!("copy {} to {}", resource.display(), output_path.display());
-                fs::copy(resource, output_path).unwrap();
+                fs::copy(resource, output_path)?;
             }
         } else if move_mode {
                 println!("DRYRUN: move {} to {}", resource.display(), output_path.display());
@@ -109,13 +109,13 @@ pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool,
                 println!("DRYRUN: copy {} to {}", resource.display(), output_path.display());
         }
     }
-
+    Ok(())
 }
 
-pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool, move_mode: bool) {
+pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool, move_mode: bool) -> anyhow::Result<()> {
     // TODO: add file/path filter
-    let deploy_df = CsvReader::from_path(deploy_table).unwrap().finish().unwrap();
-    let deploy_array = deploy_df["deploymentID"].utf8().unwrap();
+    let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
+    let deploy_array = deploy_df["deploymentID"].utf8()?;
     
     // deploy_array.into_iter()
     //     .for_each(|deploy| println!("{:?}", deploy))
@@ -125,7 +125,7 @@ pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
         let collection_output_dir = output_dir.join(collection_name);
-        resources_align(deploy_dir, collection_output_dir.clone(), dry_run, move_mode);
+        resources_align(deploy_dir, collection_output_dir.clone(), dry_run, move_mode)?;
     }
     // for entry in project_dir.read_dir().unwrap() {
     //     let collection_path = entry.unwrap().path();
@@ -138,18 +138,19 @@ pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table
     //             resources_align(deploy_path, output_dir.clone());
     //         }
     // }
+    Ok(())
 }
 
 
-pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) {
+pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()>{
     // rename deployment path name to <deployment_name>_<collection_name>
     let mut count = 0;
-    for entry in project_dir.read_dir().unwrap() {
-        let entry = entry.unwrap();
+    for entry in project_dir.read_dir()? {
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
             let collection = path;
-            for deploy in collection.read_dir().unwrap() {
+            for deploy in collection.read_dir()? {
                 let deploy_dir = deploy.unwrap().path();
                 if deploy_dir.is_file() {
                     continue;
@@ -165,13 +166,14 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) {
                         deploy_id_dir.set_file_name(
                             format!("{}_{}", deploy_name, collection_name)
                         );
-                        fs::rename(deploy_dir, deploy_id_dir).unwrap();
+                        fs::rename(deploy_dir, deploy_id_dir)?;
                     }
                 }
             }
         }
     }
     println!("Total directories: {}", count);
+    Ok(())
 }
 
 pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> bool {
