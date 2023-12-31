@@ -1,8 +1,11 @@
-use core::fmt;
 use chrono::NaiveDateTime;
-use std::{path::{PathBuf, Path}, fs, env};
-use walkdir::WalkDir;
+use core::fmt;
 use polars::prelude::*;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+use walkdir::WalkDir;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ResourceType {
@@ -13,12 +16,12 @@ pub enum ResourceType {
 
 impl fmt::Display for ResourceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)        
+        write!(f, "{:?}", self)
     }
 }
 
 impl ResourceType {
-    fn extension(self) -> Vec<&'static str>{
+    fn extension(self) -> Vec<&'static str> {
         match self {
             ResourceType::Image => vec!["jpg", "jpeg", "png"],
             ResourceType::_Video => vec!["avi", "mp4"],
@@ -29,7 +32,9 @@ impl ResourceType {
     fn is_resource(self, path: &Path) -> bool {
         match path.extension() {
             None => false,
-            Some(x) => self.extension().contains(&x.to_str().unwrap().to_lowercase().as_str()),
+            Some(x) => self
+                .extension()
+                .contains(&x.to_str().unwrap().to_lowercase().as_str()),
         }
     }
 }
@@ -42,7 +47,7 @@ pub enum TagType {
 
 impl fmt::Display for TagType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)        
+        write!(f, "{:?}", self)
     }
 }
 
@@ -60,14 +65,19 @@ pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<Pat
     for entry in WalkDir::new(root_dir)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| resource_type.is_resource(e.path())) {
-            paths.push(entry.into_path());
-        }
-        paths
+        .filter(|e| resource_type.is_resource(e.path()))
+    {
+        paths.push(entry.into_path());
+    }
+    paths
 }
 
-
-pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool, move_mode: bool) -> anyhow::Result<()>{ 
+pub fn resources_align(
+    deploy_dir: PathBuf,
+    working_dir: PathBuf,
+    dry_run: bool,
+    move_mode: bool,
+) -> anyhow::Result<()> {
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
@@ -104,19 +114,33 @@ pub fn resources_align(deploy_dir: PathBuf, working_dir: PathBuf, dry_run: bool,
                 fs::copy(resource, output_path)?;
             }
         } else if move_mode {
-                println!("DRYRUN: move {} to {}", resource.display(), output_path.display());
+            println!(
+                "DRYRUN: move {} to {}",
+                resource.display(),
+                output_path.display()
+            );
         } else {
-                println!("DRYRUN: copy {} to {}", resource.display(), output_path.display());
+            println!(
+                "DRYRUN: copy {} to {}",
+                resource.display(),
+                output_path.display()
+            );
         }
     }
     Ok(())
 }
 
-pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table: PathBuf, dry_run: bool, move_mode: bool) -> anyhow::Result<()> {
+pub fn deployments_align(
+    project_dir: PathBuf,
+    output_dir: PathBuf,
+    deploy_table: PathBuf,
+    dry_run: bool,
+    move_mode: bool,
+) -> anyhow::Result<()> {
     // TODO: add file/path filter
     let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
     let deploy_array = deploy_df["deploymentID"].utf8()?;
-    
+
     // deploy_array.into_iter()
     //     .for_each(|deploy| println!("{:?}", deploy))
 
@@ -125,7 +149,12 @@ pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
         let collection_output_dir = output_dir.join(collection_name);
-        resources_align(deploy_dir, collection_output_dir.clone(), dry_run, move_mode)?;
+        resources_align(
+            deploy_dir,
+            collection_output_dir.clone(),
+            dry_run,
+            move_mode,
+        )?;
     }
     // for entry in project_dir.read_dir().unwrap() {
     //     let collection_path = entry.unwrap().path();
@@ -141,8 +170,7 @@ pub fn deployments_align(project_dir: PathBuf, output_dir: PathBuf, deploy_table
     Ok(())
 }
 
-
-pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()>{
+pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
     // rename deployment path name to <deployment_name>_<collection_name>
     let mut count = 0;
     for entry in project_dir.read_dir()? {
@@ -156,16 +184,23 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     continue;
                 }
                 count += 1;
-                let collection_name = deploy_dir.parent().unwrap().file_name().unwrap().to_str().unwrap();
+                let collection_name = deploy_dir
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
                 if !deploy_name.contains(collection_name) {
                     if dry_run {
-                        println!("Will rename {} to {}_{}", deploy_name, deploy_name, collection_name);
+                        println!(
+                            "Will rename {} to {}_{}",
+                            deploy_name, deploy_name, collection_name
+                        );
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(
-                            format!("{}_{}", deploy_name, collection_name)
-                        );
+                        deploy_id_dir.set_file_name(format!("{}_{}", deploy_name, collection_name));
                         fs::rename(deploy_dir, deploy_id_dir)?;
                     }
                 }
@@ -181,10 +216,14 @@ pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i
     let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
-    
+
     diff >= chrono::Duration::minutes(min_delta_time.into())
 }
 
 pub fn get_path_seperator() -> &'static str {
-    if env::consts::OS == "windows" {r"\"} else {r"/"}
+    if env::consts::OS == "windows" {
+        r"\"
+    } else {
+        r"/"
+    }
 }
