@@ -204,36 +204,29 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .finish()?;
 
     // Readlines for parameter setup
-    // TODO: improve input parser
-    let mut input = String::new();
-    println!("Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
-    io::stdin().read_line(&mut input)?;
-    let min_delta_time = input.trim().parse().expect("Not a valid input");
-    input.clear();
+    use rustyline::error::ReadlineError;
+    use rustyline::{DefaultEditor, Result};
+    let mut rl = DefaultEditor::new()?;
+    let readline = rl.readline(
+        "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
+    let min_delta_time: i32 = readline?.trim().parse()?;
 
-    println!("The Minimum Time Difference should be compared with?");
-    println!("1) Last independent record 2) Last record");
-    println!("Enter a selection (e.g. 1): ");
-    io::stdin().read_line(&mut input)?;
-    let target_input: i32 = input.trim().parse().expect("Not a valid input");
-    let delta_time_compared_to = match target_input {
+    let readline = rl.readline(
+        "The Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
+    let delta_time_compared_to = match readline?.trim().parse()? {
         1 => "LastIndependentRecord",
         2 => "LastRecord",
-        _ => "LastRecord",
+        _ => "LastIndependentRecord",
     };
-    input.clear();
 
-    println!("Perform analysis on:");
-    println!("1) species 2) individual");
-    println!("Enter a selection (default=1): ");
-    io::stdin().read_line(&mut input)?;
-    let target_input: i32 = input.trim().parse().expect("Not a valid input");
-    let target = match target_input {
+    let readline = rl.readline(
+        "Perform analysis on:\n1) species 2) individual\nEnter a selection (default=1): ",
+    );
+    let target = match readline?.trim().parse()? {
         1 => TagType::Species,
         2 => TagType::Individual,
         _ => TagType::Species,
     };
-    input.clear();
 
     let path_sample = df.column("path")?.get(0)?.to_string();
     println!(
@@ -249,9 +242,8 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     {
         println!("{}): {}", i, entry.to_string_lossy().replace('"', ""));
     }
-    println!("Select the entry corresponding to deployment:");
-    io::stdin().read_line(&mut input)?;
-    let deploy_path_index: i32 = input.trim().parse::<i32>().expect("Not a valid input") + 1;
+    let readline = rl.readline("Select the entry corresponding to deployment: ");
+    let deploy_path_index = readline?.trim().parse::<i32>()? + 1;
 
     let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
