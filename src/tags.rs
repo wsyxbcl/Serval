@@ -213,14 +213,12 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
 
     let path_sample = df.column("path")?.get(0)?.to_string();
     println!("Here is a sample of the directory layout ({}): ", path_sample);
-    for (i, entry) in Path::new(&path_sample).iter().enumerate() {
-        if entry.to_string_lossy().len() > 0 {
-            println!("{}): {}", i, entry.to_string_lossy().replace('"', ""));
-        }
+    for (i, entry) in Path::new(&path_sample).parent().unwrap().iter().skip(1).enumerate() {
+        println!("{}): {}", i, entry.to_string_lossy().replace('"', ""));
     }
     println!("Select the entry corresponding to deployment:");
     io::stdin().read_line(&mut input)?;
-    let deploy_path_index:i32 = input.trim().parse().expect("Not a valid input");
+    let deploy_path_index:i32 = input.trim().parse::<i32>().expect("Not a valid input") + 1;
 
     let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
