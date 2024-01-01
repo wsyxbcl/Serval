@@ -5,7 +5,7 @@ use indicatif::ProgressBar;
 use polars::prelude::*;
 use rayon::prelude::*;
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -204,13 +204,58 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .finish()?;
 
     // Readlines for parameter setup
-    use rustyline::error::ReadlineError;
-    use rustyline::{DefaultEditor, Result};
-    let mut rl = DefaultEditor::new()?;
+    // Rustyline configurations
+    // use rustyline::error::ReadlineError;
+    use rustyline::{
+        Cmd, ConditionalEventHandler, Event, EventContext, EventHandler, KeyCode,
+        KeyEvent, Modifiers, RepeatCount, Result, Editor
+    };
+    use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+
+    use rustyline::{Completer, Helper, Highlighter, Hinter};
+
+    struct NumericFilteringHandler;
+    impl ConditionalEventHandler for NumericFilteringHandler {
+        fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
+            if let Some(KeyEvent(KeyCode::Char(c), m)) = evt.get(0) {
+                if m.contains(Modifiers::CTRL) || m.contains(Modifiers::ALT) || c.is_ascii_digit() {
+                    None
+                } else {
+                    Some(Cmd::Noop) // filter out invalid input
+                }
+            } else {
+                None
+            }
+        }
+    }
+    #[derive(Completer, Helper, Highlighter, Hinter)]
+    struct NumericSelectValidator {
+        min: i32,
+        max: i32,
+    }
+    impl Validator for NumericSelectValidator {
+        fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
+            use ValidationResult::{Invalid, Valid};
+            let input:i32 = ctx.input().parse().unwrap();
+            let result = if !(input >= self.min && input <= self.max) {
+                Invalid(Some(format!(" --< Expect: number between {} and {}", self.min, self.max)))
+            } else {
+                Valid(None)
+            };
+            Ok(result)
+        }
+    }
+    let mut rl = Editor::new()?;    rl.bind_sequence(
+        Event::Any,
+        EventHandler::Conditional(Box::new(NumericFilteringHandler)), // Force numerical input
+    );
+    // Read min_delta_time
     let readline = rl.readline(
         "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
     let min_delta_time: i32 = readline?.trim().parse()?;
-
+    // Read delta_time_compared_to
+    let h = NumericSelectValidator { min: 1, max: 2};
+    rl.set_helper(Some(h));
     let readline = rl.readline(
         "The Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
     let delta_time_compared_to = match readline?.trim().parse()? {
@@ -218,21 +263,24 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         2 => "LastRecord",
         _ => "LastIndependentRecord",
     };
-
+    // Get target (species/individual)
+    let h = NumericSelectValidator { min: 1, max: 2};
+    rl.set_helper(Some(h));
     let readline = rl.readline(
-        "Perform analysis on:\n1) species 2) individual\nEnter a selection (default=1): ",
+        "Perform analysis on:\n1) species 2) individual\nEnter a selection: ",
     );
     let target = match readline?.trim().parse()? {
         1 => TagType::Species,
         2 => TagType::Individual,
         _ => TagType::Species,
     };
-
+    // Find deployment
     let path_sample = df.column("path")?.get(0)?.to_string();
     println!(
-        "Here is a sample of the directory layout ({}): ",
+        "Here is a sample of the file path ({}): ",
         path_sample
     );
+    let mut num_option = 0;
     for (i, entry) in Path::new(&path_sample)
         .parent()
         .unwrap()
@@ -240,10 +288,13 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .skip(1)
         .enumerate()
     {
-        println!("{}): {}", i, entry.to_string_lossy().replace('"', ""));
+        println!("{}): {}", i + 1, entry.to_string_lossy().replace('"', ""));
+        num_option += 1;
     }
-    let readline = rl.readline("Select the entry corresponding to deployment: ");
-    let deploy_path_index = readline?.trim().parse::<i32>()? + 1;
+    let h = NumericSelectValidator { min: 1, max: num_option};
+    rl.set_helper(Some(h));
+    let readline = rl.readline("Select the entry corresponding to the deployment: ");
+    let deploy_path_index = readline?.trim().parse::<i32>()?;
 
     let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
