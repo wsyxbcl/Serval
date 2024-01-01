@@ -236,7 +236,12 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     impl Validator for NumericSelectValidator {
         fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
             use ValidationResult::{Invalid, Valid};
-            let input: i32 = ctx.input().parse().unwrap();
+            let input: i32;
+            if ctx.input() == "" {
+                return Ok(Invalid(Some(" --< Expect numeric input".to_owned())))
+            } else {
+                input = ctx.input().parse().unwrap();
+            }
             let result = if !(input >= self.min && input <= self.max) {
                 Invalid(Some(format!(
                     " --< Expect: number between {} and {}",
