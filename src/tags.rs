@@ -206,11 +206,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Readlines for parameter setup
     // Rustyline configurations
     // use rustyline::error::ReadlineError;
-    use rustyline::{
-        Cmd, ConditionalEventHandler, Event, EventContext, EventHandler, KeyCode,
-        KeyEvent, Modifiers, RepeatCount, Result, Editor
-    };
     use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+    use rustyline::{
+        Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyCode, KeyEvent,
+        Modifiers, RepeatCount, Result,
+    };
 
     use rustyline::{Completer, Helper, Highlighter, Hinter};
 
@@ -236,16 +236,20 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     impl Validator for NumericSelectValidator {
         fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
             use ValidationResult::{Invalid, Valid};
-            let input:i32 = ctx.input().parse().unwrap();
+            let input: i32 = ctx.input().parse().unwrap();
             let result = if !(input >= self.min && input <= self.max) {
-                Invalid(Some(format!(" --< Expect: number between {} and {}", self.min, self.max)))
+                Invalid(Some(format!(
+                    " --< Expect: number between {} and {}",
+                    self.min, self.max
+                )))
             } else {
                 Valid(None)
             };
             Ok(result)
         }
     }
-    let mut rl = Editor::new()?;    rl.bind_sequence(
+    let mut rl = Editor::new()?;
+    rl.bind_sequence(
         Event::Any,
         EventHandler::Conditional(Box::new(NumericFilteringHandler)), // Force numerical input
     );
@@ -254,7 +258,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
     let min_delta_time: i32 = readline?.trim().parse()?;
     // Read delta_time_compared_to
-    let h = NumericSelectValidator { min: 1, max: 2};
+    let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
     let readline = rl.readline(
         "The Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
@@ -264,11 +268,10 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         _ => "LastIndependentRecord",
     };
     // Get target (species/individual)
-    let h = NumericSelectValidator { min: 1, max: 2};
+    let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "Perform analysis on:\n1) species 2) individual\nEnter a selection: ",
-    );
+    let readline =
+        rl.readline("Perform analysis on:\n1) species 2) individual\nEnter a selection: ");
     let target = match readline?.trim().parse()? {
         1 => TagType::Species,
         2 => TagType::Individual,
@@ -276,10 +279,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     };
     // Find deployment
     let path_sample = df.column("path")?.get(0)?.to_string();
-    println!(
-        "Here is a sample of the file path ({}): ",
-        path_sample
-    );
+    println!("Here is a sample of the file path ({}): ", path_sample);
     let mut num_option = 0;
     for (i, entry) in Path::new(&path_sample)
         .parent()
@@ -291,7 +291,10 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         println!("{}): {}", i + 1, entry.to_string_lossy().replace('"', ""));
         num_option += 1;
     }
-    let h = NumericSelectValidator { min: 1, max: num_option};
+    let h = NumericSelectValidator {
+        min: 1,
+        max: num_option,
+    };
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the entry corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
