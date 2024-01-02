@@ -19,3 +19,7 @@ rustyline = { version = "13.0.0", features = ["derive"] }
 walkdir = "2.4.0"
 xmp_toolkit = "1.6.0"
 
+[profile.release-lto]
+inherits = "release"
+opt-level = "s"
+lto = true
