@@ -213,11 +213,9 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // exclude: species individuals to be excluded
     // deploy_path_index: index used to determine deployments from paths
     let df = CsvReader::from_path(csv_path)?
-        .infer_schema(None)
         .has_header(true)
         .with_try_parse_dates(true)
         .finish()?;
-
     // Readlines for parameter setup
     // Rustyline configurations
     // use rustyline::error::ReadlineError;
