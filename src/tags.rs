@@ -104,10 +104,17 @@ pub fn get_classifications(
         let result: Vec<_> = (0..num_images)
             .into_par_iter()
             .map(|i| {
-                let (species, individuals, datetime_original) =
-                    retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()).unwrap();
-                pb.inc(1);
-                (species.join(","), individuals.join(","), datetime_original)
+                match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
+                    Ok((species, individuals, datetime_original)) => {
+                        pb.inc(1);
+                        (species.join(","), individuals.join(","), datetime_original)
+                    },
+                    Err(error) => {
+                        pb.println(format!("{} in {}", error, file_paths[i].display()));
+                        pb.inc(1);
+                        ("".to_string(), "".to_string(), "".to_string())
+                    }
+                }
             })
             .collect();
         for tag in result {
@@ -117,11 +124,19 @@ pub fn get_classifications(
         }
     } else {
         for path in file_paths {
-            let (species, individuals, datetime_original) =
-                retrieve_taglist(&path.to_string_lossy().into_owned())?;
-            species_tags.push(species.join(","));
-            individual_tags.push(individuals.join(","));
-            datetime_originals.push(datetime_original);
+            match retrieve_taglist(&path.to_string_lossy().into_owned()) {
+                Ok((species, individuals, datetime_original)) => {
+                    species_tags.push(species.join(","));
+                    individual_tags.push(individuals.join(","));
+                    datetime_originals.push(datetime_original);
+                },
+                Err(error) => {
+                    pb.println(format!("{} in {}", error, path.display()));
+                    species_tags.push("".to_string());
+                    individual_tags.push("".to_string());
+                    datetime_originals.push("".to_string());
+                }
+            }
             pb.inc(1);
         }
     }
