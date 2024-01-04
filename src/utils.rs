@@ -5,7 +5,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-use walkdir::WalkDir;
+use walkdir::{WalkDir, DirEntry};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ResourceType {
@@ -60,10 +60,19 @@ impl TagType {
     }
 }
 
+
+fn is_ignored(entry: &DirEntry) -> bool {
+    entry.file_name()
+        .to_str()
+        .map(|s| s.starts_with('.') || s.contains("精选")) // ignore 精选 and .dtrash
+        .unwrap_or(false)
+}
+
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = vec![];
     for entry in WalkDir::new(root_dir)
         .into_iter()
+        .filter_entry(|e| !is_ignored(e))
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
     {

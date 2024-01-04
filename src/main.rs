@@ -3,7 +3,7 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{get_classifications, get_temporal_independence, write_taglist};
+use tags::{get_classifications, get_temporal_independence, write_taglist, extract_species};
 use utils::{deployments_align, deployments_rename, resources_align};
 
 fn main() -> anyhow::Result<()> {
@@ -72,6 +72,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Capture { csv_path, output } => {
             get_temporal_independence(csv_path.canonicalize()?, output)?;
+        }
+        Commands::Extract { csv_path, species, output } => {
+            extract_species(species, csv_path, output)?;
         }
     }
     Ok(())
@@ -159,4 +162,17 @@ enum Commands {
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
     },
+    /// Extract and copy images containing target species (based on tags.csv)
+    #[command(arg_required_else_help = true)]
+    Extract {
+        /// Path for tags.csv
+        csv_path: PathBuf,
+        /// Target species
+        #[arg(long, value_name = "SPECIES", required = true)]
+        species: String,
+        /// Output directory
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        output: PathBuf,
+        
+    }
 }

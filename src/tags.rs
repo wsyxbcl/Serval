@@ -11,6 +11,56 @@ use std::{
 };
 use xmp_toolkit::{xmp_ns, OpenFileOptions, XmpFile, XmpMeta, XmpValue};
 
+// Rustyline configurations
+// use rustyline::error::ReadlineError;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyCode, KeyEvent,
+    Modifiers, RepeatCount, Result,
+};
+
+use rustyline::{Completer, Helper, Highlighter, Hinter};
+
+struct NumericFilteringHandler;
+impl ConditionalEventHandler for NumericFilteringHandler {
+    fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
+        if let Some(KeyEvent(KeyCode::Char(c), m)) = evt.get(0) {
+            if m.contains(Modifiers::CTRL) || m.contains(Modifiers::ALT) || c.is_ascii_digit() {
+                None
+            } else {
+                Some(Cmd::Noop) // filter out invalid input
+            }
+        } else {
+            None
+        }
+    }
+}
+#[derive(Completer, Helper, Highlighter, Hinter)]
+struct NumericSelectValidator {
+    min: i32,
+    max: i32,
+}
+impl Validator for NumericSelectValidator {
+    fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
+        use ValidationResult::{Invalid, Valid};
+        let input: i32;
+        if ctx.input() == "" {
+            return Ok(Invalid(Some(" --< Expect numeric input".to_owned())))
+        } else {
+            input = ctx.input().parse().unwrap();
+        }
+        let result = if !(input >= self.min && input <= self.max) {
+            Invalid(Some(format!(
+                " --< Expect: number between {} and {}",
+                self.min, self.max
+            )))
+        } else {
+            Valid(None)
+        };
+        Ok(result)
+    }
+}
+
 pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Result<()> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
@@ -206,66 +256,65 @@ pub fn get_classifications(
     Ok(())
 }
 
+pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+    let df = CsvReader::from_path(csv_path)?
+        .has_header(true)
+        .with_try_parse_dates(true)
+        .finish()?;
+    let df_filtered = df
+        .clone()
+        .lazy()
+        .filter(col("species").eq(lit(target_species)))
+        .select([
+            col("path"),
+        ])
+        .collect()?;
+    // println!("{}", df_cleaned);
+
+    // Get the top level directory (to keep)
+    let path_sample = df_filtered["path"].get(0)?.to_string();
+    println!("Here is a sample of the file path ({}): ", path_sample);
+    let mut num_option = 0;
+    for (i, entry) in Path::new(&path_sample)
+        .parent()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .enumerate()
+    {
+        println!("{}): {}", i + 1, entry.to_string_lossy().replace('"', ""));
+        num_option += 1;
+    }
+    
+    let mut rl = Editor::new()?;
+    let h = NumericSelectValidator {
+        min: 1,
+        max: num_option,
+    };
+    rl.set_helper(Some(h));
+    let readline = rl.readline("Select the top level directory to keep: ");
+    let deploy_path_index = readline?.trim().parse::<usize>()?;
+    let path_strip= Path::new(&path_sample).ancestors().nth(num_option as usize - deploy_path_index + 2).unwrap();
+    println!("{}", path_strip.to_str().unwrap());
+    for path in df_filtered["path"].utf8()?.into_iter() {
+        let relative_path_output = Path::new(path.unwrap()).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+        let output_path = output_dir.join(relative_path_output);
+        println!("{}", output_path.to_string_lossy());
+        fs::create_dir_all(output_path.parent().unwrap())?;
+        fs::copy(path.unwrap(), output_path.clone())?;
+        println!("Copied to {}", output_path.to_string_lossy());
+    }
+    Ok(())
+}
+
 pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
-    // Remove non-independent records
-    // min_delta_time: the minimum time (minutes) difference betwween two independent captures
-    // target: "species"
-    // exclude: species individuals to be excluded
-    // deploy_path_index: index used to determine deployments from paths
+    // Temporal independence analysis
+
     let df = CsvReader::from_path(csv_path)?
         .has_header(true)
         .with_try_parse_dates(true)
         .finish()?;
     // Readlines for parameter setup
-    // Rustyline configurations
-    // use rustyline::error::ReadlineError;
-    use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-    use rustyline::{
-        Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyCode, KeyEvent,
-        Modifiers, RepeatCount, Result,
-    };
-
-    use rustyline::{Completer, Helper, Highlighter, Hinter};
-
-    struct NumericFilteringHandler;
-    impl ConditionalEventHandler for NumericFilteringHandler {
-        fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
-            if let Some(KeyEvent(KeyCode::Char(c), m)) = evt.get(0) {
-                if m.contains(Modifiers::CTRL) || m.contains(Modifiers::ALT) || c.is_ascii_digit() {
-                    None
-                } else {
-                    Some(Cmd::Noop) // filter out invalid input
-                }
-            } else {
-                None
-            }
-        }
-    }
-    #[derive(Completer, Helper, Highlighter, Hinter)]
-    struct NumericSelectValidator {
-        min: i32,
-        max: i32,
-    }
-    impl Validator for NumericSelectValidator {
-        fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
-            use ValidationResult::{Invalid, Valid};
-            let input: i32;
-            if ctx.input() == "" {
-                return Ok(Invalid(Some(" --< Expect numeric input".to_owned())))
-            } else {
-                input = ctx.input().parse().unwrap();
-            }
-            let result = if !(input >= self.min && input <= self.max) {
-                Invalid(Some(format!(
-                    " --< Expect: number between {} and {}",
-                    self.min, self.max
-                )))
-            } else {
-                Valid(None)
-            };
-            Ok(result)
-        }
-    }
     let mut rl = Editor::new()?;
     rl.bind_sequence(
         Event::Any,
