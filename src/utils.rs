@@ -1,11 +1,11 @@
 use chrono::NaiveDateTime;
 use core::fmt;
 use polars::prelude::*;
+use std::io;
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-use std::io;
 use walkdir::{DirEntry, WalkDir};
 
 #[derive(Clone, Copy, Debug)]

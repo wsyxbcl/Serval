@@ -1,5 +1,6 @@
 use crate::utils::{
-    get_path_seperator, is_temporal_independent, path_enumerate, ResourceType, TagType, absolute_path
+    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ResourceType,
+    TagType,
 };
 use indicatif::ProgressBar;
 use polars::prelude::*;
@@ -43,7 +44,7 @@ impl Validator for NumericSelectValidator {
         use ValidationResult::{Invalid, Valid};
         let input: i32;
         if ctx.input() == "" {
-            return Ok(Invalid(Some(" --< Expect numeric input".to_owned())))
+            return Ok(Invalid(Some(" --< Expect numeric input".to_owned())));
         } else {
             input = ctx.input().parse().unwrap();
         }
@@ -151,19 +152,19 @@ pub fn get_classifications(
     if parallel {
         let result: Vec<_> = (0..num_images)
             .into_par_iter()
-            .map(|i| {
-                match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
+            .map(
+                |i| match retrieve_taglist(&file_paths[i].to_string_lossy().into_owned()) {
                     Ok((species, individuals, datetime_original)) => {
                         pb.inc(1);
                         (species.join(","), individuals.join(","), datetime_original)
-                    },
+                    }
                     Err(error) => {
                         pb.println(format!("{} in {}", error, file_paths[i].display()));
                         pb.inc(1);
                         ("".to_string(), "".to_string(), "".to_string())
                     }
-                }
-            })
+                },
+            )
             .collect();
         for tag in result {
             species_tags.push(tag.0);
@@ -177,7 +178,7 @@ pub fn get_classifications(
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
                     datetime_originals.push(datetime_original);
-                },
+                }
                 Err(error) => {
                     pb.println(format!("{} in {}", error, path.display()));
                     species_tags.push("".to_string());
@@ -254,7 +255,11 @@ pub fn get_classifications(
     Ok(())
 }
 
-pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+pub fn extract_species(
+    target_species: String,
+    csv_path: PathBuf,
+    output_dir: PathBuf,
+) -> anyhow::Result<()> {
     let df = CsvReader::from_path(csv_path)?
         .has_header(true)
         .with_try_parse_dates(true)
@@ -263,9 +268,7 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
         .clone()
         .lazy()
         .filter(col("species").eq(lit(target_species)))
-        .select([
-            col("path"),
-        ])
+        .select([col("path")])
         .collect()?;
     // println!("{}", df_filtered);
 
@@ -282,7 +285,7 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
         println!("{}): {}", i + 1, entry.to_string_lossy());
         num_option += 1;
     }
-    
+
     let mut rl = Editor::new()?;
     let h = NumericSelectValidator {
         min: 1,
@@ -291,20 +294,27 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
     let deploy_path_index = readline?.trim().parse::<usize>()?;
-    let path_strip= Path::new(&path_sample).ancestors().nth(deploy_path_index + 1).unwrap();
-    println!("{:?}", path_strip);
+    let path_strip = Path::new(&path_sample)
+        .ancestors()
+        .nth(deploy_path_index + 1)
+        .unwrap();
+    let pb = ProgressBar::new(df_filtered["path"].len().try_into().unwrap());
+
     for path in df_filtered["path"].utf8()?.into_iter() {
         let input_path = if path.unwrap().ends_with(".xmp") {
             path.unwrap().strip_suffix(".xmp").unwrap()
         } else {
             path.unwrap()
         };
-        let relative_path_output = Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+        let relative_path_output =
+            Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
         let output_path = output_dir.join(relative_path_output);
         fs::create_dir_all(output_path.parent().unwrap())?;
         fs::copy(input_path, output_path.clone())?;
-        println!("Copied to {}", output_path.to_string_lossy());
+        pb.println(format!("Copied to {}", output_path.to_string_lossy()));
+        pb.inc(1);
     }
+    pb.finish_with_message("done");
     Ok(())
 }
 

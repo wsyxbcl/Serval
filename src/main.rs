@@ -4,7 +4,7 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{extract_species, get_classifications, get_temporal_independence, write_taglist};
-use utils::{deployments_align, deployments_rename, resources_align, absolute_path};
+use utils::{absolute_path, deployments_align, deployments_rename, resources_align};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
