@@ -294,10 +294,15 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
     let path_strip= Path::new(&path_sample).ancestors().nth(deploy_path_index + 1).unwrap();
     println!("{:?}", path_strip);
     for path in df_filtered["path"].utf8()?.into_iter() {
-        let relative_path_output = Path::new(path.unwrap()).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+        let input_path = if path.unwrap().ends_with(".xmp") {
+            path.unwrap().strip_suffix(".xmp").unwrap()
+        } else {
+            path.unwrap()
+        };
+        let relative_path_output = Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
         let output_path = output_dir.join(relative_path_output);
         fs::create_dir_all(output_path.parent().unwrap())?;
-        fs::copy(path.unwrap(), output_path.clone())?;
+        fs::copy(input_path, output_path.clone())?;
         println!("Copied to {}", output_path.to_string_lossy());
     }
     Ok(())
