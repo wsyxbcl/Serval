@@ -1,5 +1,5 @@
 use crate::utils::{
-    get_path_seperator, is_temporal_independent, path_enumerate, ResourceType, TagType,
+    get_path_seperator, is_temporal_independent, path_enumerate, ResourceType, TagType, absolute_path
 };
 use indicatif::ProgressBar;
 use polars::prelude::*;
@@ -10,8 +10,6 @@ use std::{
     str::FromStr,
 };
 use xmp_toolkit::{xmp_ns, OpenFileOptions, XmpFile, XmpMeta, XmpValue};
-
-// Rustyline configurations
 // use rustyline::error::ReadlineError;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{
@@ -269,20 +267,19 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
             col("path"),
         ])
         .collect()?;
-    // println!("{}", df_cleaned);
+    // println!("{}", df_filtered);
 
     // Get the top level directory (to keep)
-    let path_sample = df_filtered["path"].get(0)?.to_string();
+    let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
     println!("Here is a sample of the file path ({}): ", path_sample);
     let mut num_option = 0;
-    for (i, entry) in Path::new(&path_sample)
+    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
         .unwrap()
-        .iter()
-        .skip(1)
+        .ancestors()
         .enumerate()
     {
-        println!("{}): {}", i + 1, entry.to_string_lossy().replace('"', ""));
+        println!("{}): {}", i + 1, entry.to_string_lossy());
         num_option += 1;
     }
     
@@ -294,12 +291,11 @@ pub fn extract_species(target_species: String, csv_path: PathBuf, output_dir: Pa
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
     let deploy_path_index = readline?.trim().parse::<usize>()?;
-    let path_strip= Path::new(&path_sample).ancestors().nth(num_option as usize - deploy_path_index + 2).unwrap();
-    println!("{}", path_strip.to_str().unwrap());
+    let path_strip= Path::new(&path_sample).ancestors().nth(deploy_path_index + 1).unwrap();
+    println!("{:?}", path_strip);
     for path in df_filtered["path"].utf8()?.into_iter() {
         let relative_path_output = Path::new(path.unwrap()).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
         let output_path = output_dir.join(relative_path_output);
-        println!("{}", output_path.to_string_lossy());
         fs::create_dir_all(output_path.parent().unwrap())?;
         fs::copy(path.unwrap(), output_path.clone())?;
         println!("Copied to {}", output_path.to_string_lossy());
@@ -345,17 +341,16 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         _ => TagType::Species,
     };
     // Find deployment
-    let path_sample = df.column("path")?.get(0)?.to_string();
+    let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
     println!("Here is a sample of the file path ({}): ", path_sample);
     let mut num_option = 0;
-    for (i, entry) in Path::new(&path_sample)
+    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
         .unwrap()
-        .iter()
-        .skip(1)
+        .ancestors()
         .enumerate()
     {
-        println!("{}): {}", i + 1, entry.to_string_lossy().replace('"', ""));
+        println!("{}): {}", i + 1, entry.to_string_lossy());
         num_option += 1;
     }
     let h = NumericSelectValidator {
@@ -363,7 +358,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         max: num_option,
     };
     rl.set_helper(Some(h));
-    let readline = rl.readline("Select the entry corresponding to the deployment: ");
+    let readline = rl.readline("Select the path corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
     let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
@@ -378,7 +373,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 .str()
                 .split(lit(get_path_seperator()))
                 .list()
-                .get(lit(deploy_path_index))
+                .get(lit(num_option - deploy_path_index))
                 .alias("deployment"),
             col("filename"),
             col("datetime_original").alias("time"),

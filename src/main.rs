@@ -3,8 +3,8 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{get_classifications, get_temporal_independence, write_taglist, extract_species};
-use utils::{deployments_align, deployments_rename, resources_align};
+use tags::{extract_species, get_classifications, get_temporal_independence, write_taglist};
+use utils::{deployments_align, deployments_rename, resources_align, absolute_path};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
             if project {
                 println!("Aligning deployments in {}", path.display());
                 deployments_align(
-                    path.canonicalize()?,
+                    absolute_path(path)?,
                     output,
                     deploy_table,
                     dryrun,
@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
                 )?;
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(path.canonicalize()?, output, dryrun, move_mode)?;
+                resources_align(absolute_path(path)?, output, dryrun, move_mode)?;
             }
         }
         Commands::Observe {
@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             if xmp {
                 get_classifications(
-                    media_dir.canonicalize()?,
+                    absolute_path(media_dir)?,
                     output,
                     parallel,
                     utils::ResourceType::Xmp,
@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             } else {
                 // Image only currently
                 get_classifications(
-                    media_dir.canonicalize()?,
+                    absolute_path(media_dir)?,
                     output,
                     parallel,
                     utils::ResourceType::Image,
@@ -62,18 +62,22 @@ fn main() -> anyhow::Result<()> {
             project_dir,
             dryrun,
         } => {
-            deployments_rename(project_dir.canonicalize()?, dryrun)?;
+            deployments_rename(absolute_path(project_dir)?, dryrun)?;
         }
         Commands::Tags2img {
             taglist_path,
             image_path,
         } => {
-            write_taglist(taglist_path.canonicalize()?, image_path)?;
+            write_taglist(absolute_path(taglist_path)?, image_path)?;
         }
         Commands::Capture { csv_path, output } => {
-            get_temporal_independence(csv_path.canonicalize()?, output)?;
+            get_temporal_independence(absolute_path(csv_path)?, output)?;
         }
-        Commands::Extract { csv_path, species, output } => {
+        Commands::Extract {
+            csv_path,
+            species,
+            output,
+        } => {
             extract_species(species, csv_path, output)?;
         }
     }
@@ -173,6 +177,5 @@ enum Commands {
         /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
-        
-    }
+    },
 }

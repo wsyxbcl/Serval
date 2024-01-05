@@ -5,7 +5,8 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-use walkdir::{WalkDir, DirEntry};
+use std::io;
+use walkdir::{DirEntry, WalkDir};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ResourceType {
@@ -60,12 +61,35 @@ impl TagType {
     }
 }
 
-
 fn is_ignored(entry: &DirEntry) -> bool {
-    entry.file_name()
+    entry
+        .file_name()
         .to_str()
         .map(|s| s.starts_with('.') || s.contains("精选")) // ignore 精选 and .dtrash
         .unwrap_or(false)
+}
+
+// workaround for https://github.com/rust-lang/rust/issues/42869
+// ref. https://github.com/sharkdp/fd/pull/72/files
+fn path_to_absolute(path: PathBuf) -> io::Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let path = path.strip_prefix(".").unwrap_or(&path);
+    env::current_dir().map(|current_dir| current_dir.join(path))
+}
+
+pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
+    let path_buf = path_to_absolute(path)?;
+    #[cfg(windows)]
+    let path_buf = Path::new(
+        path_buf
+            .as_path()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\"),
+    )
+    .to_path_buf();
+    Ok(path_buf)
 }
 
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
