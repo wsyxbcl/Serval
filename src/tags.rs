@@ -262,6 +262,7 @@ pub fn extract_species(
 ) -> anyhow::Result<()> {
     let df = CsvReader::from_path(csv_path)?
         .has_header(true)
+        .with_ignore_errors(true)
         .with_try_parse_dates(true)
         .finish()?;
     let df_filtered = df
@@ -323,6 +324,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
 
     let df = CsvReader::from_path(csv_path)?
         .has_header(true)
+        .with_ignore_errors(true)
         .with_try_parse_dates(true)
         .finish()?;
     // Readlines for parameter setup
