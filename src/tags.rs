@@ -341,7 +341,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
     let readline = rl.readline(
-        "The Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
+        "\nThe Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
     let delta_time_compared_to = match readline?.trim().parse()? {
         1 => "LastIndependentRecord",
         2 => "LastRecord",
@@ -351,7 +351,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
     let readline =
-        rl.readline("Perform analysis on:\n1) species 2) individual\nEnter a selection: ");
+        rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection: ");
     let target = match readline?.trim().parse()? {
         1 => TagType::Species,
         2 => TagType::Individual,
@@ -359,7 +359,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     };
     // Find deployment
     let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
-    println!("Here is a sample of the file path ({}): ", path_sample);
+    println!("\nHere is a sample of the file path ({})", path_sample);
     let mut num_option = 0;
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
