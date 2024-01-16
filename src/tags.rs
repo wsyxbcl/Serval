@@ -1,6 +1,6 @@
 use crate::utils::{
     absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ResourceType,
-    TagType,
+    TagType, ExtractFilterType
 };
 use indicatif::ProgressBar;
 use polars::prelude::*;
@@ -255,8 +255,9 @@ pub fn get_classifications(
     Ok(())
 }
 
-pub fn extract_species(
-    target_species: String,
+pub fn extract_resources(
+    filter_value: String,
+    filter_type: ExtractFilterType,
     csv_path: PathBuf,
     output_dir: PathBuf,
 ) -> anyhow::Result<()> {
@@ -265,12 +266,28 @@ pub fn extract_species(
         .with_ignore_errors(true)
         .with_try_parse_dates(true)
         .finish()?;
-    let df_filtered = df
-        .clone()
-        .lazy()
-        .filter(col("species").eq(lit(target_species)))
-        .select([col("path")])
-        .collect()?;
+    let df_filtered: DataFrame;
+    match filter_type {
+        ExtractFilterType::Species => {
+            df_filtered = df
+                .clone()
+                .lazy()
+                .filter(col("species").eq(lit(filter_value)))
+                .select([col("path")])
+                .collect()?;
+        },
+        ExtractFilterType::PathRegex => {
+            df_filtered = df
+                .clone()
+                .lazy()
+                .filter(col("path").str().contains_literal(lit(filter_value)))
+                .collect()?;
+        },
+        _ => {
+            return Ok(());
+        }
+    }
+
     // println!("{}", df_filtered);
 
     // Get the top level directory (to keep)

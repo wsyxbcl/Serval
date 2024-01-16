@@ -13,7 +13,7 @@ anyhow = "1.0.78"
 chrono = "0.4.31"
 clap = { version = "4.4.7", features = ["derive"] }
 indicatif = "0.17.7"
-polars = { version = "0.34.2", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by"] }
+polars = { version = "0.34.2", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "lazy_regex"] }
 rayon = "1.8.0"
 rustyline = { version = "13.0.0", features = ["derive"] }
 walkdir = "2.4.0"

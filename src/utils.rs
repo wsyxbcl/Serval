@@ -12,7 +12,7 @@ use walkdir::{DirEntry, WalkDir};
 pub enum ResourceType {
     Xmp,
     Image,
-    _Video, // TODO: video support
+    Video,
 }
 
 impl fmt::Display for ResourceType {
@@ -25,7 +25,7 @@ impl ResourceType {
     fn extension(self) -> Vec<&'static str> {
         match self {
             ResourceType::Image => vec!["jpg", "jpeg", "png"],
-            ResourceType::_Video => vec!["avi", "mp4"],
+            ResourceType::Video => vec!["avi", "mp4", "mov"],
             ResourceType::Xmp => vec!["xmp"],
         }
     }
@@ -59,6 +59,13 @@ impl TagType {
             TagType::Species => "species",
         }
     }
+}
+
+pub enum ExtractFilterType {
+    Species,
+    PathRegex,
+    _Individual,
+    _Favorite,
 }
 
 fn is_ignored(entry: &DirEntry) -> bool {

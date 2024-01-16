@@ -3,8 +3,8 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{extract_species, get_classifications, get_temporal_independence, write_taglist};
-use utils::{absolute_path, deployments_align, deployments_rename, resources_align};
+use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
+use utils::{absolute_path, deployments_align, deployments_rename, resources_align, ExtractFilterType};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
             output,
             parallel,
             xmp,
+            video,
             independent,
         } => {
             if xmp {
@@ -47,8 +48,15 @@ fn main() -> anyhow::Result<()> {
                     utils::ResourceType::Xmp,
                     independent,
                 )?;
+            } else if video {
+                get_classifications(
+                    absolute_path(media_dir)?,
+                    output,
+                    parallel,
+                    utils::ResourceType::Video,
+                    independent,
+                )?;                
             } else {
-                // Image only currently
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
@@ -75,10 +83,15 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Extract {
             csv_path,
-            species,
+            filter_value,
+            filter_type,
             output,
         } => {
-            extract_species(species, csv_path, output)?;
+            if filter_type == "species" {
+                extract_resources(filter_value, ExtractFilterType::Species, csv_path, output)?;
+            } else if filter_type == "path" {
+                extract_resources(filter_value, ExtractFilterType::PathRegex ,csv_path, output)?;
+            }
         }
     }
     Ok(())
@@ -135,6 +148,10 @@ enum Commands {
         /// Read from XMP
         #[arg(long)]
         xmp: bool,
+        
+        /// Video only
+        #[arg(long)]
+        video: bool,
 
         /// Temporal independence analysis after retrieving
         #[arg(short, long)]
@@ -166,14 +183,17 @@ enum Commands {
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
     },
-    /// Extract and copy images containing target species (based on tags.csv)
+    /// Extract and copy resources by filtering target value (based on tags.csv)
     #[command(arg_required_else_help = true)]
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
-        /// Target species
-        #[arg(long, value_name = "SPECIES", required = true)]
-        species: String,
+        /// Target column
+        #[arg(long, value_name = "COLUMN", required = true)]
+        filter_type: String,
+        /// Target value (or regex for the path)
+        #[arg(long, value_name = "VALUE", required = true)]
+        filter_value: String,
         /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
