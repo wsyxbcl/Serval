@@ -135,10 +135,10 @@ pub fn get_classifications(
         .into_iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
-    let image_names: Vec<String> = file_paths
+    let image_filenames: Vec<String> = file_paths
         .clone()
         .into_iter()
-        .map(|x| x.file_stem().unwrap().to_string_lossy().into_owned())
+        .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     let num_images = file_paths.len();
     println!("Total {}: {}.", resource_type, num_images);
@@ -197,7 +197,7 @@ pub fn get_classifications(
 
     let df_raw = DataFrame::new(vec![
         Series::new("path", image_paths),
-        Series::new("filename", image_names),
+        Series::new("filename", image_filenames),
         s_species,
         s_individuals,
         s_datetime,
