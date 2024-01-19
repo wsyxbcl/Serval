@@ -85,42 +85,39 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
 }
 
 fn retrieve_taglist(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<String>, String, String)> {
-    // Digitized time in fexif
-    let mut datetime_digitized = String::new();
-    let file = std::fs::File::open(file_path)?;
-    let mut bufreader = std::io::BufReader::new(file);
-    let exifreader = exif::Reader::new();
-    let exif = exifreader.read_from_container(&mut bufreader)?;
-    if let Some(datetime) = exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY) {
-        datetime_digitized = datetime.display_value().with_unit(&exif).to_string();
-    }
-    // Retrieve digikam taglist and datetime from file
-    let mut f = XmpFile::new()?;
-    f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
-
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
     let mut datetime_original = String::new();
+    let mut datetime_digitized = String::new();
 
-    let xmp = match f.xmp() {
-        Some(xmp) => xmp,
-        None => return Ok((species, individuals, datetime_original, datetime_digitized)),
-    };
-
-    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-        datetime_original = value.value.to_string();
+    // Digitized time in exif
+    let file = std::fs::File::open(file_path)?;
+    let mut bufreader = std::io::BufReader::new(file);
+    let exifreader = exif::Reader::new();
+    if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
+        if let Some(datetime) = exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY) {
+            datetime_digitized = datetime.display_value().with_unit(&exif).to_string();
+        }
     }
+    // Retrieve digikam taglist and datetime from file
+    let mut f = XmpFile::new()?;
+    if let Ok(_) = f.open_file(file_path, OpenFileOptions::default().only_xmp()) {
+        let xmp = f.xmp().unwrap();
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            datetime_original = value.value.to_string();
+        }
 
-    // Register the digikam namespace
-    let ns_digikam = "http://www.digikam.org/ns/1.0/";
-    XmpMeta::register_namespace(ns_digikam, "digiKam")?;
+        // Register the digikam namespace
+        let ns_digikam = "http://www.digikam.org/ns/1.0/";
+        XmpMeta::register_namespace(ns_digikam, "digiKam")?;
 
-    for property in xmp.property_array(ns_digikam, "TagsList") {
-        let tag = property.value;
-        if tag.starts_with("Species/") {
-            species.push(tag.strip_prefix("Species/").unwrap().to_string());
-        } else if tag.starts_with("Individual/") {
-            individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+        for property in xmp.property_array(ns_digikam, "TagsList") {
+            let tag = property.value;
+            if tag.starts_with("Species/") {
+                species.push(tag.strip_prefix("Species/").unwrap().to_string());
+            } else if tag.starts_with("Individual/") {
+                individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+            }
         }
     }
     Ok((species, individuals, datetime_original, datetime_digitized))
@@ -216,7 +213,6 @@ pub fn get_classifications(
         s_datetime_original,
         s_datetime_digitized
     ])?;
-    println!("{:?}", df_raw);
 
     let df_split = df_raw
         .clone()
