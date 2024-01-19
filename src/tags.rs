@@ -2,9 +2,9 @@ use crate::utils::{
     absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ResourceType,
     TagType,
 };
-use chrono::{Local, DateTime, Utc};
+use chrono::{DateTime, Utc};
 use indicatif::ProgressBar;
-use polars::{{prelude::*, lazy::dsl::{datetime, StrptimeOptions}}};
+use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
 use std::{
     fs,
@@ -85,7 +85,9 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
     Ok(())
 }
 
-fn retrieve_metadata(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
+fn retrieve_metadata(
+    file_path: &String,
+) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
     // Retrieve metadata from given file, including digikam taglist, datetime_original and file modified date
     // Metadata
     let file_metadata = fs::metadata(file_path)?;
@@ -120,7 +122,9 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<Str
     }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
-    if let Ok(_) = f.open_file(file_path, OpenFileOptions::default().only_xmp()) {
+    if f.open_file(file_path, OpenFileOptions::default().only_xmp())
+        .is_ok()
+    {
         let xmp = f.xmp().unwrap();
         if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
             datetime_original = value.value.to_string();
@@ -139,7 +143,13 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<Str
             }
         }
     }
-    Ok((species, individuals, datetime_original, datetime_digitized, file_modified_tz_naive))
+    Ok((
+        species,
+        individuals,
+        datetime_original,
+        datetime_digitized,
+        file_modified_tz_naive,
+    ))
 }
 
 pub fn get_classifications(
@@ -180,14 +190,32 @@ pub fn get_classifications(
             .into_par_iter()
             .map(
                 |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                    Ok((species, individuals, datetime_original, datetime_digitized, file_modified_time)) => {
+                    Ok((
+                        species,
+                        individuals,
+                        datetime_original,
+                        datetime_digitized,
+                        file_modified_time,
+                    )) => {
                         pb.inc(1);
-                        (species.join(","), individuals.join(","), datetime_original, datetime_digitized, file_modified_time)
+                        (
+                            species.join(","),
+                            individuals.join(","),
+                            datetime_original,
+                            datetime_digitized,
+                            file_modified_time,
+                        )
                     }
                     Err(error) => {
                         pb.println(format!("{} in {}", error, file_paths[i].display()));
                         pb.inc(1);
-                        ("".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string())
+                        (
+                            "".to_string(),
+                            "".to_string(),
+                            "".to_string(),
+                            "".to_string(),
+                            "".to_string(),
+                        )
                     }
                 },
             )
@@ -202,7 +230,13 @@ pub fn get_classifications(
     } else {
         for path in file_paths {
             match retrieve_metadata(&path.to_string_lossy().into_owned()) {
-                Ok((species, individuals, datetime_original, datetime_digitized, file_modified_time)) => {
+                Ok((
+                    species,
+                    individuals,
+                    datetime_original,
+                    datetime_digitized,
+                    file_modified_time,
+                )) => {
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
                     datetime_originals.push(datetime_original);
@@ -236,7 +270,7 @@ pub fn get_classifications(
         s_individuals,
         s_datetime_original,
         s_datetime_digitized,
-        s_time_modified
+        s_time_modified,
     ])?;
 
     let datetime_options = StrptimeOptions {
@@ -257,14 +291,17 @@ pub fn get_classifications(
                 lit("raise"),
             ),
             col("datetime_digitized"),
-            col("file_modified_time").str().to_datetime(
-                Some(TimeUnit::Milliseconds),
-                None,
-                datetime_options,
-                lit("raise"))
+            col("file_modified_time")
+                .str()
+                .to_datetime(
+                    Some(TimeUnit::Milliseconds),
+                    None,
+                    datetime_options,
+                    lit("raise"),
+                )
                 // .dt().convert_time_zone("Asia/Shanghai".to_string()
-                .dt().replace_time_zone(None, lit("raise")
-            ),
+                .dt()
+                .replace_time_zone(None, lit("raise")),
             col("species_tags").str().split(lit(",")).alias("species"),
             col("individual_tags")
                 .str()
@@ -288,7 +325,8 @@ pub fn get_classifications(
     let mut file = std::fs::File::create(tags_csv_path.clone()).unwrap();
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
-        .finish(&mut df_flatten).unwrap();
+        .finish(&mut df_flatten)
+        .unwrap();
     println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
 
     let mut df_count_species = df_flatten
