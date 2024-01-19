@@ -4,7 +4,7 @@ use crate::utils::{
 };
 use chrono::{Local, DateTime, Utc};
 use indicatif::ProgressBar;
-use polars::{{prelude::*, lazy::dsl::{datetime, StrptimeOptions}}, lazy::dsl::datetime};
+use polars::{{prelude::*, lazy::dsl::{datetime, StrptimeOptions}}};
 use rayon::prelude::*;
 use std::{
     fs,
@@ -85,7 +85,7 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
     Ok(())
 }
 
-fn retrieve_metadata(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<String>, String, String)> {
+fn retrieve_metadata(file_path: &String) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
     // Retrieve metadata from given file, including digikam taglist, datetime_original and file modified date
     // Metadata
     let file_metadata = fs::metadata(file_path)?;
@@ -197,7 +197,7 @@ pub fn get_classifications(
             individual_tags.push(tag.1);
             datetime_originals.push(tag.2);
             datetime_digitizeds.push(tag.3);
-            file_modified_times.push(tag.3);
+            file_modified_times.push(tag.4);
         }
     } else {
         for path in file_paths {
@@ -235,7 +235,7 @@ pub fn get_classifications(
         s_species,
         s_individuals,
         s_datetime_original,
-        s_datetime_digitized
+        s_datetime_digitized,
         s_time_modified
     ])?;
 
