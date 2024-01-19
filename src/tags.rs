@@ -246,7 +246,8 @@ pub fn get_classifications(
                 None,
                 datetime_options,
                 lit("raise"))
-                .dt().convert_time_zone("Asia/Shanghai".to_string()
+                // .dt().convert_time_zone("Asia/Shanghai".to_string()
+                .dt().replace_time_zone(None, lit("raise")
             ),
             col("species_tags").str().split(lit(",")).alias("species"),
             col("individual_tags")
