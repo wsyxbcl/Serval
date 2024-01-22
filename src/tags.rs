@@ -125,21 +125,21 @@ fn retrieve_metadata(
     if f.open_file(file_path, OpenFileOptions::default().only_xmp())
         .is_ok()
     {
-        let xmp = f.xmp().unwrap();
-        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            datetime_original = value.value.to_string();
-        }
+        if let Some(xmp) = f.xmp() {
+            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                datetime_original = value.value.to_string();
+            }
+            // Register the digikam namespace
+            let ns_digikam = "http://www.digikam.org/ns/1.0/";
+            XmpMeta::register_namespace(ns_digikam, "digiKam")?;
 
-        // Register the digikam namespace
-        let ns_digikam = "http://www.digikam.org/ns/1.0/";
-        XmpMeta::register_namespace(ns_digikam, "digiKam")?;
-
-        for property in xmp.property_array(ns_digikam, "TagsList") {
-            let tag = property.value;
-            if tag.starts_with("Species/") {
-                species.push(tag.strip_prefix("Species/").unwrap().to_string());
-            } else if tag.starts_with("Individual/") {
-                individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+            for property in xmp.property_array(ns_digikam, "TagsList") {
+                let tag = property.value;
+                if tag.starts_with("Species/") {
+                    species.push(tag.strip_prefix("Species/").unwrap().to_string());
+                } else if tag.starts_with("Individual/") {
+                    individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+                }
             }
         }
     }
@@ -290,7 +290,12 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("datetime_digitized"),
+            col("datetime_digitized").str().to_datetime(
+                Some(TimeUnit::Milliseconds),
+                None,
+                datetime_options.clone(),
+                lit("raise"),
+            ),
             col("file_modified_time")
                 .str()
                 .to_datetime(
