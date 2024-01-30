@@ -64,7 +64,7 @@ impl TagType {
 pub enum ExtractFilterType {
     Species,
     PathRegex,
-    _Individual,
+    Individual,
     _Favorite,
 }
 

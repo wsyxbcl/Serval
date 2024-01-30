@@ -91,6 +91,10 @@ fn main() -> anyhow::Result<()> {
                 extract_resources(filter_value, ExtractFilterType::Species, csv_path, output)?;
             } else if filter_type == "path" {
                 extract_resources(filter_value, ExtractFilterType::PathRegex ,csv_path, output)?;
+            } else if filter_type == "individual" {
+                extract_resources(filter_value, ExtractFilterType::Individual ,csv_path, output)?;
+            } else {
+                panic!("Invalid filter type: {}", filter_type);
             }
         }
     }

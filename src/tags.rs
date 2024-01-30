@@ -282,6 +282,14 @@ pub fn extract_resources(
                 .filter(col("path").str().contains_literal(lit(filter_value)))
                 .collect()?;
         },
+        ExtractFilterType::Individual => {
+            df_filtered = df
+                .clone()
+                .lazy()
+                .filter(col("individuals").eq(lit(filter_value)))
+                .select([col("path")])
+                .collect()?;
+        },
         _ => {
             return Ok(());
         }
@@ -293,6 +301,7 @@ pub fn extract_resources(
     let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
     println!("Here is a sample of the file path ({}): ", path_sample);
     let mut num_option = 0;
+    println!("0): File Only (no directory)");
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
         .unwrap()
@@ -305,7 +314,7 @@ pub fn extract_resources(
 
     let mut rl = Editor::new()?;
     let h = NumericSelectValidator {
-        min: 1,
+        min: 0,
         max: num_option,
     };
     rl.set_helper(Some(h));
@@ -323,12 +332,36 @@ pub fn extract_resources(
         } else {
             path.unwrap()
         };
-        let relative_path_output =
-            Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
-        let output_path = output_dir.join(relative_path_output);
+        let output_path;
+        if deploy_path_index == 0 {
+            let relative_path_output =
+                Path::new(input_path).file_name().unwrap(); // Where's quote come from
+            output_path = output_dir.join(relative_path_output);     
+        } else {
+            let relative_path_output =
+                Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            output_path = output_dir.join(relative_path_output);     
+        }
+        pb.println(format!("Copying to {}", output_path.to_string_lossy()));
         fs::create_dir_all(output_path.parent().unwrap())?;
-        fs::copy(input_path, output_path.clone())?;
-        pb.println(format!("Copied to {}", output_path.to_string_lossy()));
+        // check if the file exists, if so, rename it
+        if output_path.exists() {
+            let mut i = 1;
+            let mut output_path_renamed = output_path.clone();
+            while output_path_renamed.exists() {
+                output_path_renamed = output_path.with_file_name(format!(
+                    "{}_{}.{}",
+                    output_path.file_stem().unwrap().to_string_lossy(),
+                    i,
+                    output_path.extension().unwrap().to_string_lossy()
+                ));
+                i += 1;
+            }
+            pb.println(format!("Renamed to {}", output_path_renamed.to_string_lossy()));
+            fs::copy(input_path, output_path_renamed)?;
+        } else {
+            fs::copy(input_path, output_path)?;
+        }
         pb.inc(1);
     }
     pb.finish_with_message("done");
