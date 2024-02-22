@@ -70,8 +70,8 @@ fn main() -> anyhow::Result<()> {
         } => {
             write_taglist(absolute_path(taglist_path)?, image_path)?;
         }
-        Commands::Capture { csv_path, output } => {
-            get_temporal_independence(absolute_path(csv_path)?, output)?;
+        Commands::Capture { csv_path, output, uv_camera} => {
+            get_temporal_independence(absolute_path(csv_path)?, output, uv_camera)?;
         }
         Commands::Extract {
             csv_path,
@@ -165,6 +165,8 @@ enum Commands {
         /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
+        #[arg(long)]
+        uv_camera: bool,
     },
     /// Extract and copy images containing target species (based on tags.csv)
     #[command(arg_required_else_help = true)]

@@ -249,7 +249,7 @@ pub fn get_classifications(
     );
 
     if independent {
-        get_temporal_independence(tags_csv_path, output_dir)?;
+        get_temporal_independence(tags_csv_path, output_dir, false)?;
     }
     Ok(())
 }
@@ -318,10 +318,11 @@ pub fn extract_species(
     Ok(())
 }
 
-pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, uv_camera: bool) -> anyhow::Result<()> {
     // Temporal independence analysis
 
     let df = CsvReader::from_path(csv_path)?
+        
         .has_header(true)
         .with_ignore_errors(true)
         .with_try_parse_dates(true)
@@ -347,17 +348,27 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         _ => "LastIndependentRecord",
     };
     // Get target (species/individual)
-    let h = NumericSelectValidator { min: 1, max: 2 };
-    rl.set_helper(Some(h));
-    let readline =
-        rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection: ");
-    let target = match readline?.trim().parse()? {
-        1 => TagType::Species,
-        2 => TagType::Individual,
-        _ => TagType::Species,
-    };
+    let target;
+    if !uv_camera {
+        let h = NumericSelectValidator { min: 1, max: 2 };
+        rl.set_helper(Some(h));
+        let readline =
+            rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection: ");
+        target = match readline?.trim().parse()? {
+            1 => TagType::Species,
+            2 => TagType::Individual,
+            _ => TagType::Species,
+        };
+    } else {
+        target = TagType::Species;
+    }
     // Find deployment
-    let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
+    let path_sample;
+    if uv_camera {
+        path_sample = df.column("图片路径")?.get(0)?.to_string().replace('"', "");
+    } else {
+        path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
+    }
     println!("\nHere is a sample of the file path ({})", path_sample);
     let mut num_option = 0;
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
@@ -381,31 +392,51 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let tag_exclude = Series::new("tag_exclude", exclude);
 
     // Data processing
-    let df_cleaned = df
-        .clone()
-        .lazy()
-        .select([
-            col("path")
-                .str()
-                .split(lit(get_path_seperator()))
-                .list()
-                .get(lit(num_option - deploy_path_index))
-                .alias("deployment"),
-            col("filename"),
-            col("datetime_original").alias("time"),
-            col(target.col_name()),
-        ])
-        .drop_nulls(None)
-        .filter(col("species").is_in(lit(tag_exclude)).not())
-        .unique(
-            Some(vec![
-                "deployment".to_string(),
-                "time".to_string(),
-                target.col_name().to_string(),
-            ]),
-            UniqueKeepStrategy::Any,
-        )
-        .collect()?;
+    let df_cleaned;
+    if uv_camera {
+        df_cleaned = df
+            .clone()
+            .lazy()
+            .select([
+                col("图片路径")
+                    .str()
+                    .split(lit(get_path_seperator()))
+                    .list()
+                    .get(lit(num_option - deploy_path_index))
+                    .alias("deployment"),
+                col("照片名").alias("filename"),
+                col("时间").alias("time"),
+                col("物种名称").alias("species")
+            ])
+            .drop_nulls(None)
+            .collect()?;
+    } else {
+        df_cleaned = df
+            .clone()
+            .lazy()
+            .select([
+                col("图片路径")
+                    .str()
+                    .split(lit(get_path_seperator()))
+                    .list()
+                    .get(lit(num_option - deploy_path_index))
+                    .alias("deployment"),
+                col("filename"),
+                col("datetime_original").alias("time"),
+                col(target.col_name()),
+            ])
+            .drop_nulls(None)
+            .filter(col("species").is_in(lit(tag_exclude)).not())
+            .unique(
+                Some(vec![
+                    "deployment".to_string(),
+                    "time".to_string(),
+                    target.col_name().to_string(),
+                ]),
+                UniqueKeepStrategy::Any,
+            )
+            .collect()?;
+    }
 
     let mut df_sorted = df_cleaned
         .lazy()
