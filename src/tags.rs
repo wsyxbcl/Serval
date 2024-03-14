@@ -2,7 +2,6 @@ use crate::utils::{
     absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ResourceType,
     TagType,
 };
-use chrono::{DateTime, Utc};
 use indicatif::ProgressBar;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
@@ -87,22 +86,9 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
 
 fn retrieve_metadata(
     file_path: &String,
-) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
-    // Retrieve metadata from given file, including digikam taglist, datetime_original and file modified date
-    // Metadata
-    let file_metadata = fs::metadata(file_path)?;
-    let file_modified_time: DateTime<Utc> = file_metadata.modified()?.into();
-    let file_modified_tz_naive = file_modified_time.to_rfc3339();
+) -> anyhow::Result<(Vec<String>, Vec<String>, String, String)> {
+    // Retrieve metadata from given file, including digikam taglist, datetime_original and datetime_digitized
 
-    // if let Ok(time) = file_metadata.modified() {
-    //     let datetime_utc: DateTime<Utc> = time.into();
-    //     let datetime_local: DateTime<Local> = time.into();
-    //     println!("Time: {:?}, utc: {}, local: {}", time, datetime_utc, datetime_local);
-    // } else {
-    //     println!("Not supported on this platform");
-    // }
-
-    // XMP
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
 
@@ -148,7 +134,6 @@ fn retrieve_metadata(
         individuals,
         datetime_original,
         datetime_digitized,
-        file_modified_tz_naive,
     ))
 }
 
@@ -182,7 +167,6 @@ pub fn get_classifications(
     let mut individual_tags: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
-    let mut file_modified_times: Vec<String> = Vec::new();
 
     // try parallel with Rayon here
     if parallel {
@@ -195,7 +179,6 @@ pub fn get_classifications(
                         individuals,
                         datetime_original,
                         datetime_digitized,
-                        file_modified_time,
                     )) => {
                         pb.inc(1);
                         (
@@ -203,14 +186,12 @@ pub fn get_classifications(
                             individuals.join(","),
                             datetime_original,
                             datetime_digitized,
-                            file_modified_time,
                         )
                     }
                     Err(error) => {
                         pb.println(format!("{} in {}", error, file_paths[i].display()));
                         pb.inc(1);
                         (
-                            "".to_string(),
                             "".to_string(),
                             "".to_string(),
                             "".to_string(),
@@ -225,7 +206,6 @@ pub fn get_classifications(
             individual_tags.push(tag.1);
             datetime_originals.push(tag.2);
             datetime_digitizeds.push(tag.3);
-            file_modified_times.push(tag.4);
         }
     } else {
         for path in file_paths {
@@ -235,13 +215,11 @@ pub fn get_classifications(
                     individuals,
                     datetime_original,
                     datetime_digitized,
-                    file_modified_time,
                 )) => {
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
                     datetime_originals.push(datetime_original);
                     datetime_digitizeds.push(datetime_digitized);
-                    file_modified_times.push(file_modified_time);
                 }
                 Err(error) => {
                     pb.println(format!("{} in {}", error, path.display()));
@@ -249,7 +227,6 @@ pub fn get_classifications(
                     individual_tags.push("".to_string());
                     datetime_originals.push("".to_string());
                     datetime_digitizeds.push("".to_string());
-                    file_modified_times.push("".to_string());
                 }
             }
             pb.inc(1);
@@ -261,7 +238,6 @@ pub fn get_classifications(
     let s_individuals = Series::new("individual_tags", individual_tags);
     let s_datetime_original = Series::new("datetime_original", datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
-    let s_time_modified = Series::new("file_modified_time", file_modified_times);
 
     let df_raw = DataFrame::new(vec![
         Series::new("path", image_paths),
@@ -270,7 +246,6 @@ pub fn get_classifications(
         s_individuals,
         s_datetime_original,
         s_datetime_digitized,
-        s_time_modified,
     ])?;
 
     let datetime_options = StrptimeOptions {
@@ -296,17 +271,6 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("file_modified_time")
-                .str()
-                .to_datetime(
-                    Some(TimeUnit::Milliseconds),
-                    None,
-                    datetime_options,
-                    lit("raise"),
-                )
-                // .dt().convert_time_zone("Asia/Shanghai".to_string()
-                .dt()
-                .replace_time_zone(None, lit("raise")),
             col("species_tags").str().split(lit(",")).alias("species"),
             col("individual_tags")
                 .str()
