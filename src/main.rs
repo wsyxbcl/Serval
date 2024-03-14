@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
             source_dir,
             output_dir,
         } => {
-            copy_xmp(source_dir, output_dir)?;
+            copy_xmp(absolute_path(source_dir)?, output_dir)?;
         }
     }
     Ok(())
