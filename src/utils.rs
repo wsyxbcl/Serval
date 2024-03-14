@@ -1,5 +1,5 @@
 use chrono::NaiveDateTime;
-use core::fmt;
+use core::{fmt, num};
 use polars::prelude::*;
 use std::io;
 use std::{
@@ -248,6 +248,25 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         }
     }
     println!("Total directories: {}", count);
+    Ok(())
+}
+
+// copy xmp files to output_dir and keep the directory structure
+pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let num_xmp = xmp_paths.len();
+    println!("{} xmp files found", num_xmp);
+    let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    
+    for xmp in xmp_paths {
+        let mut output_path = output_dir.clone();
+        let relative_path = xmp.strip_prefix(&source_dir).unwrap();
+        output_path.push(relative_path);
+        fs::create_dir_all(output_path.parent().unwrap())?;
+        fs::copy(xmp, output_path)?;
+        pb.inc(1);
+    }
+    pb.finish();
     Ok(())
 }
 

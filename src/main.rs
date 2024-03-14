@@ -4,7 +4,7 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
-use utils::{absolute_path, deployments_align, deployments_rename, resources_align, ExtractFilterType};
+use utils::{absolute_path, deployments_align, deployments_rename, resources_align, ExtractFilterType, copy_xmp};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -96,6 +96,12 @@ fn main() -> anyhow::Result<()> {
             } else {
                 panic!("Invalid filter type: {}", filter_type);
             }
+        }
+        Commands::Xmp {
+            source_dir,
+            output_dir,
+        } => {
+            copy_xmp(source_dir, output_dir)?;
         }
     }
     Ok(())
@@ -201,5 +207,14 @@ enum Commands {
         /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
+    },
+    /// Copy all xmp files to a directory while keeping the directory structure
+    #[command(arg_required_else_help = true)]
+    Xmp {
+        /// Path for the source directory
+        source_dir: PathBuf,
+        /// Output directory
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        output_dir: PathBuf,
     },
 }
