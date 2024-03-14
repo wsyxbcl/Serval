@@ -1,6 +1,6 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ResourceType,
-    TagType, ExtractFilterType
+    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ExtractFilterType,
+    ResourceType, TagType,
 };
 use indicatif::ProgressBar;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -129,12 +129,7 @@ fn retrieve_metadata(
             }
         }
     }
-    Ok((
-        species,
-        individuals,
-        datetime_original,
-        datetime_digitized,
-    ))
+    Ok((species, individuals, datetime_original, datetime_digitized))
 }
 
 pub fn get_classifications(
@@ -174,12 +169,7 @@ pub fn get_classifications(
             .into_par_iter()
             .map(
                 |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                    Ok((
-                        species,
-                        individuals,
-                        datetime_original,
-                        datetime_digitized,
-                    )) => {
+                    Ok((species, individuals, datetime_original, datetime_digitized)) => {
                         pb.inc(1);
                         (
                             species.join(","),
@@ -210,12 +200,7 @@ pub fn get_classifications(
     } else {
         for path in file_paths {
             match retrieve_metadata(&path.to_string_lossy().into_owned()) {
-                Ok((
-                    species,
-                    individuals,
-                    datetime_original,
-                    datetime_digitized,
-                )) => {
+                Ok((species, individuals, datetime_original, datetime_digitized)) => {
                     species_tags.push(species.join(","));
                     individual_tags.push(individuals.join(","));
                     datetime_originals.push(datetime_original);
@@ -339,14 +324,14 @@ pub fn extract_resources(
                 .filter(col("species").eq(lit(filter_value)))
                 .select([col("path")])
                 .collect()?;
-        },
+        }
         ExtractFilterType::PathRegex => {
             df_filtered = df
                 .clone()
                 .lazy()
                 .filter(col("path").str().contains_literal(lit(filter_value)))
                 .collect()?;
-        },
+        }
         ExtractFilterType::Individual => {
             df_filtered = df
                 .clone()
@@ -354,7 +339,7 @@ pub fn extract_resources(
                 .filter(col("individuals").eq(lit(filter_value)))
                 .select([col("path")])
                 .collect()?;
-        },
+        }
         _ => {
             return Ok(());
         }
@@ -399,13 +384,12 @@ pub fn extract_resources(
         };
         let output_path;
         if deploy_path_index == 0 {
-            let relative_path_output =
-                Path::new(input_path).file_name().unwrap(); // Where's quote come from
-            output_path = output_dir.join(relative_path_output);     
+            let relative_path_output = Path::new(input_path).file_name().unwrap(); // Where's quote come from
+            output_path = output_dir.join(relative_path_output);
         } else {
-            let relative_path_output =
-                Path::new(input_path).strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
-            output_path = output_dir.join(relative_path_output);     
+            let relative_path_output = Path::new(input_path)
+                .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            output_path = output_dir.join(relative_path_output);
         }
         pb.println(format!("Copying to {}", output_path.to_string_lossy()));
         fs::create_dir_all(output_path.parent().unwrap())?;
@@ -422,7 +406,10 @@ pub fn extract_resources(
                 ));
                 i += 1;
             }
-            pb.println(format!("Renamed to {}", output_path_renamed.to_string_lossy()));
+            pb.println(format!(
+                "Renamed to {}",
+                output_path_renamed.to_string_lossy()
+            ));
             fs::copy(input_path, output_path_renamed)?;
         } else {
             fs::copy(input_path, output_path)?;

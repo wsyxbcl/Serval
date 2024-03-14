@@ -4,7 +4,10 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
-use utils::{absolute_path, deployments_align, deployments_rename, resources_align, ExtractFilterType, copy_xmp};
+use utils::{
+    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
+    ExtractFilterType,
+};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -55,7 +58,7 @@ fn main() -> anyhow::Result<()> {
                     parallel,
                     utils::ResourceType::Video,
                     independent,
-                )?;                
+                )?;
             } else {
                 get_classifications(
                     absolute_path(media_dir)?,
@@ -90,9 +93,14 @@ fn main() -> anyhow::Result<()> {
             if filter_type == "species" {
                 extract_resources(filter_value, ExtractFilterType::Species, csv_path, output)?;
             } else if filter_type == "path" {
-                extract_resources(filter_value, ExtractFilterType::PathRegex ,csv_path, output)?;
+                extract_resources(filter_value, ExtractFilterType::PathRegex, csv_path, output)?;
             } else if filter_type == "individual" {
-                extract_resources(filter_value, ExtractFilterType::Individual ,csv_path, output)?;
+                extract_resources(
+                    filter_value,
+                    ExtractFilterType::Individual,
+                    csv_path,
+                    output,
+                )?;
             } else {
                 panic!("Invalid filter type: {}", filter_type);
             }
@@ -158,7 +166,7 @@ enum Commands {
         /// Read from XMP
         #[arg(long)]
         xmp: bool,
-        
+
         /// Video only
         #[arg(long)]
         video: bool,

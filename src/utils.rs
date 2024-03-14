@@ -1,5 +1,5 @@
 use chrono::NaiveDateTime;
-use core::{fmt, num};
+use core::fmt;
 use polars::prelude::*;
 use std::io;
 use std::{
@@ -257,7 +257,7 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     let num_xmp = xmp_paths.len();
     println!("{} xmp files found", num_xmp);
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    
+
     for xmp in xmp_paths {
         let mut output_path = output_dir.clone();
         let relative_path = xmp.strip_prefix(&source_dir).unwrap();
