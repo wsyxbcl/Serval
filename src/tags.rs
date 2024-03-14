@@ -315,35 +315,34 @@ pub fn extract_resources(
         .with_ignore_errors(true)
         .with_try_parse_dates(true)
         .finish()?;
-    let df_filtered: DataFrame;
-    match filter_type {
+    let df_filtered: DataFrame = match filter_type {
         ExtractFilterType::Species => {
-            df_filtered = df
+            df
                 .clone()
                 .lazy()
                 .filter(col("species").eq(lit(filter_value)))
                 .select([col("path")])
-                .collect()?;
+                .collect()?
         }
         ExtractFilterType::PathRegex => {
-            df_filtered = df
+            df
                 .clone()
                 .lazy()
                 .filter(col("path").str().contains_literal(lit(filter_value)))
-                .collect()?;
+                .collect()?
         }
         ExtractFilterType::Individual => {
-            df_filtered = df
+            df
                 .clone()
                 .lazy()
                 .filter(col("individuals").eq(lit(filter_value)))
                 .select([col("path")])
-                .collect()?;
+                .collect()?
         }
         _ => {
             return Ok(());
         }
-    }
+    };
 
     // println!("{}", df_filtered);
 
@@ -382,15 +381,14 @@ pub fn extract_resources(
         } else {
             path.unwrap()
         };
-        let output_path;
-        if deploy_path_index == 0 {
+        let output_path= if deploy_path_index == 0 {
             let relative_path_output = Path::new(input_path).file_name().unwrap(); // Where's quote come from
-            output_path = output_dir.join(relative_path_output);
+            output_dir.join(relative_path_output)
         } else {
             let relative_path_output = Path::new(input_path)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
-            output_path = output_dir.join(relative_path_output);
-        }
+            output_dir.join(relative_path_output)
+        };
         pb.println(format!("Copying to {}", output_path.to_string_lossy()));
         fs::create_dir_all(output_path.parent().unwrap())?;
         // check if the file exists, if so, rename it
