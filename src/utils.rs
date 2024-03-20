@@ -13,6 +13,7 @@ pub enum ResourceType {
     Xmp,
     Image,
     Video,
+    Media, // Image or Video
 }
 
 impl fmt::Display for ResourceType {
@@ -27,6 +28,7 @@ impl ResourceType {
             ResourceType::Image => vec!["jpg", "jpeg", "png"],
             ResourceType::Video => vec!["avi", "mp4", "mov"],
             ResourceType::Xmp => vec!["xmp"],
+            ResourceType::Media => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov"],
         }
     }
 

@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
             output,
             xmp,
             video,
+            image,
             independent,
         } => {
             if xmp {
@@ -50,17 +51,33 @@ fn main() -> anyhow::Result<()> {
                     independent,
                 )?;
             } else if video {
+                if image {
+                    get_classifications(
+                        absolute_path(media_dir)?,
+                        output,
+                        utils::ResourceType::Media,
+                        independent,
+                    )?;
+                } else {
+                    get_classifications(
+                        absolute_path(media_dir)?,
+                        output,
+                        utils::ResourceType::Video,
+                        independent,
+                    )?;
+                }
+            } else if image {
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
-                    utils::ResourceType::Video,
+                    utils::ResourceType::Image,
                     independent,
                 )?;
             } else {
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
-                    utils::ResourceType::Image,
+                    utils::ResourceType::Media,
                     independent,
                 )?;
             }
@@ -162,6 +179,10 @@ enum Commands {
         /// Video only
         #[arg(long)]
         video: bool,
+        
+        /// Image only
+        #[arg(long)]
+        image: bool,
 
         /// Temporal independence analysis after retrieving
         #[arg(short, long)]
