@@ -308,29 +308,23 @@ pub fn extract_resources(
         .with_try_parse_dates(true)
         .finish()?;
     let df_filtered: DataFrame = match filter_type {
-        ExtractFilterType::Species => {
-            df
-                .clone()
-                .lazy()
-                .filter(col("species").eq(lit(filter_value)))
-                .select([col("path")])
-                .collect()?
-        }
-        ExtractFilterType::PathRegex => {
-            df
-                .clone()
-                .lazy()
-                .filter(col("path").str().contains_literal(lit(filter_value)))
-                .collect()?
-        }
-        ExtractFilterType::Individual => {
-            df
-                .clone()
-                .lazy()
-                .filter(col("individuals").eq(lit(filter_value)))
-                .select([col("path")])
-                .collect()?
-        }
+        ExtractFilterType::Species => df
+            .clone()
+            .lazy()
+            .filter(col("species").eq(lit(filter_value)))
+            .select([col("path")])
+            .collect()?,
+        ExtractFilterType::PathRegex => df
+            .clone()
+            .lazy()
+            .filter(col("path").str().contains_literal(lit(filter_value)))
+            .collect()?,
+        ExtractFilterType::Individual => df
+            .clone()
+            .lazy()
+            .filter(col("individuals").eq(lit(filter_value)))
+            .select([col("path")])
+            .collect()?,
         _ => {
             return Ok(());
         }
@@ -373,7 +367,7 @@ pub fn extract_resources(
         } else {
             path.unwrap()
         };
-        let output_path= if deploy_path_index == 0 {
+        let output_path = if deploy_path_index == 0 {
             let relative_path_output = Path::new(input_path).file_name().unwrap(); // Where's quote come from
             output_dir.join(relative_path_output)
         } else {
