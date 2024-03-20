@@ -69,7 +69,7 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
     let mut meta = XmpMeta::from_str(dummy_xmp).unwrap();
-    for tag in tags.utf8()? {
+    for tag in tags.str()? {
         meta.set_array_item(
             ns_digikam,
             "TagsList",
@@ -375,7 +375,7 @@ pub fn extract_resources(
         .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into().unwrap());
 
-    for path in df_filtered["path"].utf8()?.into_iter() {
+    for path in df_filtered["path"].str()?.into_iter() {
         let input_path = if path.unwrap().ends_with(".xmp") {
             path.unwrap().strip_suffix(".xmp").unwrap()
         } else {

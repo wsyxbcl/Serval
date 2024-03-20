@@ -179,7 +179,7 @@ pub fn deployments_align(
 ) -> anyhow::Result<()> {
     // TODO: add file/path filter
     let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
-    let deploy_array = deploy_df["deploymentID"].utf8()?;
+    let deploy_array = deploy_df["deploymentID"].str()?;
 
     // deploy_array.into_iter()
     //     .for_each(|deploy| println!("{:?}", deploy))
@@ -276,7 +276,7 @@ pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
 
-    diff >= chrono::Duration::minutes(min_delta_time.into())
+    diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap()
 }
 
 pub fn get_path_seperator() -> &'static str {
