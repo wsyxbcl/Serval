@@ -97,15 +97,6 @@ fn retrieve_metadata(
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
 
-    // Digitized time in exif
-    let file = std::fs::File::open(file_path)?;
-    let mut bufreader = std::io::BufReader::new(file);
-    let exifreader = exif::Reader::new();
-    if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
-        if let Some(datetime) = exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY) {
-            datetime_digitized = datetime.display_value().with_unit(&exif).to_string();
-        }
-    }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
     if f.open_file(file_path, OpenFileOptions::default().only_xmp())
@@ -114,6 +105,9 @@ fn retrieve_metadata(
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
                 datetime_original = value.value.to_string();
+            }
+            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+                datetime_digitized = value.value.to_string();
             }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
@@ -234,7 +228,7 @@ pub fn get_classifications(
     ])?;
 
     let datetime_options = StrptimeOptions {
-        // format: Some("%Y-%m-%dT%H:%M:%S".into()),
+        format: Some("%Y-%m-%dT%H:%M:%S".into()),
         strict: false,
         ..Default::default()
     };
@@ -244,15 +238,13 @@ pub fn get_classifications(
         .select([
             col("path"),
             col("filename"),
-            col("datetime_original").str().to_datetime(
-                Some(TimeUnit::Milliseconds),
-                None,
+            col("datetime_original").str().strptime(
+                DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("datetime_digitized").str().to_datetime(
-                Some(TimeUnit::Milliseconds),
-                None,
+            col("datetime_digitized").str().strptime(
+                DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),
                 lit("raise"),
             ),

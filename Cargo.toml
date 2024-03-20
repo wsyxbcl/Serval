@@ -3,7 +3,7 @@ name = "serval"
 description = "Serval helps you prepare data for Maze and Trapper"
 repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,12 +13,11 @@ anyhow = "1.0.78"
 chrono = "0.4.35"
 clap = { version = "4.4.7", features = ["derive"] }
 indicatif = "0.17.7"
-kamadak-exif = "0.5.5"
 polars = { version = "0.38.3", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones"] }
 rayon = "1.8.0"
 rustyline = { version = "13.0.0", features = ["derive"] }
 walkdir = "2.4.0"
-xmp_toolkit = "1.6.0"
+xmp_toolkit = "1.7.3"
 
 [profile.release-lto]
 inherits = "release"
