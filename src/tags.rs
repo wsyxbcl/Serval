@@ -129,7 +129,6 @@ fn retrieve_metadata(
 pub fn get_classifications(
     file_dir: PathBuf,
     output_dir: PathBuf,
-    parallel: bool,
     resource_type: ResourceType,
     independent: bool,
 ) -> anyhow::Result<()> {
@@ -156,60 +155,38 @@ pub fn get_classifications(
     let mut individual_tags: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
-
-    // try parallel with Rayon here
-    if parallel {
-        let result: Vec<_> = (0..num_images)
-            .into_par_iter()
-            .map(
-                |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                    Ok((species, individuals, datetime_original, datetime_digitized)) => {
-                        pb.inc(1);
-                        (
-                            species.join(","),
-                            individuals.join(","),
-                            datetime_original,
-                            datetime_digitized,
-                        )
-                    }
-                    Err(error) => {
-                        pb.println(format!("{} in {}", error, file_paths[i].display()));
-                        pb.inc(1);
-                        (
-                            "".to_string(),
-                            "".to_string(),
-                            "".to_string(),
-                            "".to_string(),
-                        )
-                    }
-                },
-            )
-            .collect();
-        for tag in result {
-            species_tags.push(tag.0);
-            individual_tags.push(tag.1);
-            datetime_originals.push(tag.2);
-            datetime_digitizeds.push(tag.3);
-        }
-    } else {
-        for path in file_paths {
-            match retrieve_metadata(&path.to_string_lossy().into_owned()) {
+    
+    let result: Vec<_> = (0..num_images)
+        .into_par_iter()
+        .map(
+            |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
                 Ok((species, individuals, datetime_original, datetime_digitized)) => {
-                    species_tags.push(species.join(","));
-                    individual_tags.push(individuals.join(","));
-                    datetime_originals.push(datetime_original);
-                    datetime_digitizeds.push(datetime_digitized);
+                    pb.inc(1);
+                    (
+                        species.join(","),
+                        individuals.join(","),
+                        datetime_original,
+                        datetime_digitized,
+                    )
                 }
                 Err(error) => {
-                    pb.println(format!("{} in {}", error, path.display()));
-                    species_tags.push("".to_string());
-                    individual_tags.push("".to_string());
-                    datetime_originals.push("".to_string());
-                    datetime_digitizeds.push("".to_string());
+                    pb.println(format!("{} in {}", error, file_paths[i].display()));
+                    pb.inc(1);
+                    (
+                        "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
+                    )
                 }
-            }
-            pb.inc(1);
-        }
+            },
+        )
+        .collect();
+    for tag in result {
+        species_tags.push(tag.0);
+        individual_tags.push(tag.1);
+        datetime_originals.push(tag.2);
+        datetime_digitizeds.push(tag.3);
     }
 
     // Analysis

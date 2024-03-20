@@ -38,7 +38,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Observe {
             media_dir,
             output,
-            parallel,
             xmp,
             video,
             independent,
@@ -47,7 +46,6 @@ fn main() -> anyhow::Result<()> {
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
-                    parallel,
                     utils::ResourceType::Xmp,
                     independent,
                 )?;
@@ -55,7 +53,6 @@ fn main() -> anyhow::Result<()> {
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
-                    parallel,
                     utils::ResourceType::Video,
                     independent,
                 )?;
@@ -63,7 +60,6 @@ fn main() -> anyhow::Result<()> {
                 get_classifications(
                     absolute_path(media_dir)?,
                     output,
-                    parallel,
                     utils::ResourceType::Image,
                     independent,
                 )?;
@@ -158,10 +154,6 @@ enum Commands {
         /// Output directory
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
-
-        /// Parallel mode
-        #[arg(short, long)]
-        parallel: bool,
 
         /// Read from XMP
         #[arg(long)]
