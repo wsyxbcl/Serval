@@ -59,7 +59,11 @@ impl Validator for NumericSelectValidator {
     }
 }
 
-pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
+pub fn write_taglist(
+    taglist_path: PathBuf,
+    image_path: PathBuf,
+    tag_type: TagType,
+) -> anyhow::Result<()> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReader::from_path(taglist_path)?.finish()?;
@@ -115,9 +119,17 @@ fn retrieve_metadata(
             for property in xmp.property_array(ns_digikam, "TagsList") {
                 let tag = property.value;
                 if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
-                    species.push(tag.strip_prefix(TagType::Species.digikam_tag_prefix()).unwrap().to_string());
+                    species.push(
+                        tag.strip_prefix(TagType::Species.digikam_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
                 } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
-                    individuals.push(tag.strip_prefix(TagType::Individual.digikam_tag_prefix()).unwrap().to_string());
+                    individuals.push(
+                        tag.strip_prefix(TagType::Individual.digikam_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
                 }
             }
         }

@@ -157,7 +157,13 @@ enum Commands {
         media_dir: PathBuf,
 
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_observe")]
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            required = true,
+            default_value = "./serval_observe"
+        )]
         output: PathBuf,
 
         /// Read from XMP
@@ -167,7 +173,7 @@ enum Commands {
         /// Video only
         #[arg(long)]
         video: bool,
-        
+
         /// Image only
         #[arg(long)]
         image: bool,
@@ -202,7 +208,13 @@ enum Commands {
         /// Path for tags.csv
         csv_path: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_capture")]
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            required = true,
+            default_value = "./serval_capture"
+        )]
         output: PathBuf,
     },
     /// Extract and copy resources by filtering target value (based on tags.csv)
@@ -217,7 +229,13 @@ enum Commands {
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_extract")]
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            required = true,
+            default_value = "./serval_extract"
+        )]
         output: PathBuf,
     },
     /// Copy all xmp files to a directory while keeping the directory structure
@@ -226,7 +244,13 @@ enum Commands {
         /// Path for the source directory
         source_dir: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_xmp")]
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            required = true,
+            default_value = "./serval_xmp"
+        )]
         output_dir: PathBuf,
     },
 }
