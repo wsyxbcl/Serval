@@ -100,24 +100,11 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Extract {
             csv_path,
-            filter_value,
+            value,
             filter_type,
             output,
         } => {
-            if filter_type == "species" {
-                extract_resources(filter_value, ExtractFilterType::Species, csv_path, output)?;
-            } else if filter_type == "path" {
-                extract_resources(filter_value, ExtractFilterType::PathRegex, csv_path, output)?;
-            } else if filter_type == "individual" {
-                extract_resources(
-                    filter_value,
-                    ExtractFilterType::Individual,
-                    csv_path,
-                    output,
-                )?;
-            } else {
-                panic!("Invalid filter type: {}", filter_type);
-            }
+            extract_resources(value, filter_type, csv_path, output)?;
         }
         Commands::Xmp {
             source_dir,
@@ -170,11 +157,11 @@ enum Commands {
         media_dir: PathBuf,
 
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_observe")]
         output: PathBuf,
 
         /// Read from XMP
-        #[arg(long)]
+        #[arg(short, long)]
         xmp: bool,
 
         /// Video only
@@ -215,7 +202,7 @@ enum Commands {
         /// Path for tags.csv
         csv_path: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_capture")]
         output: PathBuf,
     },
     /// Extract and copy resources by filtering target value (based on tags.csv)
@@ -223,14 +210,14 @@ enum Commands {
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
-        /// Target column
-        #[arg(long, value_name = "COLUMN", required = true)]
-        filter_type: String,
+        /// Filter on
+        #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
+        filter_type: ExtractFilterType,
         /// Target value (or regex for the path)
-        #[arg(long, value_name = "VALUE", required = true)]
-        filter_value: String,
+        #[arg(short, long, value_name = "VALUE", required = true)]
+        value: String,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_extract")]
         output: PathBuf,
     },
     /// Copy all xmp files to a directory while keeping the directory structure
@@ -239,7 +226,7 @@ enum Commands {
         /// Path for the source directory
         source_dir: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
+        #[arg(short, long, value_name = "OUTPUT_DIR", required = true, default_value = "./serval_xmp")]
         output_dir: PathBuf,
     },
 }
