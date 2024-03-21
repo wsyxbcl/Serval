@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
-    ExtractFilterType,
+    ExtractFilterType, TagType,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -91,8 +91,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Tags2img {
             taglist_path,
             image_path,
+            tag_type,
         } => {
-            write_taglist(absolute_path(taglist_path)?, image_path)?;
+            write_taglist(absolute_path(taglist_path)?, image_path, tag_type)?;
         }
         Commands::Capture { csv_path, output } => {
             get_temporal_independence(absolute_path(csv_path)?, output)?;
@@ -204,6 +205,9 @@ enum Commands {
         taglist_path: PathBuf,
         /// Path for the dummy image
         image_path: PathBuf,
+        /// Tag type: species or individual
+        #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
+        tag_type: TagType,
     },
     /// Perform temporal independence analysis (on csv file)
     #[command(arg_required_else_help = true)]

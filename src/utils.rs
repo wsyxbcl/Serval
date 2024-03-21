@@ -42,7 +42,7 @@ impl ResourceType {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum TagType {
     Species,
     Individual,
@@ -59,6 +59,12 @@ impl TagType {
         match self {
             TagType::Individual => "individuals",
             TagType::Species => "species",
+        }
+    }
+    pub fn digikam_tag_prefix(self) -> &'static str {
+        match self {
+            TagType::Individual => "Individual/",
+            TagType::Species => "Species/",
         }
     }
 }

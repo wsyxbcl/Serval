@@ -59,11 +59,11 @@ impl Validator for NumericSelectValidator {
     }
 }
 
-pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Result<()> {
+pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReader::from_path(taglist_path)?.finish()?;
-    let tags = tag_df.column("species").unwrap();
+    let tags = tag_df.column(tag_type.col_name()).unwrap();
 
     let ns_digikam = "http://www.digikam.org/ns/1.0/";
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
@@ -74,7 +74,7 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf) -> anyhow::Resu
             ns_digikam,
             "TagsList",
             xmp_toolkit::ItemPlacement::InsertBeforeIndex(1),
-            &XmpValue::new(format!("Species/{}", tag.unwrap())),
+            &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag.unwrap())),
         )?;
     }
 
@@ -115,10 +115,10 @@ fn retrieve_metadata(
 
             for property in xmp.property_array(ns_digikam, "TagsList") {
                 let tag = property.value;
-                if tag.starts_with("Species/") {
-                    species.push(tag.strip_prefix("Species/").unwrap().to_string());
-                } else if tag.starts_with("Individual/") {
-                    individuals.push(tag.strip_prefix("Individual/").unwrap().to_string());
+                if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
+                    species.push(tag.strip_prefix(TagType::Species.digikam_tag_prefix()).unwrap().to_string());
+                } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
+                    individuals.push(tag.strip_prefix(TagType::Individual.digikam_tag_prefix()).unwrap().to_string());
                 }
             }
         }
@@ -155,7 +155,7 @@ pub fn get_classifications(
     let mut individual_tags: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
-    
+
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(
