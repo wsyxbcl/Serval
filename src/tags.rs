@@ -63,8 +63,7 @@ pub fn write_taglist(taglist_path: PathBuf, image_path: PathBuf, tag_type: TagTy
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReader::from_path(taglist_path)?.finish()?;
-    let tags = tag_df.column(tag_type.col_name()).unwrap();
-
+    let tags = tag_df.column(tag_type.col_name())?.unique()?;
     let ns_digikam = "http://www.digikam.org/ns/1.0/";
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
