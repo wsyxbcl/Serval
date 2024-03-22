@@ -161,7 +161,6 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            required = true,
             default_value = "./serval_observe"
         )]
         output: PathBuf,
@@ -212,7 +211,6 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            required = true,
             default_value = "./serval_capture"
         )]
         output: PathBuf,
@@ -233,7 +231,6 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            required = true,
             default_value = "./serval_extract"
         )]
         output: PathBuf,
@@ -248,7 +245,6 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            required = true,
             default_value = "./serval_xmp"
         )]
         output_dir: PathBuf,
