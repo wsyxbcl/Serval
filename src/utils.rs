@@ -57,7 +57,7 @@ impl fmt::Display for TagType {
 impl TagType {
     pub fn col_name(self) -> &'static str {
         match self {
-            TagType::Individual => "individuals",
+            TagType::Individual => "individual",
             TagType::Species => "species",
         }
     }

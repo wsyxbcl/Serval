@@ -236,11 +236,11 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("species_tags").str().split(lit(",")).alias("species"),
+            col("species_tags").str().split(lit(",")).alias(TagType::Species.col_name()),
             col("individual_tags")
                 .str()
                 .split(lit(","))
-                .alias("individuals"),
+                .alias(TagType::Individual.col_name()),
         ])
         .collect()?;
     println!("{:?}", df_split);
@@ -250,8 +250,8 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([col("*")])
-        .explode(["individuals"])
-        .explode(["species"])
+        .explode([TagType::Individual.col_name()])
+        .explode([TagType::Species.col_name()])
         .collect()?;
     println!("{}", df_flatten);
 
@@ -266,8 +266,8 @@ pub fn get_classifications(
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col("species").value_counts(true, true)])
-        .unnest(["species"])
+        .select([col(TagType::Species.col_name()).value_counts(true, true)])
+        .unnest([TagType::Species.col_name()])
         .collect()?;
     println!("{:?}", df_count_species);
 
@@ -299,7 +299,7 @@ pub fn extract_resources(
         ExtractFilterType::Species => df
             .clone()
             .lazy()
-            .filter(col("species").eq(lit(filter_value)))
+            .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
             .select([col("path")])
             .collect()?,
         ExtractFilterType::PathRegex => df
@@ -310,7 +310,7 @@ pub fn extract_resources(
         ExtractFilterType::Individual => df
             .clone()
             .lazy()
-            .filter(col("individuals").eq(lit(filter_value)))
+            .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
             .select([col("path")])
             .collect()?,
         _ => {
@@ -451,7 +451,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let readline = rl.readline("Select the path corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
-    let exclude = ["", "Blank", "Useless data", "Unidentified", "Human"]; // TODO: make it configurable
+    let exclude = ["", "Blank", "Useless data", "Unidentified", "Human", "Unknown", "Blur"]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
 
     // Data processing
