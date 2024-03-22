@@ -86,8 +86,8 @@ pub fn write_taglist(
 
 fn retrieve_metadata(
     file_path: &String,
-) -> anyhow::Result<(Vec<String>, Vec<String>, String, String)> {
-    // Retrieve metadata from given file, including digikam taglist, datetime_original and datetime_digitized
+) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
+    // Retrieve metadata from given file, including digikam taglist, datetime_original, datetime_digitized and rating
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
@@ -96,6 +96,7 @@ fn retrieve_metadata(
     let mut individuals: Vec<String> = Vec::new();
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
+    let mut rating = String::new();
 
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
@@ -108,6 +109,9 @@ fn retrieve_metadata(
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
                 datetime_digitized = value.value.to_string();
+            }
+            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+                rating = value.value.to_string();
             }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
@@ -131,7 +135,7 @@ fn retrieve_metadata(
             }
         }
     }
-    Ok((species, individuals, datetime_original, datetime_digitized))
+    Ok((species, individuals, datetime_original, datetime_digitized, rating))
 }
 
 pub fn get_classifications(
@@ -163,24 +167,27 @@ pub fn get_classifications(
     let mut individual_tags: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
+    let mut ratings: Vec<String> = Vec::new();
 
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(
             |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                Ok((species, individuals, datetime_original, datetime_digitized)) => {
+                Ok((species, individuals, datetime_original, datetime_digitized, rating)) => {
                     pb.inc(1);
                     (
                         species.join(","),
                         individuals.join(","),
                         datetime_original,
                         datetime_digitized,
+                        rating,
                     )
                 }
                 Err(error) => {
                     pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     (
+                        "".to_string(),
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -195,6 +202,7 @@ pub fn get_classifications(
         individual_tags.push(tag.1);
         datetime_originals.push(tag.2);
         datetime_digitizeds.push(tag.3);
+        ratings.push(tag.4);
     }
 
     // Analysis
@@ -202,6 +210,7 @@ pub fn get_classifications(
     let s_individuals = Series::new("individual_tags", individual_tags);
     let s_datetime_original = Series::new("datetime_original", datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
+    let s_rating = Series::new("rating", ratings);
 
     let df_raw = DataFrame::new(vec![
         Series::new("path", image_paths),
@@ -210,6 +219,7 @@ pub fn get_classifications(
         s_individuals,
         s_datetime_original,
         s_datetime_digitized,
+        s_rating,
     ])?;
 
     let datetime_options = StrptimeOptions {
@@ -241,6 +251,7 @@ pub fn get_classifications(
                 .str()
                 .split(lit(","))
                 .alias(TagType::Individual.col_name()),
+            col("rating"),
         ])
         .collect()?;
     println!("{:?}", df_split);
@@ -305,6 +316,7 @@ pub fn extract_resources(
         ExtractFilterType::PathRegex => df
             .clone()
             .lazy()
+            //TODO use regex?
             .filter(col("path").str().contains_literal(lit(filter_value)))
             .collect()?,
         ExtractFilterType::Individual => df
@@ -313,12 +325,13 @@ pub fn extract_resources(
             .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
             .select([col("path")])
             .collect()?,
-        _ => {
-            return Ok(());
-        }
+        ExtractFilterType::Rating => df
+            .clone()
+            .lazy()
+            .filter(col("rating").eq(lit(filter_value)))
+            .select([col("path")])
+            .collect()?,
     };
-
-    // println!("{}", df_filtered);
 
     // Get the top level directory (to keep)
     let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO

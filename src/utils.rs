@@ -74,7 +74,7 @@ pub enum ExtractFilterType {
     Species,
     PathRegex,
     Individual,
-    _Favorite,
+    Rating,
 }
 
 fn is_ignored(entry: &DirEntry) -> bool {
@@ -136,7 +136,6 @@ pub fn resources_align(
 
     let resource_paths = path_enumerate(deploy_dir.clone(), ResourceType::Image);
     println!("{} images found: ", resource_paths.len());
-    // println!("{:?}", resource_paths);
 
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
