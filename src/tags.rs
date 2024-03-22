@@ -470,7 +470,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             col(target.col_name()),
         ])
         .drop_nulls(None)
-        .filter(col("species").is_in(lit(tag_exclude)).not())
+        .filter(col(target.col_name()).is_in(lit(tag_exclude)).not())
         .unique(
             Some(vec![
                 "deployment".to_string(),
@@ -484,7 +484,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let mut df_sorted = df_cleaned
         .lazy()
         .sort("time", Default::default())
-        .sort("species", Default::default())
+        .sort(target.col_name(), Default::default())
         .sort("deployment", Default::default())
         .collect()?;
 
@@ -495,7 +495,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             .lazy()
             .group_by_rolling(
                 col("time"),
-                [col("deployment"), col("species")],
+                [col("deployment"), col(target.col_name())],
                 RollingGroupOptions {
                     period: Duration::parse(format!("{}m", min_delta_time).as_str()),
                     offset: Duration::parse("0"),
@@ -503,7 +503,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 },
             )
             .agg([
-                col("species").count().alias("count"),
+                col(target.col_name()).count().alias("count"),
                 col("filename").last(),
             ])
             .filter(col("count").eq(lit(1)))
@@ -511,14 +511,14 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 col("deployment"),
                 col("filename"),
                 col("time"),
-                col("species"),
+                col(target.col_name()),
             ])
             .collect()?;
         println!("{}", df_capture_independent);
     } else {
         df_sorted.as_single_chunk_par();
         let mut iters = df_sorted
-            .columns(["time", "species", "deployment"])?
+            .columns(["time", target.col_name(), "deployment"])?
             .iter()
             .map(|s| s.iter())
             .collect::<Vec<_>>();
@@ -576,8 +576,8 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let mut df_count_independent = df_capture_independent
         .clone()
         .lazy()
-        .group_by_stable([col("deployment"), col("species")])
-        .agg([col("species").count().alias("count")])
+        .group_by_stable([col("deployment"), col(target.col_name())])
+        .agg([col(target.col_name()).count().alias("count")])
         .collect()?;
     println!("{}", df_count_independent);
 
