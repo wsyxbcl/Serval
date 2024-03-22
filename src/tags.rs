@@ -5,20 +5,17 @@ use crate::utils::{
 use indicatif::ProgressBar;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
+use rustyline::{
+    validate::{ValidationContext, ValidationResult, Validator},
+    Cmd, Completer, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, Helper,
+    Highlighter, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount, Result,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
 use xmp_toolkit::{xmp_ns, OpenFileOptions, XmpFile, XmpMeta, XmpValue};
-// use rustyline::error::ReadlineError;
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{
-    Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyCode, KeyEvent,
-    Modifiers, RepeatCount, Result,
-};
-
-use rustyline::{Completer, Helper, Highlighter, Hinter};
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -236,7 +233,10 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("species_tags").str().split(lit(",")).alias(TagType::Species.col_name()),
+            col("species_tags")
+                .str()
+                .split(lit(","))
+                .alias(TagType::Species.col_name()),
             col("individual_tags")
                 .str()
                 .split(lit(","))
@@ -451,7 +451,15 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let readline = rl.readline("Select the path corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
-    let exclude = ["", "Blank", "Useless data", "Unidentified", "Human", "Unknown", "Blur"]; // TODO: make it configurable
+    let exclude = [
+        "",
+        "Blank",
+        "Useless data",
+        "Unidentified",
+        "Human",
+        "Unknown",
+        "Blur",
+    ]; // TODO: make it configurable
     let tag_exclude = Series::new("tag_exclude", exclude);
 
     // Data processing
