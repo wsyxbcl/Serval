@@ -130,7 +130,6 @@ pub fn resources_align(
     let deploy_id = deploy_dir.file_name().unwrap();
     let deploy_path = deploy_dir.to_str();
 
-    let collection_name = working_dir.file_name().unwrap();
     let output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(output_dir.clone())?;
 
@@ -140,12 +139,12 @@ pub fn resources_align(
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_name = if resource.parent().unwrap().to_str() == deploy_path {
-            let mut resource_name = collection_name.to_os_string();
+            let mut resource_name = deploy_id.to_os_string();
             resource_name.push("-");
             resource_name.push(resource.file_name().unwrap());
             resource_name
         } else {
-            let mut resource_name = collection_name.to_os_string();
+            let mut resource_name = deploy_id.to_os_string();
             resource_name.push("-");
             resource_name.push(resource.parent().unwrap().file_name().unwrap());
             resource_name.push("-");
