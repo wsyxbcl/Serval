@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
-    ExtractFilterType, TagType,
+    ExtractFilterType, TagType, ResourceType
 };
 
 fn main() -> anyhow::Result<()> {
@@ -18,6 +18,7 @@ fn main() -> anyhow::Result<()> {
             output,
             project,
             deploy_table,
+            type_resource,
             dryrun,
             move_mode,
         } => {
@@ -27,12 +28,13 @@ fn main() -> anyhow::Result<()> {
                     absolute_path(path)?,
                     output,
                     deploy_table,
+                    type_resource,
                     dryrun,
                     move_mode,
                 )?;
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(absolute_path(path)?, output, dryrun, move_mode)?;
+                resources_align(absolute_path(path)?, output, type_resource, dryrun, move_mode)?;
             }
         }
         Commands::Observe {
@@ -142,6 +144,10 @@ enum Commands {
         /// Path for deployments table (deployments.csv)
         #[arg(short, long, value_name = "FILE", required = true)]
         deploy_table: PathBuf,
+
+        /// Resource type
+        #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
+        type_resource: ResourceType,
 
         /// Dry run
         #[arg(long)]

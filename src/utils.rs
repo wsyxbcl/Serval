@@ -8,7 +8,7 @@ use std::{
 };
 use walkdir::{DirEntry, WalkDir};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ResourceType {
     Xmp,
     Image,
@@ -124,6 +124,7 @@ pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<Pat
 pub fn resources_align(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
+    resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
 ) -> anyhow::Result<()> {
@@ -133,8 +134,8 @@ pub fn resources_align(
     let output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(output_dir.clone())?;
 
-    let resource_paths = path_enumerate(deploy_dir.clone(), ResourceType::Image);
-    println!("{} images found: ", resource_paths.len());
+    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
+    println!("{} {}(s) found in {}", resource_paths.len(), resource_type, deploy_dir.to_str().unwrap());
 
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
@@ -181,10 +182,10 @@ pub fn deployments_align(
     project_dir: PathBuf,
     output_dir: PathBuf,
     deploy_table: PathBuf,
+    resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
 ) -> anyhow::Result<()> {
-    // TODO: add file/path filter
     let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
     let deploy_array = deploy_df["deploymentID"].str()?;
 
@@ -199,6 +200,7 @@ pub fn deployments_align(
         resources_align(
             deploy_dir,
             collection_output_dir.clone(),
+            resource_type,
             dry_run,
             move_mode,
         )?;
