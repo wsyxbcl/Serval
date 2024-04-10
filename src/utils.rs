@@ -135,13 +135,14 @@ pub fn resources_align(
     fs::create_dir_all(output_dir.clone())?;
 
     let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
+    let num_resource = resource_paths.len();
     println!(
         "{} {}(s) found in {}",
-        resource_paths.len(),
+        num_resource,
         resource_type,
         deploy_dir.to_str().unwrap()
     );
-
+    let pb = indicatif::ProgressBar::new(num_resource as u64);
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_name = if resource.parent().unwrap().to_str() == deploy_path {
@@ -160,11 +161,13 @@ pub fn resources_align(
         output_path.push(output_dir.join(resource_name));
         if !dry_run {
             if move_mode {
-                println!("move {} to {}", resource.display(), output_path.display());
+                // pb.println(format!("move {} to {}", resource.display(), output_path.display()));
                 fs::rename(resource, output_path)?;
+                pb.inc(1);
             } else {
-                println!("copy {} to {}", resource.display(), output_path.display());
+                // pb.println(format!("copy {} to {}", resource.display(), output_path.display()));
                 fs::copy(resource, output_path)?;
+                pb.inc(1);
             }
         } else if move_mode {
             println!(
@@ -194,9 +197,6 @@ pub fn deployments_align(
     let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
     let deploy_array = deploy_df["deploymentID"].str()?;
 
-    // deploy_array.into_iter()
-    //     .for_each(|deploy| println!("{:?}", deploy))
-
     let deploy_iter = deploy_array.into_iter();
     for deploy_id in deploy_iter {
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
@@ -210,17 +210,7 @@ pub fn deployments_align(
             move_mode,
         )?;
     }
-    // for entry in project_dir.read_dir().unwrap() {
-    //     let collection_path = entry.unwrap().path();
-    //         for entry in collection_path.read_dir().unwrap() {
-    //             let deploy_path = entry.unwrap().path();
-    //             // let deploy_name = deploy_path.file_name().unwrap();
-    //             // let output_deploy_path = output_dir.join(deploy_name);
 
-    //             // TODO: Fix directory layout (output to <project_name>/<collection_name>/<deployment_id>)
-    //             resources_align(deploy_path, output_dir.clone());
-    //         }
-    // }
     Ok(())
 }
 
