@@ -135,7 +135,12 @@ pub fn resources_align(
     fs::create_dir_all(output_dir.clone())?;
 
     let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
-    println!("{} {}(s) found in {}", resource_paths.len(), resource_type, deploy_dir.to_str().unwrap());
+    println!(
+        "{} {}(s) found in {}",
+        resource_paths.len(),
+        resource_type,
+        deploy_dir.to_str().unwrap()
+    );
 
     for resource in resource_paths {
         let mut output_path = PathBuf::new();

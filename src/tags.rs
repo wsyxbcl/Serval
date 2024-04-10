@@ -135,7 +135,13 @@ fn retrieve_metadata(
             }
         }
     }
-    Ok((species, individuals, datetime_original, datetime_digitized, rating))
+    Ok((
+        species,
+        individuals,
+        datetime_original,
+        datetime_digitized,
+        rating,
+    ))
 }
 
 pub fn get_classifications(

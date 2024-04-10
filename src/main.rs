@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
-    ExtractFilterType, TagType, ResourceType
+    ExtractFilterType, ResourceType, TagType,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -34,7 +34,13 @@ fn main() -> anyhow::Result<()> {
                 )?;
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(absolute_path(path)?, output, type_resource, dryrun, move_mode)?;
+                resources_align(
+                    absolute_path(path)?,
+                    output,
+                    type_resource,
+                    dryrun,
+                    move_mode,
+                )?;
             }
         }
         Commands::Observe {
@@ -132,27 +138,21 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     Align {
         path: PathBuf,
-
         /// Directory for output(aligned) resources
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
-
         /// If the given path is a Project
         #[arg(short, long)]
         project: bool,
-
         /// Path for deployments table (deployments.csv)
         #[arg(short, long, value_name = "FILE", required = true)]
         deploy_table: PathBuf,
-
         /// Resource type
         #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
         type_resource: ResourceType,
-
         /// Dry run
         #[arg(long)]
         dryrun: bool,
-
         /// Move mode (instead of copy)
         #[arg(short, long)]
         move_mode: bool,
@@ -161,7 +161,6 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     Observe {
         media_dir: PathBuf,
-
         /// Output directory
         #[arg(
             short,
@@ -170,19 +169,15 @@ enum Commands {
             default_value = "./serval_observe"
         )]
         output: PathBuf,
-
         /// Read from XMP
         #[arg(short, long)]
         xmp: bool,
-
         /// Video only
         #[arg(long)]
         video: bool,
-
         /// Image only
         #[arg(long)]
         image: bool,
-
         /// Temporal independence analysis after retrieving
         #[arg(short, long)]
         independent: bool,
@@ -191,7 +186,6 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     Rename {
         project_dir: PathBuf,
-
         /// Dry run
         #[arg(long)]
         dryrun: bool,
