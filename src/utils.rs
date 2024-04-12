@@ -161,11 +161,9 @@ pub fn resources_align(
         output_path.push(output_dir.join(resource_name));
         if !dry_run {
             if move_mode {
-                // pb.println(format!("move {} to {}", resource.display(), output_path.display()));
                 fs::rename(resource, output_path)?;
                 pb.inc(1);
             } else {
-                // pb.println(format!("copy {} to {}", resource.display(), output_path.display()));
                 fs::copy(resource, output_path)?;
                 pb.inc(1);
             }
@@ -198,6 +196,8 @@ pub fn deployments_align(
     let deploy_array = deploy_df["deploymentID"].str()?;
 
     let deploy_iter = deploy_array.into_iter();
+    let num_iter = deploy_iter.len();
+    let pb = indicatif::ProgressBar::new(num_iter as u64);
     for deploy_id in deploy_iter {
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
@@ -209,8 +209,8 @@ pub fn deployments_align(
             dry_run,
             move_mode,
         )?;
+        pb.inc(1);
     }
-
     Ok(())
 }
 
