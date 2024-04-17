@@ -490,7 +490,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 .str()
                 .split(lit(get_path_seperator()))
                 .list()
-                .get(lit(num_option - deploy_path_index))
+                .get(lit(num_option - deploy_path_index), false)
                 .alias("deployment"),
             col("filename"),
             col("datetime_original").alias("time"),
@@ -509,18 +509,16 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .collect()?;
 
     let mut df_sorted = df_cleaned
-        .lazy()
-        .sort("time", Default::default())
-        .sort(target.col_name(), Default::default())
-        .sort("deployment", Default::default())
-        .collect()?;
+        .sort(["time"], SortMultipleOptions::default())?
+        .sort([target.col_name()], SortMultipleOptions::default())?
+        .sort(["deployment"], SortMultipleOptions::default())?;
 
     let mut df_capture_independent;
     if delta_time_compared_to == "LastRecord" {
         df_capture_independent = df_sorted
             .clone()
             .lazy()
-            .group_by_rolling(
+            .rolling(
                 col("time"),
                 [col("deployment"), col(target.col_name())],
                 RollingGroupOptions {
