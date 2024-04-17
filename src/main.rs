@@ -241,7 +241,12 @@ enum Commands {
         /// Path for the source directory
         source_dir: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", default_value = "./serval_output/serval_xmp")]
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_xmp"
+        )]
         output_dir: PathBuf,
     },
 }
