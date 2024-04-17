@@ -166,7 +166,7 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            default_value = "./serval_observe"
+            default_value = "./serval_output/serval_observe"
         )]
         output: PathBuf,
         /// Read from XMP
@@ -211,7 +211,7 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            default_value = "./serval_capture"
+            default_value = "./serval_output/serval_capture"
         )]
         output: PathBuf,
     },
@@ -231,7 +231,7 @@ enum Commands {
             short,
             long,
             value_name = "OUTPUT_DIR",
-            default_value = "./serval_extract"
+            default_value = "./serval_output/serval_extract"
         )]
         output: PathBuf,
     },
@@ -241,7 +241,7 @@ enum Commands {
         /// Path for the source directory
         source_dir: PathBuf,
         /// Output directory
-        #[arg(short, long, value_name = "OUTPUT_DIR", default_value = "./serval_xmp")]
+        #[arg(short, long, value_name = "OUTPUT_DIR", default_value = "./serval_output/serval_xmp")]
         output_dir: PathBuf,
     },
 }
