@@ -276,6 +276,7 @@ pub fn get_classifications(
     let mut file = std::fs::File::create(tags_csv_path.clone()).unwrap();
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .include_bom(true)
         .finish(&mut df_flatten)
         .unwrap();
     println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
@@ -289,7 +290,7 @@ pub fn get_classifications(
     println!("{:?}", df_count_species);
 
     let mut file = std::fs::File::create(output_dir.join("species_stats.csv"))?;
-    CsvWriter::new(&mut file).finish(&mut df_count_species)?;
+    CsvWriter::new(&mut file).include_bom(true).finish(&mut df_count_species)?;
     println!(
         "Saved to {}",
         output_dir.join("species_stats.csv").to_string_lossy()
@@ -594,6 +595,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let filename = format!("{}_temporal_independent.csv", target);
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
+        .include_bom(true)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .finish(&mut df_capture_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
@@ -609,6 +611,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let filename = format!("{}_temporal_independent_count.csv", target);
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
+        .include_bom(true)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .finish(&mut df_count_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
