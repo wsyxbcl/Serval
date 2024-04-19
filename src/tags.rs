@@ -290,7 +290,9 @@ pub fn get_classifications(
     println!("{:?}", df_count_species);
 
     let mut file = std::fs::File::create(output_dir.join("species_stats.csv"))?;
-    CsvWriter::new(&mut file).include_bom(true).finish(&mut df_count_species)?;
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut df_count_species)?;
     println!(
         "Saved to {}",
         output_dir.join("species_stats.csv").to_string_lossy()
