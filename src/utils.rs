@@ -75,6 +75,7 @@ pub enum ExtractFilterType {
     PathRegex,
     Individual,
     Rating,
+    Custom,
 }
 
 fn is_ignored(entry: &DirEntry) -> bool {

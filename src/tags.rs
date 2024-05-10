@@ -340,6 +340,12 @@ pub fn extract_resources(
             .filter(col("rating").eq(lit(filter_value)))
             .select([col("path")])
             .collect()?,
+        ExtractFilterType::Custom => df
+            .clone()
+            .lazy()
+            .filter(col("custom").eq(lit(filter_value)))
+            .select([col("path")])
+            .collect()?,
     };
 
     // Get the top level directory (to keep)
