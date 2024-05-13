@@ -84,10 +84,11 @@ pub fn write_taglist(
     Ok(())
 }
 
+type Metadata = (Vec<String>, Vec<String>, String, String, String);
 fn retrieve_metadata(
     file_path: &String,
-) -> anyhow::Result<(Vec<String>, Vec<String>, String, String, String)> {
-    // Retrieve metadata from given file, including digikam taglist, datetime_original, datetime_digitized and rating
+) -> anyhow::Result<Metadata> {
+    // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
