@@ -1,6 +1,6 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ignore_zone_designator, ExtractFilterType,
-    ResourceType, TagType,
+    absolute_path, get_path_seperator, ignore_zone_designator, is_temporal_independent,
+    path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -85,9 +85,7 @@ pub fn write_taglist(
 }
 
 type Metadata = (Vec<String>, Vec<String>, String, String, String);
-fn retrieve_metadata(
-    file_path: &String,
-) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
 
     let mut f = XmpFile::new()?;
