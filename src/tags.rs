@@ -1,5 +1,5 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ExtractFilterType,
+    absolute_path, get_path_seperator, is_temporal_independent, path_enumerate, ignore_zone_designator, ExtractFilterType,
     ResourceType, TagType,
 };
 use indicatif::ProgressBar;
@@ -105,10 +105,10 @@ fn retrieve_metadata(
     {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                datetime_original = value.value.to_string();
+                datetime_original = ignore_zone_designator(value.value.to_string());
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-                datetime_digitized = value.value.to_string();
+                datetime_digitized = ignore_zone_designator(value.value.to_string());
             }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();

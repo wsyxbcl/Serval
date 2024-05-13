@@ -291,3 +291,7 @@ pub fn get_path_seperator() -> &'static str {
         r"/"
     }
 }
+
+pub fn ignore_zone_designator(time: String) -> String {
+    time.replace('Z', "")
+}
