@@ -405,11 +405,11 @@ pub fn extract_resources(
             let relative_path_output = Path::new(input_path)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
-                output_dir.join(format!(
+                output_dir.join(relative_path_output.parent().unwrap()).join(format!(
                     "{}-{}-{}",
                     species_tag.unwrap(),
                     individual_tag.unwrap(),
-                    relative_path_output.to_string_lossy()
+                    relative_path_output.file_name().unwrap().to_string_lossy()
                 ))
             } else {
                 output_dir.join(relative_path_output)
