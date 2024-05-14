@@ -411,7 +411,7 @@ pub fn extract_resources(
                     relative_path_output.to_string_lossy()
                 ))
             } else {
-            output_dir.join(relative_path_output)
+                output_dir.join(relative_path_output)
             }
         };
 
