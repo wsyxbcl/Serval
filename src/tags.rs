@@ -315,6 +315,7 @@ pub fn extract_resources(
         .has_header(true)
         .with_ignore_errors(true)
         .with_try_parse_dates(true)
+        .with_missing_is_null(false)
         .finish()?;
     let df_filtered: DataFrame = match filter_type {
         ExtractFilterType::Species => df
