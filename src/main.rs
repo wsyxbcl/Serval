@@ -110,9 +110,10 @@ fn main() -> anyhow::Result<()> {
             csv_path,
             value,
             filter_type,
+            rename,
             output,
         } => {
-            extract_resources(value, filter_type, csv_path, output)?;
+            extract_resources(value, filter_type, rename, csv_path, output)?;
         }
         Commands::Xmp {
             source_dir,
@@ -226,6 +227,9 @@ enum Commands {
         /// Target value (or regex for the path)
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
+        /// Rename mode (including tags in filenames)
+        #[arg(long)]
+        rename: bool,
         /// Output directory
         #[arg(
             short,

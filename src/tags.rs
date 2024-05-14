@@ -3,6 +3,7 @@ use crate::utils::{
     path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
+use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
 use rustyline::{
@@ -306,6 +307,7 @@ pub fn get_classifications(
 pub fn extract_resources(
     filter_value: String,
     filter_type: ExtractFilterType,
+    rename: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
 ) -> anyhow::Result<()> {
@@ -319,7 +321,7 @@ pub fn extract_resources(
             .clone()
             .lazy()
             .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
-            .select([col("path")])
+            // .select([col("path")])
             .collect()?,
         ExtractFilterType::PathRegex => df
             .clone()
@@ -331,19 +333,19 @@ pub fn extract_resources(
             .clone()
             .lazy()
             .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
-            .select([col("path")])
+            // .select([col("path")])
             .collect()?,
         ExtractFilterType::Rating => df
             .clone()
             .lazy()
             .filter(col("rating").eq(lit(filter_value)))
-            .select([col("path")])
+            // .select([col("path")])
             .collect()?,
         ExtractFilterType::Custom => df
             .clone()
             .lazy()
             .filter(col("custom").eq(lit(filter_value)))
-            .select([col("path")])
+            // .select([col("path")])
             .collect()?,
     };
 
@@ -376,20 +378,43 @@ pub fn extract_resources(
         .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into().unwrap());
 
-    for path in df_filtered["path"].str()?.into_iter() {
+    let paths = df_filtered.column("path")?.str()?;
+    let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
+    let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
+
+    for (path, species_tag, individual_tag) in izip!(paths, species_tags, individual_tags) {
         let input_path = if path.unwrap().ends_with(".xmp") {
             path.unwrap().strip_suffix(".xmp").unwrap()
         } else {
             path.unwrap()
         };
         let output_path = if deploy_path_index == 0 {
-            let relative_path_output = Path::new(input_path).file_name().unwrap(); // Where's quote come from
-            output_dir.join(relative_path_output)
+            let relative_path_output = Path::new(input_path).file_name().unwrap();
+            if rename {
+                output_dir.join(format!(
+                    "{}-{}-{}",
+                    species_tag.unwrap(),
+                    individual_tag.unwrap(),
+                    relative_path_output.to_string_lossy()
+                ))
+            } else {
+                output_dir.join(relative_path_output)
+            }
         } else {
             let relative_path_output = Path::new(input_path)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            if rename {
+                output_dir.join(format!(
+                    "{}-{}-{}",
+                    species_tag.unwrap(),
+                    individual_tag.unwrap(),
+                    relative_path_output.to_string_lossy()
+                ))
+            } else {
             output_dir.join(relative_path_output)
+            }
         };
+
         pb.println(format!("Copying to {}", output_path.to_string_lossy()));
         fs::create_dir_all(output_path.parent().unwrap())?;
         // check if the file exists, if so, rename it
