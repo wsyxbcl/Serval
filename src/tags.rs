@@ -1,6 +1,6 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent,
-    path_enumerate, ExtractFilterType, ResourceType, TagType,
+    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent, path_enumerate,
+    ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
 use itertools::izip;
