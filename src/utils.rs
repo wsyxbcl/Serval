@@ -292,6 +292,8 @@ pub fn get_path_seperator() -> &'static str {
     }
 }
 
-pub fn ignore_zone_designator(time: String) -> String {
-    time.replace('Z', "")
+pub fn ignore_timezone(time: String) -> String {
+    let time_remove_designator = time.replace('Z', "");
+    let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
+    time_ignore_zone.to_string()
 }

@@ -1,5 +1,5 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, ignore_zone_designator, is_temporal_independent,
+    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent,
     path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
@@ -105,10 +105,10 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                datetime_original = ignore_zone_designator(value.value.to_string());
+                datetime_original = ignore_timezone(value.value.to_string());
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-                datetime_digitized = ignore_zone_designator(value.value.to_string());
+                datetime_digitized = ignore_timezone(value.value.to_string());
             }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
@@ -229,6 +229,7 @@ pub fn get_classifications(
     ])?;
 
     let datetime_options = StrptimeOptions {
+        // TODO: Serval does not include timezone info now
         format: Some("%Y-%m-%dT%H:%M:%S".into()),
         strict: false,
         ..Default::default()
