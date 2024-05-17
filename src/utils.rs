@@ -275,13 +275,13 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> bool {
+pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> anyhow::Result<bool> {
     // TODO Timezone
     let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
 
-    diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap()
+    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
 }
 
 pub fn get_path_seperator() -> &'static str {
@@ -292,8 +292,8 @@ pub fn get_path_seperator() -> &'static str {
     }
 }
 
-pub fn ignore_timezone(time: String) -> String {
+pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     let time_remove_designator = time.replace('Z', "");
     let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
-    time_ignore_zone.to_string()
+    Ok(time_ignore_zone.to_string())
 }

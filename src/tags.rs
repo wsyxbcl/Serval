@@ -105,10 +105,10 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                datetime_original = ignore_timezone(value.value.to_string());
+                datetime_original = ignore_timezone(value.value.to_string())?;
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-                datetime_digitized = ignore_timezone(value.value.to_string());
+                datetime_digitized = ignore_timezone(value.value.to_string())?;
             }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
@@ -609,7 +609,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             if i == 0
                 || species != last_indep_species
                 || deployment != last_indep_deployment
-                || is_temporal_independent(last_indep_time.clone(), time, min_delta_time)
+                || is_temporal_independent(last_indep_time.clone(), time, min_delta_time)?
             {
                 capture_independent.push(true);
                 last_indep_time = capture_time[i].to_string();
