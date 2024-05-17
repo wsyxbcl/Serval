@@ -2,3 +2,6 @@
 /serval_output
 /test
 /data
+
+# Pre-trained models for OCR
+*.rten

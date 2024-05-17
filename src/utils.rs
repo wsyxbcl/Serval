@@ -1,7 +1,11 @@
+use anyhow::Context;
 use chrono::NaiveDateTime;
 use core::fmt;
+use std::process::{Command, Stdio};
+use image::Rgb;
+use image::{GenericImageView, ImageBuffer, Rgba, imageops::crop};
 use polars::prelude::*;
-use std::io;
+use std::io::{self, Read};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -296,4 +300,33 @@ pub fn ignore_timezone(time: String) -> String {
     let time_remove_designator = time.replace('Z', "");
     let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
     time_ignore_zone.to_string()
+}
+
+pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>>{
+    let mut child = Command::new("ffmpeg")
+        .args(&[
+            "-i", video_path.to_str().unwrap(),
+            "-vf", "select=eq(n\\,0)",
+            "-vframes", "1",
+            "-f", "image2pipe",
+            "-vcodec", "png",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    
+    let mut output = child.stdout.take().context("Failed to open FFmpeg stdout")?;
+    let mut buffer = Vec::new();
+    output.read_to_end(&mut buffer)?;
+    child.wait()?;
+    Ok(buffer)
+}
+
+pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_ratio: f32, width_ratio: f32, height_ratio: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let (width, height) = image.dimensions();
+    let x = (width as f32 * x_ratio) as u32;
+    let y = (height as f32 * y_ratio) as u32;
+    let width = (width as f32 * width_ratio) as u32;
+    let height = (height as f32 * height_ratio) as u32;
+    crop(image, x, y, width, height).to_image()
 }

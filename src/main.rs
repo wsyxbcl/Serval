@@ -1,5 +1,6 @@
 mod tags;
 mod utils;
+mod ocr;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -8,6 +9,7 @@ use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
 };
+use ocr::timmstamp_ocr;
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -120,6 +122,9 @@ fn main() -> anyhow::Result<()> {
             output_dir,
         } => {
             copy_xmp(absolute_path(source_dir)?, output_dir)?;
+        }
+        Commands::Ocr { media_path } => {
+            timmstamp_ocr(media_path)?;
         }
     }
     Ok(())
@@ -252,5 +257,11 @@ enum Commands {
             default_value = "./serval_output/serval_xmp"
         )]
         output_dir: PathBuf,
+    },
+    /// Perform OCR on timestamped video
+    #[command(arg_required_else_help = true)]
+    Ocr {
+        /// Path for the media file
+        media_path: PathBuf,
     },
 }
