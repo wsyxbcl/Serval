@@ -1,9 +1,9 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use chrono::NaiveDateTime;
 use core::fmt;
 use std::process::{Command, Stdio};
 use image::Rgb;
-use image::{GenericImageView, ImageBuffer, Rgba, imageops::crop};
+use image::{ImageBuffer, imageops::crop};
 use polars::prelude::*;
 use std::io::{self, Read};
 use std::{
@@ -304,7 +304,7 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
 
 pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>>{
     let mut child = Command::new("ffmpeg")
-        .args(&[
+        .args([
             "-i", video_path.to_str().unwrap(),
             "-vf", "select=eq(n\\,0)",
             "-vframes", "1",
@@ -313,6 +313,7 @@ pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>>{
             "-",
         ])
         .stdout(Stdio::piped())
+        .stderr(Stdio::null()) // Suppress ffmpeg output
         .spawn()?;
     
     let mut output = child.stdout.take().context("Failed to open FFmpeg stdout")?;
@@ -329,4 +330,29 @@ pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_rat
     let width = (width as f32 * width_ratio) as u32;
     let height = (height as f32 * height_ratio) as u32;
     crop(image, x, y, width, height).to_image()
+}
+
+pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
+    let known_formats = [
+        "%m/%d/%Y/%H:%M:%S", // Ltl Acorn
+        "%m/%d/%Y %H:%M:%S", // Ltl Acorn
+        "%Y-%m-%d %H:%M:%S", // Uovision
+    ];
+    let regex_patterns = [
+        r"\d{2}/\d{2}/\d{4}/\d{2}:\d{2}:\d{2}", // Ltl Acorn
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", // Uovision
+    ];
+    let combined_pattern = regex_patterns.join("|");
+    let re = regex::Regex::new(&combined_pattern).unwrap();
+    for cap in re.captures_iter(&input) {
+        let datetime_str = cap.get(0).unwrap().as_str();
+
+        for format in &known_formats {
+            if let Ok(dt) = NaiveDateTime::parse_from_str(datetime_str, format) {
+                return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
+            }
+        }
+    }
+
+    Err(anyhow!("Failed to parse datetime from the input string"))
 }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rten::Model;
 
-use crate::utils::{extract_first_frame, crop_image};
+use crate::utils::{extract_first_frame, crop_image, extract_timestamp};
 
 // #[allow(unused)]
 // use rten_tensor::prelude::*;
@@ -31,12 +31,13 @@ pub fn timmstamp_ocr(media_path: PathBuf) -> anyhow::Result<()> {
 
     let img_data = extract_first_frame(media_path)?;
     let mut img = image::load_from_memory(&img_data).map(|image| image.into_rgb8())?;
-    let cropped_img = crop_image(&mut img, 0.5, 0.85, 0.5, 0.15);
+    let cropped_img = crop_image(&mut img, 0.4, 0.85, 0.6, 0.15);
     let img_source = ImageSource::from_bytes(cropped_img.as_raw(), cropped_img.dimensions())?;
     let ocr_input = engine.prepare_input(img_source)?;
 
     let ocr_text = engine.get_text(&ocr_input)?;
-    println!("OCR text: {}", ocr_text);
+    // println!("OCR text: {}", ocr_text);
+    println!("Extracted timestamp: {}", extract_timestamp(ocr_text)?);
 
     Ok(())
 }

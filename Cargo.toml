@@ -18,6 +18,7 @@ itertools = "0.12.1"
 ocrs = "0.7.0"
 polars = { version = "0.39.2", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones"] }
 rayon = "1.10.0"
+regex = "1.10.4"
 rten = "0.9.0"
 rustyline = { version = "13.0.0", features = ["derive"] }
 walkdir = "2.5.0"
