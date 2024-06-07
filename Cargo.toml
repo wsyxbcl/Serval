@@ -13,7 +13,7 @@ anyhow = "1.0.83"
 chrono = "0.4.35"
 clap = { version = "4.5.4", features = ["derive"] }
 indicatif = "0.17.8"
-itertools = "0.12.1"
+itertools = "0.13.0"
 polars = { version = "0.40.0", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
 rayon = "1.10.0"
 rustyline = { version = "13.0.0", features = ["derive"] }
