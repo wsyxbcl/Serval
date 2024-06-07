@@ -64,7 +64,9 @@ pub fn write_taglist(
 ) -> anyhow::Result<()> {
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
-    let tag_df = CsvReadOptions::default().try_into_reader_with_file_path(Some(taglist_path))?.finish()?;
+    let tag_df = CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(taglist_path))?
+        .finish()?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
     let ns_digikam = "http://www.digikam.org/ns/1.0/";
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
@@ -318,11 +320,11 @@ pub fn extract_resources(
         .with_parse_options(
             CsvParseOptions::default()
                 .with_try_parse_dates(true)
-                .with_missing_is_null(true)
+                .with_missing_is_null(true),
         )
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
-        
+
     let df_filtered: DataFrame = match filter_type {
         ExtractFilterType::Species => df
             .clone()
@@ -457,14 +459,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Temporal independence analysis
 
     let df = CsvReadOptions::default()
-    .with_has_header(true)
-    .with_ignore_errors(true)
-    .with_parse_options(
-        CsvParseOptions::default()
-            .with_try_parse_dates(true)
-    )
-    .try_into_reader_with_file_path(Some(csv_path))?
-    .finish()?;
+        .with_has_header(true)
+        .with_ignore_errors(true)
+        .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
 
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
