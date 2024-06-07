@@ -197,7 +197,9 @@ pub fn deployments_align(
     dry_run: bool,
     move_mode: bool,
 ) -> anyhow::Result<()> {
-    let deploy_df = CsvReader::from_path(deploy_table)?.finish()?;
+    let deploy_df = CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(deploy_table))?
+        .finish()?;
     let deploy_array = deploy_df["deploymentID"].str()?;
 
     let deploy_iter = deploy_array.into_iter();
@@ -279,7 +281,11 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn is_temporal_independent(time_ref: String, time: String, min_delta_time: i32) -> anyhow::Result<bool> {
+pub fn is_temporal_independent(
+    time_ref: String,
+    time: String,
+    min_delta_time: i32,
+) -> anyhow::Result<bool> {
     // TODO Timezone
     let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
