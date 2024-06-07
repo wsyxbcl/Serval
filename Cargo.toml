@@ -10,7 +10,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.83"
-chrono = "0.4.35"
+chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive"] }
 indicatif = "0.17.8"
 itertools = "0.13.0"
