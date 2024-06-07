@@ -15,11 +15,11 @@ clap = { version = "4.5.4", features = ["derive"] }
 image = "0.25.1"
 indicatif = "0.17.8"
 itertools = "0.13.0"
-ocrs = "0.7.0"
+ocrs = "0.8.0"
 polars = { version = "0.40.0", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
 rayon = "1.10.0"
 regex = "1.10.4"
-rten = "0.9.0"
+rten = "0.10.0"
 rustyline = { version = "14.0.0", features = ["derive"] }
 walkdir = "2.5.0"
 xmp_toolkit = "1.7.3"

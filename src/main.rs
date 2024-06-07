@@ -9,7 +9,7 @@ use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
 };
-use ocr::timmstamp_ocr;
+use ocr::{timmstamp_ocr, batch_ocr};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -123,8 +123,12 @@ fn main() -> anyhow::Result<()> {
         } => {
             copy_xmp(absolute_path(source_dir)?, output_dir)?;
         }
-        Commands::Ocr { media_path } => {
-            timmstamp_ocr(media_path)?;
+        Commands::Ocr { media_path, batch } => {
+            if batch {
+                batch_ocr(media_path)?;
+            } else {
+                timmstamp_ocr(media_path)?;
+            }
         }
     }
     Ok(())
@@ -263,5 +267,8 @@ enum Commands {
     Ocr {
         /// Path for the media file
         media_path: PathBuf,
+        /// Batch mode
+        #[arg(long)]
+        batch: bool,
     },
 }

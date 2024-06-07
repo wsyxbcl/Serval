@@ -741,6 +741,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hermit-abi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -865,6 +871,15 @@ name = "is_terminal_polyfill"
 version = "1.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8478577c03552c21db0e2724ffb8986a5ce7af88107e6be5d2ee6e158c12800"
+
+[[package]]
+name = "itertools"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
 
 [[package]]
 name = "itertools"
@@ -1182,6 +1197,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_cpus"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4161fcb6d602d4d2081af7c3a45852d875a03dd337a6bfdd6e06407b61342a43"
+dependencies = [
+ "hermit-abi",
+ "libc",
+]
+
+[[package]]
 name = "num_enum"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,9 +1235,9 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "ocrs"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37875b0b8c19cb9691dc15e882a6782810fb1f00967dfdbd43c0a93963807147"
+checksum = "04022287d9279e74c3d718cc7fd06fa57b48998bb2a24eb6e8582934220212a0"
 dependencies = [
  "anyhow",
  "rayon",
@@ -1866,7 +1891,7 @@ dependencies = [
  "built",
  "cfg-if",
  "interpolate_name",
- "itertools",
+ "itertools 0.12.1",
  "libc",
  "libfuzzer-sys",
  "log",
@@ -2000,13 +2025,15 @@ dependencies = [
 
 [[package]]
 name = "rten"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb9d6d80601e57cab46f477955be6e3be1a4c92ed0aebb3376e1f19d24e83bb1"
+checksum = "09c030cdf90e64c5eeeba389ca59da14b0a106b1b8366c15591251bb6a2e777f"
 dependencies = [
  "flatbuffers",
  "libm",
+ "num_cpus",
  "rayon",
+ "rten-simd",
  "rten-tensor",
  "rten-vecmath",
  "rustc-hash",
@@ -2016,27 +2043,36 @@ dependencies = [
 
 [[package]]
 name = "rten-imageproc"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "529fdef25f8232ebb08fb6cfc785ec97a7fb268bebc4895e36e8750e2bbeaa51"
+checksum = "5ba61077269b2b2c90445bfd55fb798dcd544b56e7fd78faaea51940b8e429ae"
 dependencies = [
  "rten-tensor",
 ]
 
 [[package]]
-name = "rten-tensor"
-version = "0.9.0"
+name = "rten-simd"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffa78180a98337a43163e9da8f202120e9ae3b82366cccfb05a5a854e48cd581"
+checksum = "8eb16da64e0d08ce56dc17d8304ab2da541176ee30430c0b0e581a7841a660ae"
+
+[[package]]
+name = "rten-tensor"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52f5e53d2e43bb736e89e4ea41b707e024190f8ba47c3eddf5a3c2d022089909"
 dependencies = [
  "smallvec",
 ]
 
 [[package]]
 name = "rten-vecmath"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "495f48d459768d61ca37b418f79ac7aac3a707024c79fa49a14dd2c1ad8a2c0e"
+checksum = "56eccc46a7e7a2df2cebb7ba95e613a01942a01e0f2f2f7d6122176ab7372e9f"
+dependencies = [
+ "rten-simd",
+]
 
 [[package]]
 name = "rustc-hash"
@@ -2188,7 +2224,7 @@ dependencies = [
  "clap",
  "image",
  "indicatif",
- "itertools",
+ "itertools 0.13.0",
  "ocrs",
  "polars",
  "rayon",
@@ -2336,7 +2372,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.38",
+ "syn 2.0.64",
 ]
 
 [[package]]

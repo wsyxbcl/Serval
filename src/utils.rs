@@ -36,7 +36,7 @@ impl ResourceType {
         }
     }
 
-    fn is_resource(self, path: &Path) -> bool {
+    pub fn is_resource(self, path: &Path) -> bool {
         match path.extension() {
             None => false,
             Some(x) => self
@@ -341,11 +341,12 @@ pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_rat
 pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
     let known_formats = [
         "%m/%d/%Y %H:%M:%S", // Ltl Acorn
+        "%m/%d/%Y-%H:%M:%S",
         "%Y-%m-%d %H:%M:%S", // Uovision, Ere
     ];
     let regex_patterns = [
-        r"\d{2}(?:[^0-9-])?\d{2}(?:[^0-9-])?\d{4}(?:\D)?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}", // Ltl Acorn
-        r"\d{4}(?:[^0-9/])?\d{2}(?:[^0-9/])?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}", // Uovision, Ere
+        r"\d{2}(?:[^0-9-])?\d{2}(?:[^0-9-])?\d{4}\D{0,2}\d{2}\D{0,2}\d{2}\D{0,2}\d{2}", // Ltl Acorn
+        r"\d{4}(?:[^0-9/])?\d{2}(?:[^0-9/])?\d{2}\D{0,2}\d{2}\D{0,2}\d{2}\D{0,2}\d{2}", // Uovision, Ere
     ];
     let combined_pattern = regex_patterns.join("|");
     let re = regex::Regex::new(&combined_pattern).unwrap();
@@ -359,7 +360,6 @@ pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
             }
         }
     }
-
     Err(anyhow!("Failed to parse datetime from the input string"))
 }
 
