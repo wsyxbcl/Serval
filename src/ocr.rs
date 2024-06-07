@@ -41,4 +41,3 @@ pub fn timmstamp_ocr(media_path: PathBuf) -> anyhow::Result<()> {
 
     Ok(())
 }
-

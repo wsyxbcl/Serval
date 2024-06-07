@@ -334,17 +334,17 @@ pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_rat
 
 pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
     let known_formats = [
-        "%m/%d/%Y/%H:%M:%S", // Ltl Acorn
         "%m/%d/%Y %H:%M:%S", // Ltl Acorn
-        "%Y-%m-%d %H:%M:%S", // Uovision
+        "%Y-%m-%d %H:%M:%S", // Uovision, Ere
     ];
     let regex_patterns = [
-        r"\d{2}/\d{2}/\d{4}/\d{2}:\d{2}:\d{2}", // Ltl Acorn
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", // Uovision
+        r"\d{2}(?:[^0-9-])?\d{2}(?:[^0-9-])?\d{4}(?:\D)?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}", // Ltl Acorn
+        r"\d{4}(?:[^0-9/])?\d{2}(?:[^0-9/])?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}(?:\D)?\d{2}", // Uovision, Ere
     ];
     let combined_pattern = regex_patterns.join("|");
     let re = regex::Regex::new(&combined_pattern).unwrap();
     for cap in re.captures_iter(&input) {
+        println!("Capture: {:?}", cap.get(0).unwrap().as_str());
         let datetime_str = cap.get(0).unwrap().as_str();
 
         for format in &known_formats {
@@ -356,3 +356,8 @@ pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
 
     Err(anyhow!("Failed to parse datetime from the input string"))
 }
+
+// fn fix_datetime_str(datetime_str: &str) -> String {
+//     // remove unwanted characters from OCR
+
+// }
