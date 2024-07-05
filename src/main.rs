@@ -9,7 +9,7 @@ use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
 };
-use ocr::{timmstamp_ocr, batch_ocr};
+use ocr::{timmstamp_ocr, batch_ocr_csv};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -123,11 +123,11 @@ fn main() -> anyhow::Result<()> {
         } => {
             copy_xmp(absolute_path(source_dir)?, output_dir)?;
         }
-        Commands::Ocr { media_path, batch } => {
+        Commands::Ocr { media_path, batch, output } => {
             if batch {
-                batch_ocr(media_path)?;
+                batch_ocr_csv(media_path, output)?;
             } else {
-                timmstamp_ocr(media_path)?;
+                timmstamp_ocr(media_path, true)?;
             }
         }
     }
@@ -270,5 +270,13 @@ enum Commands {
         /// Batch mode
         #[arg(long)]
         batch: bool,
+        /// Output directory
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_ocr"
+        )]
+        output: PathBuf,
     },
 }

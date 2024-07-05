@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use chrono::NaiveDateTime;
+use regex::Regex;
 use core::fmt;
 use std::process::{Command, Stdio};
 use image::Rgb;
@@ -312,7 +313,7 @@ pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>>{
     let mut child = Command::new("ffmpeg")
         .args([
             "-i", video_path.to_str().unwrap(),
-            "-vf", "select=eq(n\\,0)",
+            "-vf", "select=eq(n\\,72)",
             "-vframes", "1",
             "-f", "image2pipe",
             "-vcodec", "png",
@@ -339,31 +340,80 @@ pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_rat
 }
 
 pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
-    let known_formats = [
-        "%m/%d/%Y %H:%M:%S", // Ltl Acorn
-        "%m/%d/%Y-%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S", // Uovision, Ere
-    ];
+    // let known_formats = [
+    //     "%m/%d/%Y %H:%M:%S", // Ltl Acorn
+    //     "%m/%d/%Y-%H:%M:%S",
+    //     "%Y-%m-%d %H:%M:%S", // Uovision, Ere
+    // ];
     let regex_patterns = [
-        r"\d{2}(?:[^0-9-])?\d{2}(?:[^0-9-])?\d{4}\D{0,2}\d{2}\D{0,2}\d{2}\D{0,2}\d{2}", // Ltl Acorn
-        r"\d{4}(?:[^0-9/])?\d{2}(?:[^0-9/])?\d{2}\D{0,2}\d{2}\D{0,2}\d{2}\D{0,2}\d{2}", // Uovision, Ere
+        r"\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{4}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}", // Ltl Acorn
+        r"\d{4}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}", // Uovision, Ere
     ];
     let combined_pattern = regex_patterns.join("|");
     let re = regex::Regex::new(&combined_pattern).unwrap();
     for cap in re.captures_iter(&input) {
-        println!("Capture: {:?}", cap.get(0).unwrap().as_str());
         let datetime_str = cap.get(0).unwrap().as_str();
+        println!("Capture: {:?}", datetime_str);
+        let datetime_str_fixed = fix_ocr_timestamp(datetime_str)?;
+        println!("Fixed: {:?}", datetime_str_fixed);
 
-        for format in &known_formats {
-            if let Ok(dt) = NaiveDateTime::parse_from_str(datetime_str, format) {
-                return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
-            }
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&datetime_str_fixed, "%Y-%m-%d %H:%M:%S") {
+            return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
         }
     }
     Err(anyhow!("Failed to parse datetime from the input string"))
 }
 
-// fn fix_datetime_str(datetime_str: &str) -> String {
-//     // remove unwanted characters from OCR
+fn fix_ocr_timestamp(ts: &str) -> anyhow::Result<String> {
+    // Extract all digits from the input string
+    let re_digits = Regex::new(r"\d")?;
+    let digits: String = re_digits.find_iter(ts).map(|mat| mat.as_str()).collect();
 
-// }
+    // Ensure we have exactly 14 digits for YYYYMMDDHHMMSS
+    if digits.len() != 14 {
+        return Err(anyhow!("Error parsing timestamp: {} - not enough numeric parts", ts));
+    }
+
+    // Identify the format (MM/DD/YYYY or YYYY-MM-DD) and extract components
+    let re_ymd = Regex::new(r"^\d{4}[-/]\d{2}[-/]\d{2}")?;
+    let re_mdy = Regex::new(r"^\d{2}[-/]\d{2}[-/]\d{4}")?;
+
+    let cleaned_ts = if re_ymd.is_match(ts) {
+        // YYYY-MM-DD format
+        let year = &digits[0..4];
+        let month = &digits[4..6];
+        let day = &digits[6..8];
+        let hour = &digits[8..10];
+        let minute = &digits[10..12];
+        let second = &digits[12..14];
+        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
+    } else if re_mdy.is_match(ts) || ts.contains("/") {
+        // MM/DD/YYYY format
+        let month = &digits[0..2];
+        let day = &digits[2..4];
+        // for month larger than 12 swap month and day
+        let (month, day) = if month.parse::<i32>().unwrap() > 12{
+            (day, month)
+        } else {
+            (month, day)
+        };
+        let year = &digits[4..8];
+        let hour = &digits[8..10];
+        let minute = &digits[10..12];
+        let second = &digits[12..14];
+        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
+    } else {
+        // General case: assuming digits in the order YYYYMMDDHHMMSS
+        let year = &digits[0..4];
+        let month = &digits[4..6];
+        let day = &digits[6..8];
+        let hour = &digits[8..10];
+        let minute = &digits[10..12];
+        let second = &digits[12..14];
+        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
+    };
+
+    // Parse the cleaned timestamp
+    let parsed_ts = NaiveDateTime::parse_from_str(&cleaned_ts, "%Y-%m-%d %H:%M:%S")?;
+    Ok(parsed_ts.format("%Y-%m-%d %H:%M:%S").to_string())
+}
