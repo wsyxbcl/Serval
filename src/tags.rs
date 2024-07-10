@@ -316,6 +316,7 @@ pub fn extract_resources(
 ) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_has_header(true)
+        .with_infer_schema_length(Some(0)) // parse all columns as string
         .with_ignore_errors(true)
         .with_parse_options(
             CsvParseOptions::default()
@@ -325,7 +326,7 @@ pub fn extract_resources(
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
 
-    let df_filtered: DataFrame = match filter_type {
+        let df_filtered: DataFrame = match filter_type {
         ExtractFilterType::Species => df
             .clone()
             .lazy()
@@ -464,7 +465,6 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
-
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
     rl.bind_sequence(
