@@ -1,6 +1,6 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent, path_enumerate,append_ext, 
-    ExtractFilterType, ResourceType, TagType,
+    absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
+    path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -93,20 +93,28 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let pb = ProgressBar::new(media_count.try_into()?);
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
-        if media_xmp.open_file(media.clone(), OpenFileOptions::default().only_xmp().repair_file()).is_ok() {
+        if media_xmp
+            .open_file(
+                media.clone(),
+                OpenFileOptions::default().only_xmp().repair_file(),
+            )
+            .is_ok()
+        {
             if let Some(xmp) = media_xmp.xmp() {
                 let xmp_path = working_dir.join(append_ext("xmp", media)?);
                 // Check existence of xmp file
-                if xmp_path.exists() { 
+                if xmp_path.exists() {
                     pb.inc(1);
                     pb.println(format!("XMP file already exists: {}", xmp_path.display()));
                     continue;
                 }
                 fs::File::create(xmp_path.clone())?;
-                let xmp_string = xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+                let xmp_string = xmp.to_string_with_options(
+                    ToStringOptions::default().set_newline("\n".to_string()),
+                )?;
                 fs::write(xmp_path, xmp_string)?;
                 pb.inc(1);
-            }   
+            }
         } else {
             pb.println(format!("Failed to open file: {}", media.display()));
             pb.inc(1);
@@ -314,7 +322,12 @@ pub fn get_classifications(
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(true, true, "count".to_string(), false)])
+        .select([col(TagType::Species.col_name()).value_counts(
+            true,
+            true,
+            "count".to_string(),
+            false,
+        )])
         .unnest([TagType::Species.col_name()])
         .collect()?;
     println!("{:?}", df_count_species);
@@ -353,7 +366,7 @@ pub fn extract_resources(
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
 
-        let df_filtered: DataFrame = match filter_type {
+    let df_filtered: DataFrame = match filter_type {
         ExtractFilterType::Species => df
             .clone()
             .lazy()

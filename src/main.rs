@@ -3,9 +3,11 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist, init_xmp};
+use tags::{
+    extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist,
+};
 use utils::{
-    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align, 
+    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
 };
 

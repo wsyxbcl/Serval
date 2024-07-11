@@ -1,8 +1,7 @@
 use chrono::NaiveDateTime;
-use std::ffi::{OsStr, OsString};
-use xmp_toolkit::{OpenFileOptions, ToStringOptions, XmpFile, XmpMeta};
 use core::fmt;
 use polars::prelude::*;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::{
     env, fs,
@@ -289,8 +288,8 @@ pub fn is_temporal_independent(
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
 
-                Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
-            }
+    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
+}
 
 pub fn get_path_seperator() -> &'static str {
     if env::consts::OS == "windows" {
