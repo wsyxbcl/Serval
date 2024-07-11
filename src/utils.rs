@@ -1,4 +1,6 @@
 use chrono::NaiveDateTime;
+use std::ffi::{OsStr, OsString};
+use xmp_toolkit::{OpenFileOptions, ToStringOptions, XmpFile, XmpMeta};
 use core::fmt;
 use polars::prelude::*;
 use std::io;
@@ -287,8 +289,8 @@ pub fn is_temporal_independent(
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
     let diff = dt - dt_ref;
 
-    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
-}
+                Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
+            }
 
 pub fn get_path_seperator() -> &'static str {
     if env::consts::OS == "windows" {
@@ -302,4 +304,11 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     let time_remove_designator = time.replace('Z', "");
     let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
     Ok(time_ignore_zone.to_string())
+}
+
+pub fn append_ext(ext: impl AsRef<OsStr>, path: PathBuf) -> anyhow::Result<PathBuf> {
+    let mut os_string: OsString = path.into();
+    os_string.push(".");
+    os_string.push(ext.as_ref());
+    Ok(os_string.into())
 }

@@ -3,9 +3,9 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
+use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist, init_xmp};
 use utils::{
-    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
+    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align, 
     ExtractFilterType, ResourceType, TagType,
 };
 
@@ -118,8 +118,13 @@ fn main() -> anyhow::Result<()> {
         Commands::Xmp {
             source_dir,
             output_dir,
+            init,
         } => {
-            copy_xmp(absolute_path(source_dir)?, output_dir)?;
+            if init {
+                init_xmp(absolute_path(source_dir)?)?;
+            } else {
+                copy_xmp(absolute_path(source_dir)?, output_dir)?;
+            }
         }
     }
     Ok(())
@@ -252,5 +257,8 @@ enum Commands {
             default_value = "./serval_output/serval_xmp"
         )]
         output_dir: PathBuf,
+        /// Init mode (initialize xmp files)
+        #[arg(short, long)]
+        init: bool,
     },
 }

@@ -1,5 +1,5 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent, path_enumerate,
+    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent, path_enumerate,append_ext, 
     ExtractFilterType, ResourceType, TagType,
 };
 use indicatif::ProgressBar;
@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use xmp_toolkit::{xmp_ns, OpenFileOptions, XmpFile, XmpMeta, XmpValue};
+use xmp_toolkit::{xmp_ns, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue};
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -71,7 +71,7 @@ pub fn write_taglist(
     let ns_digikam = "http://www.digikam.org/ns/1.0/";
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
-    let mut meta = XmpMeta::from_str(dummy_xmp).unwrap();
+    let mut meta = XmpMeta::from_str(dummy_xmp)?;
     for tag in tags.str()? {
         meta.set_array_item(
             ns_digikam,
@@ -84,6 +84,34 @@ pub fn write_taglist(
     f.open_file(image_path, OpenFileOptions::default().for_update())?;
     f.put_xmp(&meta)?;
     f.close();
+    Ok(())
+}
+
+pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
+    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
+    let media_count = media_paths.len();
+    let pb = ProgressBar::new(media_count.try_into()?);
+    for media in media_paths {
+        let mut media_xmp = XmpFile::new()?;
+        if media_xmp.open_file(media.clone(), OpenFileOptions::default().only_xmp().repair_file()).is_ok() {
+            if let Some(xmp) = media_xmp.xmp() {
+                let xmp_path = working_dir.join(append_ext("xmp", media)?);
+                // Check existence of xmp file
+                if xmp_path.exists() { 
+                    pb.inc(1);
+                    pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+                    continue;
+                }
+                fs::File::create(xmp_path.clone())?;
+                let xmp_string = xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+                fs::write(xmp_path, xmp_string)?;
+                pb.inc(1);
+            }   
+        } else {
+            pb.println(format!("Failed to open file: {}", media.display()));
+            pb.inc(1);
+        }
+    }
     Ok(())
 }
 
@@ -276,12 +304,11 @@ pub fn get_classifications(
     println!("{}", df_flatten);
 
     let tags_csv_path = output_dir.join("tags.csv");
-    let mut file = std::fs::File::create(tags_csv_path.clone()).unwrap();
+    let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .include_bom(true)
-        .finish(&mut df_flatten)
-        .unwrap();
+        .finish(&mut df_flatten)?;
     println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
 
     let mut df_count_species = df_flatten
@@ -386,7 +413,7 @@ pub fn extract_resources(
         .ancestors()
         .nth(deploy_path_index + 1)
         .unwrap();
-    let pb = ProgressBar::new(df_filtered["path"].len().try_into().unwrap());
+    let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
 
     let paths = df_filtered.column("path")?.str()?;
     let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
