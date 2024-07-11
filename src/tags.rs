@@ -314,7 +314,7 @@ pub fn get_classifications(
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(true, true)])
+        .select([col(TagType::Species.col_name()).value_counts(true, true, "count".to_string(), false)])
         .unnest([TagType::Species.col_name()])
         .collect()?;
     println!("{:?}", df_count_species);
