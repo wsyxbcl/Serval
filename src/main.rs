@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
             image_path,
             tag_type,
         } => {
-            write_taglist(absolute_path(taglist_path)?, image_path, tag_type)?;
+            write_taglist(absolute_path(taglist_path)?, absolute_path(image_path)?, tag_type)?;
         }
         Commands::Capture { csv_path, output } => {
             get_temporal_independence(absolute_path(csv_path)?, output)?;
