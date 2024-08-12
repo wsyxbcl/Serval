@@ -1,5 +1,5 @@
 [package]
-name = "serval"
+name = "maze-serval"
 description = "Serval helps you prepare data for Maze and Trapper"
 repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
@@ -26,3 +26,6 @@ xmp_toolkit = "1.7.3"
 inherits = "release"
 opt-level = "s"
 lto = true
+
+[package.metadata]
+binary-name = "serval"
