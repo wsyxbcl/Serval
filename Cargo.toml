@@ -5,6 +5,8 @@ repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
 version = "0.2.8"
 edition = "2021"
+license = "GPL-3.0-or-later"
+keywords = ["camtrap", "camera-trap"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
