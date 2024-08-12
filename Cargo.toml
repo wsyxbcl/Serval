@@ -27,5 +27,6 @@ inherits = "release"
 opt-level = "s"
 lto = true
 
-[package.metadata]
-binary-name = "serval"
+[[bin]]
+name = "serval"
+path = "src/main.rs"
