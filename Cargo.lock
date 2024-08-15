@@ -188,9 +188,9 @@ checksum = "a2bd12c1caf447e69cd4528f47f94d203fd2582878ecb9e9465484c4148a8223"
 
 [[package]]
 name = "cc"
-version = "1.0.83"
+version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1174fb0b6ec23863f8b971027804a42614e347eafb0a95bf0b12cdae21fc4d0"
+checksum = "e9e8aabfac534be767c909e0690571677d49f41bd8465ae876fe043d52ba5292"
 dependencies = [
  "jobserver",
  "libc",
@@ -665,9 +665,9 @@ checksum = "9028f49264629065d057f340a86acb84867925865f73bbf8d47b4d149a7e88b8"
 
 [[package]]
 name = "jobserver"
-version = "0.1.27"
+version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c37f63953c4c63420ed5fd3d6d398c719489b9f872b9fa683262f8edd363c7d"
+checksum = "48d1dbcbbeb6a7fec7e059840aa538bd62aaccf972c7346c4d9d2059312853d0"
 dependencies = [
  "libc",
 ]
@@ -803,6 +803,22 @@ checksum = "57d27b317e207b10f69f5e75494119e391a96f48861ae870d1da6edac98ca900"
 dependencies = [
  "cc",
  "libc",
+]
+
+[[package]]
+name = "maze-serval"
+version = "0.2.9"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "indicatif",
+ "itertools",
+ "polars",
+ "rayon",
+ "rustyline",
+ "walkdir",
+ "xmp_toolkit",
 ]
 
 [[package]]
@@ -1761,22 +1777,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serval"
-version = "0.2.8"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "indicatif",
- "itertools",
- "polars",
- "rayon",
- "rustyline",
- "walkdir",
- "xmp_toolkit",
-]
-
-[[package]]
 name = "simd-json"
 version = "0.13.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2387,9 +2387,9 @@ dependencies = [
 
 [[package]]
 name = "xmp_toolkit"
-version = "1.7.3"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b194d62f3c9485532465a3bb480fb83abed28f6403e6472154ea56a8ab8f3b"
+checksum = "63d3ea8c4b8afb74909286a99c1f25680eddde7832b3919b741d960d860d9477"
 dependencies = [
  "cc",
  "fs_extra",
