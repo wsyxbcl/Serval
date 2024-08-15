@@ -65,6 +65,7 @@ pub fn write_taglist(
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
