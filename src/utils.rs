@@ -1,7 +1,7 @@
 use chrono::NaiveDateTime;
 use core::fmt;
-use std::collections::{HashMap, HashSet};
 use polars::prelude::*;
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::{
@@ -16,7 +16,7 @@ pub enum ResourceType {
     Image,
     Video,
     Media, // Image or Video
-    All, // All resources (for serval align)
+    All,   // All resources (for serval align)
 }
 
 impl fmt::Display for ResourceType {
@@ -148,7 +148,7 @@ pub fn resources_align(
         deploy_dir.to_str().unwrap()
     );
     let pb = indicatif::ProgressBar::new(num_resource as u64);
-let mut visited_path: HashSet<String> = HashSet::new();
+    let mut visited_path: HashSet<String> = HashSet::new();
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
@@ -174,15 +174,13 @@ let mut visited_path: HashSet<String> = HashSet::new();
                 fs::copy(resource, output_path)?;
                 pb.inc(1);
             }
-        } else {
-            if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
-                visited_path.insert(resource_parent.to_str().unwrap().to_string());
-                println!(
-                    "DRYRUN sample: From {} to {}",
-                    resource.display(),
-                    output_path.display()
-                );
-            }
+        } else if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
+            visited_path.insert(resource_parent.to_str().unwrap().to_string());
+            println!(
+                "DRYRUN sample: From {} to {}",
+                resource.display(),
+                output_path.display()
+            );
         }
     }
     Ok(())
