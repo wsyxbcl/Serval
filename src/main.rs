@@ -148,7 +148,7 @@ struct Cli {
 enum Commands {
     /// Align resources in given Deployment or Project (recursively)
     #[command(arg_required_else_help = true)]
-    Align {
+    Align { 
         path: PathBuf,
         /// Directory for output(aligned) resources
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]

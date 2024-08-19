@@ -1,5 +1,6 @@
 use chrono::NaiveDateTime;
 use core::fmt;
+use std::collections::{HashMap, HashSet};
 use polars::prelude::*;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -15,6 +16,7 @@ pub enum ResourceType {
     Image,
     Video,
     Media, // Image or Video
+    All, // All resources (for serval align)
 }
 
 impl fmt::Display for ResourceType {
@@ -30,6 +32,7 @@ impl ResourceType {
             ResourceType::Video => vec!["avi", "mp4", "mov"],
             ResourceType::Xmp => vec!["xmp"],
             ResourceType::Media => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov"],
+            ResourceType::All => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov", "xmp"],
         }
     }
 
@@ -145,9 +148,11 @@ pub fn resources_align(
         deploy_dir.to_str().unwrap()
     );
     let pb = indicatif::ProgressBar::new(num_resource as u64);
+let mut visited_path: HashSet<String> = HashSet::new();
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
-        let resource_name = if resource.parent().unwrap().to_str() == deploy_path {
+        let resource_parent = resource.parent().unwrap();
+        let resource_name = if resource_parent.to_str() == deploy_path {
             let mut resource_name = deploy_id.to_os_string();
             resource_name.push("-");
             resource_name.push(resource.file_name().unwrap());
@@ -169,18 +174,15 @@ pub fn resources_align(
                 fs::copy(resource, output_path)?;
                 pb.inc(1);
             }
-        } else if move_mode {
-            println!(
-                "DRYRUN: move {} to {}",
-                resource.display(),
-                output_path.display()
-            );
         } else {
-            println!(
-                "DRYRUN: copy {} to {}",
-                resource.display(),
-                output_path.display()
-            );
+            if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
+                visited_path.insert(resource_parent.to_str().unwrap().to_string());
+                println!(
+                    "DRYRUN sample: From {} to {}",
+                    resource.display(),
+                    output_path.display()
+                );
+            }
         }
     }
     Ok(())
