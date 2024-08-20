@@ -124,7 +124,14 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-type Metadata = (Vec<String>, Vec<String>, Vec<String>, String, String, String);
+type Metadata = (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    String,
+    String,
+    String,
+);
 fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
 
@@ -224,7 +231,14 @@ pub fn get_classifications(
         .into_par_iter()
         .map(
             |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                Ok((species, individuals, subjects, datetime_original, datetime_digitized, rating)) => {
+                Ok((
+                    species,
+                    individuals,
+                    subjects,
+                    datetime_original,
+                    datetime_digitized,
+                    rating,
+                )) => {
                     pb.inc(1);
                     (
                         species.join(","),
