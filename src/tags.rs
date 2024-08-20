@@ -132,7 +132,7 @@ type Metadata = (
     String,
     String,
 );
-fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(file_path: &String, include_subject: bool) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
 
     let mut f = XmpFile::new()?;
@@ -160,8 +160,10 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
             }
-            for property in xmp.property_array(xmp_ns::DC, "subject") {
-                subjects.push(property.value.to_string());
+            if include_subject {
+                for property in xmp.property_array(xmp_ns::DC, "subject") {
+                    subjects.push(property.value.to_string());
+                }
             }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
@@ -200,6 +202,7 @@ pub fn get_classifications(
     output_dir: PathBuf,
     resource_type: ResourceType,
     independent: bool,
+    include_subject: bool,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -229,8 +232,11 @@ pub fn get_classifications(
 
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
-        .map(
-            |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
+        .map(|i| {
+            match retrieve_metadata(
+                &file_paths[i].to_string_lossy().into_owned(),
+                include_subject,
+            ) {
                 Ok((
                     species,
                     individuals,
@@ -261,8 +267,8 @@ pub fn get_classifications(
                         "".to_string(),
                     )
                 }
-            },
-        )
+            }
+        })
         .collect();
     for tag in result {
         species_tags.push(tag.0);
@@ -298,7 +304,7 @@ pub fn get_classifications(
         strict: false,
         ..Default::default()
     };
-    let df_split = df_raw
+    let mut df_split = df_raw
         .clone()
         .lazy()
         .select([
@@ -328,7 +334,11 @@ pub fn get_classifications(
         .collect()?;
     println!("{:?}", df_split);
 
-    // Note that there's only individual info for P. uncia
+    if !include_subject {
+        let _ = df_split.drop_in_place("subjects")?;
+    }
+
+    // For multiple tags in a single image (individual only for two species that won't be in the same image)
     let mut df_flatten = df_split
         .clone()
         .lazy()

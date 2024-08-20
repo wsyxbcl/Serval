@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
             media_dir,
             output,
             xmp,
+            subject,
             video,
             image,
             independent,
@@ -59,6 +60,7 @@ fn main() -> anyhow::Result<()> {
                     output,
                     utils::ResourceType::Xmp,
                     independent,
+                    subject,
                 )?;
             } else if video {
                 if image {
@@ -67,6 +69,7 @@ fn main() -> anyhow::Result<()> {
                         output,
                         utils::ResourceType::Media,
                         independent,
+                        subject,
                     )?;
                 } else {
                     get_classifications(
@@ -74,6 +77,7 @@ fn main() -> anyhow::Result<()> {
                         output,
                         utils::ResourceType::Video,
                         independent,
+                        subject,
                     )?;
                 }
             } else if image {
@@ -82,6 +86,7 @@ fn main() -> anyhow::Result<()> {
                     output,
                     utils::ResourceType::Image,
                     independent,
+                    subject,
                 )?;
             } else {
                 get_classifications(
@@ -89,6 +94,7 @@ fn main() -> anyhow::Result<()> {
                     output,
                     utils::ResourceType::Media,
                     independent,
+                    subject,
                 )?;
             }
         }
@@ -184,6 +190,9 @@ enum Commands {
         /// Read from XMP
         #[arg(short, long)]
         xmp: bool,
+        #[arg(short, long)]
+        /// Include Subject metadata
+        subject: bool,
         /// Video only
         #[arg(long)]
         video: bool,
