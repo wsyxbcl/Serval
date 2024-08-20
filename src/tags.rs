@@ -124,7 +124,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-type Metadata = (Vec<String>, Vec<String>, String, String, String);
+type Metadata = (Vec<String>, Vec<String>, Vec<String>, String, String, String);
 fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
 
@@ -132,6 +132,7 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
 
     let mut species: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut individuals: Vec<String> = Vec::new();
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
@@ -151,6 +152,9 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
             }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
+            }
+            for property in xmp.property_array(xmp_ns::DC, "subject") {
+                subjects.push(property.value.to_string());
             }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
@@ -177,6 +181,7 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     Ok((
         species,
         individuals,
+        subjects,
         datetime_original,
         datetime_digitized,
         rating,
@@ -210,6 +215,7 @@ pub fn get_classifications(
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
@@ -218,11 +224,12 @@ pub fn get_classifications(
         .into_par_iter()
         .map(
             |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                Ok((species, individuals, datetime_original, datetime_digitized, rating)) => {
+                Ok((species, individuals, subjects, datetime_original, datetime_digitized, rating)) => {
                     pb.inc(1);
                     (
                         species.join(","),
                         individuals.join(","),
+                        subjects.join("|"), // for just human review
                         datetime_original,
                         datetime_digitized,
                         rating,
@@ -237,6 +244,7 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
                     )
                 }
             },
@@ -245,14 +253,16 @@ pub fn get_classifications(
     for tag in result {
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
-        datetime_originals.push(tag.2);
-        datetime_digitizeds.push(tag.3);
-        ratings.push(tag.4);
+        subjects.push(tag.2);
+        datetime_originals.push(tag.3);
+        datetime_digitizeds.push(tag.4);
+        ratings.push(tag.5);
     }
 
     // Analysis
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
+    let s_subjects = Series::new("subjects", subjects);
     let s_datetime_original = Series::new("datetime_original", datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
     let s_rating = Series::new("rating", ratings);
@@ -262,6 +272,7 @@ pub fn get_classifications(
         Series::new("filename", image_filenames),
         s_species,
         s_individuals,
+        s_subjects,
         s_datetime_original,
         s_datetime_digitized,
         s_rating,
@@ -297,6 +308,7 @@ pub fn get_classifications(
                 .str()
                 .split(lit(","))
                 .alias(TagType::Individual.col_name()),
+            col("subjects"),
             col("rating"),
         ])
         .collect()?;
