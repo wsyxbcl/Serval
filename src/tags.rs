@@ -1,6 +1,6 @@
 use crate::utils::{
     absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
-    path_enumerate, ExtractFilterType, ResourceType, TagType,
+    path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -569,9 +569,11 @@ pub fn extract_resources(
                 "Renamed to {}",
                 output_path_renamed.to_string_lossy()
             ));
-            fs::copy(input_path, output_path_renamed)?;
+            fs::copy(input_path, output_path_renamed.clone())?;
+            sync_modified_time(input_path.into(), output_path_renamed)?;
         } else {
-            fs::copy(input_path, output_path)?;
+            fs::copy(input_path, output_path.clone())?;
+            sync_modified_time(input_path.into(), output_path)?;
         }
         pb.inc(1);
     }
