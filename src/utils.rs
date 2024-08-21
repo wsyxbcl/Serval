@@ -1,9 +1,9 @@
 use chrono::NaiveDateTime;
 use core::fmt;
-use std::fs::{File, FileTimes};
 use polars::prelude::*;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
+use std::fs::{File, FileTimes};
 use std::io;
 use std::{
     env, fs,
@@ -316,7 +316,9 @@ pub fn append_ext(ext: impl AsRef<OsStr>, path: PathBuf) -> anyhow::Result<PathB
 pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
     let src = fs::metadata(source)?;
     let dest = File::options().write(true).open(target)?;
-    let times = FileTimes::new().set_accessed(src.accessed()?).set_modified(src.modified()?);
+    let times = FileTimes::new()
+        .set_accessed(src.accessed()?)
+        .set_modified(src.modified()?);
     dest.set_times(times)?;
     Ok(())
 }
