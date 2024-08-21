@@ -50,53 +50,32 @@ fn main() -> anyhow::Result<()> {
             output,
             xmp,
             subject,
+            modified_time,
             video,
             image,
             independent,
         } => {
-            if xmp {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Xmp,
-                    independent,
-                    subject,
-                )?;
+            let resource_type = if xmp {
+                utils::ResourceType::Xmp
             } else if video {
                 if image {
-                    get_classifications(
-                        absolute_path(media_dir)?,
-                        output,
-                        utils::ResourceType::Media,
-                        independent,
-                        subject,
-                    )?;
+                    utils::ResourceType::Media
                 } else {
-                    get_classifications(
-                        absolute_path(media_dir)?,
-                        output,
-                        utils::ResourceType::Video,
-                        independent,
-                        subject,
-                    )?;
+                    utils::ResourceType::Video
                 }
             } else if image {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Image,
-                    independent,
-                    subject,
-                )?;
+                utils::ResourceType::Image
             } else {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Media,
-                    independent,
-                    subject,
-                )?;
-            }
+                utils::ResourceType::Media
+            };
+            get_classifications(
+                absolute_path(media_dir)?,
+                output,
+                resource_type,
+                independent,
+                subject,
+                modified_time,
+            )?;
         }
         Commands::Rename {
             project_dir,
@@ -193,6 +172,9 @@ enum Commands {
         #[arg(short, long)]
         /// Include Subject metadata
         subject: bool,
+        #[arg(short, long)]
+        /// Include file modified time
+        modified_time: bool,
         /// Video only
         #[arg(long)]
         video: bool,

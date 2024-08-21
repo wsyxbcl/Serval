@@ -2,6 +2,7 @@ use crate::utils::{
     absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
     path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
+use chrono::{DateTime, Local, Utc};
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -125,26 +126,35 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 }
 
 type Metadata = (
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    String,
-    String,
-    String,
+    Vec<String>, // species
+    Vec<String>, // individuals
+    Vec<String>, // subjects
+    String,      // datetime_original
+    String,      // datetime_digitized
+    String,      // time_modified
+    String,      // rating
 );
-fn retrieve_metadata(file_path: &String, include_subject: bool) -> anyhow::Result<Metadata> {
-    // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
+
+fn retrieve_metadata(file_path: &String, include_subject: bool, include_time_modified: bool) -> anyhow::Result<Metadata> {
+    // Retrieve metadata from given file
+    // digikam taglist (species and individual), subject, datetime_original, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
 
     let mut species: Vec<String> = Vec::new();
-    let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut individuals: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
+    let mut time_modified = String::new();
     let mut rating = String::new();
 
+    if include_time_modified {
+        let file_metadata = fs::metadata(file_path)?;
+        let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
+        time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
+    }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
     if f.open_file(file_path, OpenFileOptions::default().only_xmp())
@@ -193,6 +203,7 @@ fn retrieve_metadata(file_path: &String, include_subject: bool) -> anyhow::Resul
         subjects,
         datetime_original,
         datetime_digitized,
+        time_modified,
         rating,
     ))
 }
@@ -203,6 +214,7 @@ pub fn get_classifications(
     resource_type: ResourceType,
     independent: bool,
     include_subject: bool,
+    include_time_modified: bool,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -228,6 +240,7 @@ pub fn get_classifications(
     let mut subjects: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
+    let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
     let result: Vec<_> = (0..num_images)
@@ -236,6 +249,7 @@ pub fn get_classifications(
             match retrieve_metadata(
                 &file_paths[i].to_string_lossy().into_owned(),
                 include_subject,
+                include_time_modified,
             ) {
                 Ok((
                     species,
@@ -243,6 +257,7 @@ pub fn get_classifications(
                     subjects,
                     datetime_original,
                     datetime_digitized,
+                    time_modified,
                     rating,
                 )) => {
                     pb.inc(1);
@@ -252,6 +267,7 @@ pub fn get_classifications(
                         subjects.join("|"), // for just human review
                         datetime_original,
                         datetime_digitized,
+                        time_modified,
                         rating,
                     )
                 }
@@ -259,6 +275,7 @@ pub fn get_classifications(
                     pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     (
+                        "".to_string(),
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -276,15 +293,16 @@ pub fn get_classifications(
         subjects.push(tag.2);
         datetime_originals.push(tag.3);
         datetime_digitizeds.push(tag.4);
-        ratings.push(tag.5);
+        time_modifieds.push(tag.5);
+        ratings.push(tag.6);
     }
-
     // Analysis
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
     let s_subjects = Series::new("subjects", subjects);
     let s_datetime_original = Series::new("datetime_original", datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
+    let s_time_modified = Series::new("time_modified", time_modifieds);
     let s_rating = Series::new("rating", ratings);
 
     let df_raw = DataFrame::new(vec![
@@ -295,6 +313,7 @@ pub fn get_classifications(
         s_subjects,
         s_datetime_original,
         s_datetime_digitized,
+        s_time_modified,
         s_rating,
     ])?;
 
@@ -320,6 +339,12 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
+            col("time_modified").str().to_datetime(
+                Some(TimeUnit::Milliseconds), 
+                None, 
+                datetime_options, 
+                lit("raise"), 
+            ).dt().replace_time_zone(None, lit("raise"), NonExistent::Raise),
             col("species_tags")
                 .str()
                 .split(lit(","))
@@ -336,6 +361,9 @@ pub fn get_classifications(
 
     if !include_subject {
         let _ = df_split.drop_in_place("subjects")?;
+    }
+    if !include_time_modified {
+        let _ = df_split.drop_in_place("time_modified")?;
     }
 
     // For multiple tags in a single image (individual only for two species that won't be in the same image)
