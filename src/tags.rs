@@ -263,8 +263,8 @@ pub fn get_classifications(
                 )) => {
                     pb.inc(1);
                     (
-                        species.join(","),
-                        individuals.join(","),
+                        species.join("|"),
+                        individuals.join("|"),
                         subjects.join("|"), // for just human review
                         datetime_original,
                         datetime_digitized,
@@ -348,11 +348,11 @@ pub fn get_classifications(
             ).dt().replace_time_zone(None, lit("raise"), NonExistent::Raise),
             col("species_tags")
                 .str()
-                .split(lit(","))
+                .split(lit("|"))
                 .alias(TagType::Species.col_name()),
             col("individual_tags")
                 .str()
-                .split(lit(","))
+                .split(lit("|"))
                 .alias(TagType::Individual.col_name()),
             col("subjects"),
             col("rating"),
