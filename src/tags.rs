@@ -215,6 +215,7 @@ pub fn get_classifications(
     independent: bool,
     include_subject: bool,
     include_time_modified: bool,
+    debug_mode: bool,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -365,7 +366,16 @@ pub fn get_classifications(
     if !include_time_modified {
         let _ = df_split.drop_in_place("time_modified")?;
     }
-
+    if debug_mode {
+        println!("{}", df_split);
+        let debug_csv_path = output_dir.join("raw.csv");
+        let mut file = std::fs::File::create(debug_csv_path.clone())?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .finish(&mut df_split)?;
+        println!("Saved to {}", debug_csv_path.to_string_lossy());
+    }
     // For multiple tags in a single image (individual only for two species that won't be in the same image)
     let mut df_flatten = df_split
         .clone()
