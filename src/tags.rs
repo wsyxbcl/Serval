@@ -2,7 +2,7 @@ use crate::utils::{
     absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
     path_enumerate, ExtractFilterType, ResourceType, TagType,
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -135,7 +135,11 @@ type Metadata = (
     String,      // rating
 );
 
-fn retrieve_metadata(file_path: &String, include_subject: bool, include_time_modified: bool) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(
+    file_path: &String,
+    include_subject: bool,
+    include_time_modified: bool,
+) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
     // digikam taglist (species and individual), subject, datetime_original, datetime_digitized, rating and file modified time
 
@@ -340,12 +344,16 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("time_modified").str().to_datetime(
-                Some(TimeUnit::Milliseconds), 
-                None, 
-                datetime_options, 
-                lit("raise"), 
-            ).dt().replace_time_zone(None, lit("raise"), NonExistent::Raise),
+            col("time_modified")
+                .str()
+                .to_datetime(
+                    Some(TimeUnit::Milliseconds),
+                    None,
+                    datetime_options,
+                    lit("raise"),
+                )
+                .dt()
+                .replace_time_zone(None, lit("raise"), NonExistent::Raise),
             col("species_tags")
                 .str()
                 .split(lit("|"))
