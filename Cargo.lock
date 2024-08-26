@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "maze-serval"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "chrono",

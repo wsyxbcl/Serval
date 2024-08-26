@@ -77,7 +77,7 @@ impl TagType {
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ExtractFilterType {
     Species,
-    PathRegex,
+    Path,
     Individual,
     Rating,
     Custom,

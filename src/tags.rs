@@ -310,7 +310,7 @@ pub fn get_classifications(
     let s_time_modified = Series::new("time_modified", time_modifieds);
     let s_rating = Series::new("rating", ratings);
 
-    let df_raw = DataFrame::new(vec![
+    let mut df_raw = DataFrame::new(vec![
         Series::new("path", image_paths),
         Series::new("filename", image_filenames),
         s_species,
@@ -375,13 +375,13 @@ pub fn get_classifications(
         let _ = df_split.drop_in_place("time_modified")?;
     }
     if debug_mode {
-        println!("{}", df_split);
+        println!("{}", df_raw);
         let debug_csv_path = output_dir.join("raw.csv");
         let mut file = std::fs::File::create(debug_csv_path.clone())?;
         CsvWriter::new(&mut file)
             .include_bom(true)
             .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
-            .finish(&mut df_split)?;
+            .finish(&mut df_raw)?;
         println!("Saved to {}", debug_csv_path.to_string_lossy());
     }
     // For multiple tags in a single image (individual only for two species that won't be in the same image)
@@ -456,7 +456,7 @@ pub fn extract_resources(
             .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
             // .select([col("path")])
             .collect()?,
-        ExtractFilterType::PathRegex => df
+        ExtractFilterType::Path => df
             .clone()
             .lazy()
             //TODO use regex?

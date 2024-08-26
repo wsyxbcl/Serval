@@ -160,7 +160,7 @@ enum Commands {
         #[arg(short, long)]
         move_mode: bool,
     },
-    /// Analyze media metadata
+    /// Retrieve tags from media metadata
     #[command(arg_required_else_help = true)]
     Observe {
         media_dir: PathBuf,
@@ -172,7 +172,7 @@ enum Commands {
             default_value = "./serval_output/serval_observe"
         )]
         output: PathBuf,
-        /// Read from XMP
+        /// Read from XMP files
         #[arg(short, long)]
         xmp: bool,
         #[arg(short, long)]
@@ -194,7 +194,7 @@ enum Commands {
         #[arg(short, long)]
         independent: bool,
     },
-    /// Rename deployment directory name, from deployment_name to deployment_id
+    /// Rename a deployment directory from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
     Rename {
         project_dir: PathBuf,
@@ -202,7 +202,7 @@ enum Commands {
         #[arg(long)]
         dryrun: bool,
     },
-    /// Write taglist to a (dummy) image file
+    /// Generate a (dummy) image file containing a list of tags
     #[command(arg_required_else_help = true)]
     Tags2img {
         /// Path for the taglist csv file
@@ -213,7 +213,7 @@ enum Commands {
         #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
         tag_type: TagType,
     },
-    /// Perform temporal independence analysis (on csv file)
+    /// Temporal independence analysis on a CSV file
     #[command(arg_required_else_help = true)]
     Capture {
         /// Path for tags.csv
@@ -227,21 +227,21 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    /// Extract and copy resources by filtering target value (based on tags.csv)
+    /// Extract and copy resources by filtering target values (based on tags.csv)
     #[command(arg_required_else_help = true)]
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
-        /// Filter on
+        /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// Target value (or regex for the path)
+        /// Define the target value (or substring for the path filter)
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
-        /// Rename mode (including tags in filenames)
+        /// Enable rename rename mode (including tags in filenames)
         #[arg(long)]
         rename: bool,
-        /// Output directory
+        /// Set the output directory
         #[arg(
             short,
             long,
@@ -250,7 +250,7 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    /// Copy all xmp files to a directory while keeping the directory structure
+    /// Copy all XMP files to a directory while keeping the directory structure
     #[command(arg_required_else_help = true)]
     Xmp {
         /// Path for the source directory
