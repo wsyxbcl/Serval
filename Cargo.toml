@@ -20,7 +20,7 @@ polars = { version = "0.41.3", features = ["lazy", "strings", "list_eval", "csv"
 rayon = "1.10.0"
 rustyline = { version = "14.0.0", features = ["derive"] }
 walkdir = "2.5.0"
-xmp_toolkit = "1.9.0"
+xmp_toolkit = "1.9.1"
 
 [profile.release-lto]
 inherits = "release"

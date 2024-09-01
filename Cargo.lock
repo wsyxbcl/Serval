@@ -2387,9 +2387,9 @@ dependencies = [
 
 [[package]]
 name = "xmp_toolkit"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63d3ea8c4b8afb74909286a99c1f25680eddde7832b3919b741d960d860d9477"
+checksum = "d260624768df11c388c0bf8ce4ee0254af93a4e307be3e18a49f0d3a5305ea5d"
 dependencies = [
  "cc",
  "fs_extra",
