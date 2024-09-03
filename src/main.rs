@@ -1,8 +1,9 @@
+mod ocr;
 mod tags;
 mod utils;
-mod ocr;
 
 use clap::{Parser, Subcommand};
+use ocr::{batch_ocr_csv, timmstamp_ocr};
 use std::path::PathBuf;
 use tags::{
     extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist,
@@ -11,7 +12,6 @@ use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
 };
-use ocr::{timmstamp_ocr, batch_ocr_csv};
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
@@ -125,7 +125,11 @@ fn main() -> anyhow::Result<()> {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
         }
-        Commands::Ocr { media_path, batch, output } => {
+        Commands::Ocr {
+            media_path,
+            batch,
+            output,
+        } => {
             if batch {
                 batch_ocr_csv(media_path, output)?;
             } else {

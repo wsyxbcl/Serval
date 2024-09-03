@@ -1,15 +1,15 @@
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use chrono::NaiveDateTime;
-use regex::Regex;
 use core::fmt;
-use std::process::{Command, Stdio};
 use image::Rgb;
-use image::{ImageBuffer, imageops::crop};
+use image::{imageops::crop, ImageBuffer};
 use polars::prelude::*;
-use std::io::{self, Read};
+use regex::Regex;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, FileTimes};
+use std::io::{self, Read};
+use std::process::{Command, Stdio};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -311,28 +311,42 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     Ok(time_ignore_zone.to_string())
 }
 
-pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>>{
+pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>> {
     let mut child = Command::new("ffmpeg")
         .args([
-            "-i", video_path.to_str().unwrap(),
-            "-vf", "select=eq(n\\,72)",
-            "-vframes", "1",
-            "-f", "image2pipe",
-            "-vcodec", "png",
+            "-i",
+            video_path.to_str().unwrap(),
+            "-vf",
+            "select=eq(n\\,72)",
+            "-vframes",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
             "-",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // Suppress ffmpeg output
         .spawn()?;
-    
-    let mut output = child.stdout.take().context("Failed to open FFmpeg stdout")?;
+
+    let mut output = child
+        .stdout
+        .take()
+        .context("Failed to open FFmpeg stdout")?;
     let mut buffer = Vec::new();
     output.read_to_end(&mut buffer)?;
     child.wait()?;
     Ok(buffer)
 }
 
-pub fn crop_image(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x_ratio: f32, y_ratio: f32, width_ratio: f32, height_ratio: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+pub fn crop_image(
+    image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+    x_ratio: f32,
+    y_ratio: f32,
+    width_ratio: f32,
+    height_ratio: f32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let (width, height) = image.dimensions();
     let x = (width as f32 * x_ratio) as u32;
     let y = (height as f32 * y_ratio) as u32;
@@ -373,7 +387,10 @@ fn fix_ocr_timestamp(ts: &str) -> anyhow::Result<String> {
 
     // Ensure we have exactly 14 digits for YYYYMMDDHHMMSS
     if digits.len() != 14 {
-        return Err(anyhow!("Error parsing timestamp: {} - not enough numeric parts", ts));
+        return Err(anyhow!(
+            "Error parsing timestamp: {} - not enough numeric parts",
+            ts
+        ));
     }
 
     // Identify the format (MM/DD/YYYY or YYYY-MM-DD) and extract components
@@ -389,12 +406,12 @@ fn fix_ocr_timestamp(ts: &str) -> anyhow::Result<String> {
         let minute = &digits[10..12];
         let second = &digits[12..14];
         format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
-    } else if re_mdy.is_match(ts) || ts.contains("/") {
+    } else if re_mdy.is_match(ts) || ts.contains('/') {
         // MM/DD/YYYY format
         let month = &digits[0..2];
         let day = &digits[2..4];
         // for month larger than 12 swap month and day
-        let (month, day) = if month.parse::<i32>().unwrap() > 12{
+        let (month, day) = if month.parse::<i32>().unwrap() > 12 {
             (day, month)
         } else {
             (month, day)

@@ -2,11 +2,11 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Ok;
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
-use polars::{lazy::dsl::StrptimeOptions, prelude::*};
+use polars::prelude::*;
 use rten::Model;
 
-use crate::utils::{extract_first_frame, crop_image, extract_timestamp, ResourceType};
-use imageproc::{contrast::adaptive_threshold, filter::bilateral_filter};
+use crate::utils::{crop_image, extract_first_frame, extract_timestamp};
+use imageproc::filter::bilateral_filter;
 
 // #[allow(unused)]
 // use rten_tensor::prelude::*;
@@ -17,14 +17,13 @@ fn file_path(path: &str) -> PathBuf {
     abs_path
 }
 
-pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<(String)> {
+pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<String> {
     // Use the `download-models.sh` script to download the models.
     let detection_model_path = file_path("assets/text-detection.rten");
     let rec_model_path = file_path("assets/text-recognition.rten");
 
     let detection_model = Model::load_file(detection_model_path)?;
     let recognition_model = Model::load_file(rec_model_path)?;
-
 
     let engine = OcrEngine::new(OcrEngineParams {
         detection_model: Some(detection_model),
@@ -48,13 +47,10 @@ pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<(S
         sigma_spatial = 20.;
     }
     // denoise the image
-    let mut cropped_img_gray = imageproc::map::map_colors(&cropped_img, |p| {
-        let luma = image::Luma([p[0]]);
-        luma
-    });
+    let cropped_img_gray = imageproc::map::map_colors(&cropped_img, |p| image::Luma([p[0]]));
     // invert
     // image::imageops::invert(&mut cropped_img_gray);
-    
+
     let denoised_img = bilateral_filter(&cropped_img_gray, 10, sigma_color, sigma_spatial);
 
     // save the cropped image to disk for debugging
@@ -67,7 +63,8 @@ pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<(S
     // let img_data_disk = image::open("cropped_img_demo.jpg")?.to_rgb8();
 
     // let img_source_disk = ImageSource::from_bytes(img_data_disk.as_raw(), img_data_disk.dimensions())?;
-    let img_source_memory = ImageSource::from_bytes(denoised_img.as_raw(), denoised_img.dimensions())?;
+    let img_source_memory =
+        ImageSource::from_bytes(denoised_img.as_raw(), denoised_img.dimensions())?;
 
     // let ocr_input_disk = engine.prepare_input(img_source_disk)?;
     // let ocr_text_disk = engine.get_text(&ocr_input_disk)?;
@@ -75,7 +72,6 @@ pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<(S
 
     let ocr_input_memory = engine.prepare_input(img_source_memory)?;
     let ocr_text_memory = engine.get_text(&ocr_input_memory)?;
-
 
     // let word_rects = engine.detect_words(&ocr_input_memory)?;
     // let line_rects = engine.find_text_lines(&ocr_input_memory, &word_rects);
