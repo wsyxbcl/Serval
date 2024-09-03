@@ -1,7 +1,8 @@
 use crate::utils::{
-    absolute_path, get_path_seperator, ignore_timezone, is_temporal_independent, path_enumerate,
-    ExtractFilterType, ResourceType, TagType,
+    absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
+    path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
 };
+use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -16,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use xmp_toolkit::{xmp_ns, OpenFileOptions, XmpFile, XmpMeta, XmpValue};
+use xmp_toolkit::{xmp_ns, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue};
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -65,13 +66,14 @@ pub fn write_taglist(
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
     let ns_digikam = "http://www.digikam.org/ns/1.0/";
     XmpMeta::register_namespace(ns_digikam, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
-    let mut meta = XmpMeta::from_str(dummy_xmp).unwrap();
+    let mut meta = XmpMeta::from_str(dummy_xmp)?;
     for tag in tags.str()? {
         meta.set_array_item(
             ns_digikam,
@@ -87,19 +89,76 @@ pub fn write_taglist(
     Ok(())
 }
 
-type Metadata = (Vec<String>, Vec<String>, String, String, String);
-fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
-    // Retrieve metadata from given file, including digikam taglist (species and individual), datetime_original, datetime_digitized and rating
+pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
+    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
+    let media_count = media_paths.len();
+    let pb = ProgressBar::new(media_count.try_into()?);
+    for media in media_paths {
+        let mut media_xmp = XmpFile::new()?;
+        if media_xmp
+            .open_file(
+                media.clone(),
+                OpenFileOptions::default().only_xmp().repair_file(),
+            )
+            .is_ok()
+        {
+            if let Some(xmp) = media_xmp.xmp() {
+                let xmp_path = working_dir.join(append_ext("xmp", media)?);
+                // Check existence of xmp file
+                if xmp_path.exists() {
+                    pb.inc(1);
+                    pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+                    continue;
+                }
+                fs::File::create(xmp_path.clone())?;
+                let xmp_string = xmp.to_string_with_options(
+                    ToStringOptions::default().set_newline("\n".to_string()),
+                )?;
+                fs::write(xmp_path, xmp_string)?;
+                pb.inc(1);
+            }
+        } else {
+            pb.println(format!("Failed to open file: {}", media.display()));
+            pb.inc(1);
+        }
+    }
+    Ok(())
+}
+
+type Metadata = (
+    Vec<String>, // species
+    Vec<String>, // individuals
+    Vec<String>, // subjects
+    String,      // datetime_original
+    String,      // datetime_digitized
+    String,      // time_modified
+    String,      // rating
+);
+
+fn retrieve_metadata(
+    file_path: &String,
+    include_subject: bool,
+    include_time_modified: bool,
+) -> anyhow::Result<Metadata> {
+    // Retrieve metadata from given file
+    // digikam taglist (species and individual), subject, datetime_original, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
 
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
+    let mut time_modified = String::new();
     let mut rating = String::new();
 
+    if include_time_modified {
+        let file_metadata = fs::metadata(file_path)?;
+        let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
+        time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
+    }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
     if f.open_file(file_path, OpenFileOptions::default().only_xmp())
@@ -114,6 +173,11 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
             }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
+            }
+            if include_subject {
+                for property in xmp.property_array(xmp_ns::DC, "subject") {
+                    subjects.push(property.value.to_string());
+                }
             }
             // Register the digikam namespace
             let ns_digikam = "http://www.digikam.org/ns/1.0/";
@@ -140,8 +204,10 @@ fn retrieve_metadata(file_path: &String) -> anyhow::Result<Metadata> {
     Ok((
         species,
         individuals,
+        subjects,
         datetime_original,
         datetime_digitized,
+        time_modified,
         rating,
     ))
 }
@@ -151,6 +217,9 @@ pub fn get_classifications(
     output_dir: PathBuf,
     resource_type: ResourceType,
     independent: bool,
+    include_subject: bool,
+    include_time_modified: bool,
+    debug_mode: bool,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -173,21 +242,37 @@ pub fn get_classifications(
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
+    let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
-        .map(
-            |i| match retrieve_metadata(&file_paths[i].to_string_lossy().into_owned()) {
-                Ok((species, individuals, datetime_original, datetime_digitized, rating)) => {
+        .map(|i| {
+            match retrieve_metadata(
+                &file_paths[i].to_string_lossy().into_owned(),
+                include_subject,
+                include_time_modified,
+            ) {
+                Ok((
+                    species,
+                    individuals,
+                    subjects,
+                    datetime_original,
+                    datetime_digitized,
+                    time_modified,
+                    rating,
+                )) => {
                     pb.inc(1);
                     (
-                        species.join(","),
-                        individuals.join(","),
+                        species.join("|"),
+                        individuals.join("|"),
+                        subjects.join("|"), // for just human review
                         datetime_original,
                         datetime_digitized,
+                        time_modified,
                         rating,
                     )
                 }
@@ -200,33 +285,40 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
                     )
                 }
-            },
-        )
+            }
+        })
         .collect();
     for tag in result {
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
-        datetime_originals.push(tag.2);
-        datetime_digitizeds.push(tag.3);
-        ratings.push(tag.4);
+        subjects.push(tag.2);
+        datetime_originals.push(tag.3);
+        datetime_digitizeds.push(tag.4);
+        time_modifieds.push(tag.5);
+        ratings.push(tag.6);
     }
-
     // Analysis
     let s_species = Series::new("species_tags", species_tags);
     let s_individuals = Series::new("individual_tags", individual_tags);
+    let s_subjects = Series::new("subjects", subjects);
     let s_datetime_original = Series::new("datetime_original", datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
+    let s_time_modified = Series::new("time_modified", time_modifieds);
     let s_rating = Series::new("rating", ratings);
 
-    let df_raw = DataFrame::new(vec![
+    let mut df_raw = DataFrame::new(vec![
         Series::new("path", image_paths),
         Series::new("filename", image_filenames),
         s_species,
         s_individuals,
+        s_subjects,
         s_datetime_original,
         s_datetime_digitized,
+        s_time_modified,
         s_rating,
     ])?;
 
@@ -236,7 +328,7 @@ pub fn get_classifications(
         strict: false,
         ..Default::default()
     };
-    let df_split = df_raw
+    let mut df_split = df_raw
         .clone()
         .lazy()
         .select([
@@ -252,20 +344,47 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
+            col("time_modified")
+                .str()
+                .to_datetime(
+                    Some(TimeUnit::Milliseconds),
+                    None,
+                    datetime_options,
+                    lit("raise"),
+                )
+                .dt()
+                .replace_time_zone(None, lit("raise"), NonExistent::Raise),
             col("species_tags")
                 .str()
-                .split(lit(","))
+                .split(lit("|"))
                 .alias(TagType::Species.col_name()),
             col("individual_tags")
                 .str()
-                .split(lit(","))
+                .split(lit("|"))
                 .alias(TagType::Individual.col_name()),
+            col("subjects"),
             col("rating"),
         ])
         .collect()?;
     println!("{:?}", df_split);
 
-    // Note that there's only individual info for P. uncia
+    if !include_subject {
+        let _ = df_split.drop_in_place("subjects")?;
+    }
+    if !include_time_modified {
+        let _ = df_split.drop_in_place("time_modified")?;
+    }
+    if debug_mode {
+        println!("{}", df_raw);
+        let debug_csv_path = output_dir.join("raw.csv");
+        let mut file = std::fs::File::create(debug_csv_path.clone())?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .finish(&mut df_raw)?;
+        println!("Saved to {}", debug_csv_path.to_string_lossy());
+    }
+    // For multiple tags in a single image (individual only for two species that won't be in the same image)
     let mut df_flatten = df_split
         .clone()
         .lazy()
@@ -276,18 +395,22 @@ pub fn get_classifications(
     println!("{}", df_flatten);
 
     let tags_csv_path = output_dir.join("tags.csv");
-    let mut file = std::fs::File::create(tags_csv_path.clone()).unwrap();
+    let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .include_bom(true)
-        .finish(&mut df_flatten)
-        .unwrap();
+        .finish(&mut df_flatten)?;
     println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
 
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(true, true)])
+        .select([col(TagType::Species.col_name()).value_counts(
+            true,
+            true,
+            "count".to_string(),
+            false,
+        )])
         .unnest([TagType::Species.col_name()])
         .collect()?;
     println!("{:?}", df_count_species);
@@ -316,6 +439,7 @@ pub fn extract_resources(
 ) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_has_header(true)
+        .with_infer_schema_length(Some(0)) // parse all columns as string
         .with_ignore_errors(true)
         .with_parse_options(
             CsvParseOptions::default()
@@ -332,7 +456,7 @@ pub fn extract_resources(
             .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
             // .select([col("path")])
             .collect()?,
-        ExtractFilterType::PathRegex => df
+        ExtractFilterType::Path => df
             .clone()
             .lazy()
             //TODO use regex?
@@ -385,7 +509,7 @@ pub fn extract_resources(
         .ancestors()
         .nth(deploy_path_index + 1)
         .unwrap();
-    let pb = ProgressBar::new(df_filtered["path"].len().try_into().unwrap());
+    let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
 
     let paths = df_filtered.column("path")?.str()?;
     let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
@@ -445,9 +569,11 @@ pub fn extract_resources(
                 "Renamed to {}",
                 output_path_renamed.to_string_lossy()
             ));
-            fs::copy(input_path, output_path_renamed)?;
+            fs::copy(input_path, output_path_renamed.clone())?;
+            sync_modified_time(input_path.into(), output_path_renamed)?;
         } else {
-            fs::copy(input_path, output_path)?;
+            fs::copy(input_path, output_path.clone())?;
+            sync_modified_time(input_path.into(), output_path)?;
         }
         pb.inc(1);
     }
@@ -464,7 +590,6 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
-
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
     rl.bind_sequence(

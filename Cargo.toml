@@ -1,32 +1,38 @@
 [package]
-name = "serval"
+name = "maze-serval"
 description = "Serval helps you prepare data for Maze and Trapper"
 repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
 version = "0.2.8-ocr-alpha"
 edition = "2021"
+license = "GPL-3.0-or-later"
+keywords = ["camtrap", "camera-trap"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.86"
 chrono = "0.4.38"
-clap = { version = "4.5.4", features = ["derive"] }
+clap = { version = "4.5.13", features = ["derive"] }
 image = "0.25.1"
 imageproc = "0.25.0"
 indicatif = "0.17.8"
 itertools = "0.13.0"
 ocrs = "0.8.0"
-polars = { version = "0.40.0", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
+polars = { version = "0.41.3", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
 rayon = "1.10.0"
 regex = "1.10.4"
 rten = "0.10.0"
 rten-tensor = "0.10.0"
 rustyline = { version = "14.0.0", features = ["derive"] }
 walkdir = "2.5.0"
-xmp_toolkit = "1.7.3"
+xmp_toolkit = "1.9.0"
 
 [profile.release-lto]
 inherits = "release"
 opt-level = "s"
 lto = true
+
+[[bin]]
+name = "serval"
+path = "src/main.rs"

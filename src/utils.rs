@@ -7,6 +7,9 @@ use image::Rgb;
 use image::{ImageBuffer, imageops::crop};
 use polars::prelude::*;
 use std::io::{self, Read};
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, FileTimes};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -19,6 +22,7 @@ pub enum ResourceType {
     Image,
     Video,
     Media, // Image or Video
+    All,   // All resources (for serval align)
 }
 
 impl fmt::Display for ResourceType {
@@ -34,6 +38,7 @@ impl ResourceType {
             ResourceType::Video => vec!["avi", "mp4", "mov"],
             ResourceType::Xmp => vec!["xmp"],
             ResourceType::Media => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov"],
+            ResourceType::All => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov", "xmp"],
         }
     }
 
@@ -77,7 +82,7 @@ impl TagType {
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ExtractFilterType {
     Species,
-    PathRegex,
+    Path,
     Individual,
     Rating,
     Custom,
@@ -149,9 +154,11 @@ pub fn resources_align(
         deploy_dir.to_str().unwrap()
     );
     let pb = indicatif::ProgressBar::new(num_resource as u64);
+    let mut visited_path: HashSet<String> = HashSet::new();
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
-        let resource_name = if resource.parent().unwrap().to_str() == deploy_path {
+        let resource_parent = resource.parent().unwrap();
+        let resource_name = if resource_parent.to_str() == deploy_path {
             let mut resource_name = deploy_id.to_os_string();
             resource_name.push("-");
             resource_name.push(resource.file_name().unwrap());
@@ -173,15 +180,10 @@ pub fn resources_align(
                 fs::copy(resource, output_path)?;
                 pb.inc(1);
             }
-        } else if move_mode {
+        } else if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
+            visited_path.insert(resource_parent.to_str().unwrap().to_string());
             println!(
-                "DRYRUN: move {} to {}",
-                resource.display(),
-                output_path.display()
-            );
-        } else {
-            println!(
-                "DRYRUN: copy {} to {}",
+                "DRYRUN sample: From {} to {}",
                 resource.display(),
                 output_path.display()
             );
@@ -416,4 +418,20 @@ fn fix_ocr_timestamp(ts: &str) -> anyhow::Result<String> {
     // Parse the cleaned timestamp
     let parsed_ts = NaiveDateTime::parse_from_str(&cleaned_ts, "%Y-%m-%d %H:%M:%S")?;
     Ok(parsed_ts.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+pub fn append_ext(ext: impl AsRef<OsStr>, path: PathBuf) -> anyhow::Result<PathBuf> {
+    let mut os_string: OsString = path.into();
+    os_string.push(".");
+    os_string.push(ext.as_ref());
+    Ok(os_string.into())
+}
+
+pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
+    let src = fs::metadata(source)?;
+    let dest = File::options().write(true).open(target)?;
+    let times = FileTimes::new()
+        .set_accessed(src.accessed()?)
+        .set_modified(src.modified()?);
+    dest.set_times(times)?;
+    Ok(())
 }

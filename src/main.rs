@@ -4,7 +4,9 @@ mod ocr;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tags::{extract_resources, get_classifications, get_temporal_independence, write_taglist};
+use tags::{
+    extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist,
+};
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
     ExtractFilterType, ResourceType, TagType,
@@ -49,48 +51,39 @@ fn main() -> anyhow::Result<()> {
             media_dir,
             output,
             xmp,
+            mut subject,
+            mut modified_time,
             video,
             image,
             independent,
+            debug,
         } => {
-            if xmp {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Xmp,
-                    independent,
-                )?;
+            let resource_type = if xmp {
+                utils::ResourceType::Xmp
             } else if video {
                 if image {
-                    get_classifications(
-                        absolute_path(media_dir)?,
-                        output,
-                        utils::ResourceType::Media,
-                        independent,
-                    )?;
+                    utils::ResourceType::Media
                 } else {
-                    get_classifications(
-                        absolute_path(media_dir)?,
-                        output,
-                        utils::ResourceType::Video,
-                        independent,
-                    )?;
+                    utils::ResourceType::Video
                 }
             } else if image {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Image,
-                    independent,
-                )?;
+                utils::ResourceType::Image
             } else {
-                get_classifications(
-                    absolute_path(media_dir)?,
-                    output,
-                    utils::ResourceType::Media,
-                    independent,
-                )?;
+                utils::ResourceType::Media
+            };
+            if debug {
+                subject = true;
+                modified_time = true;
             }
+            get_classifications(
+                absolute_path(media_dir)?,
+                output,
+                resource_type,
+                independent,
+                subject,
+                modified_time,
+                debug,
+            )?;
         }
         Commands::Rename {
             project_dir,
@@ -103,7 +96,11 @@ fn main() -> anyhow::Result<()> {
             image_path,
             tag_type,
         } => {
-            write_taglist(absolute_path(taglist_path)?, image_path, tag_type)?;
+            write_taglist(
+                absolute_path(taglist_path)?,
+                absolute_path(image_path)?,
+                tag_type,
+            )?;
         }
         Commands::Capture { csv_path, output } => {
             get_temporal_independence(absolute_path(csv_path)?, output)?;
@@ -120,8 +117,13 @@ fn main() -> anyhow::Result<()> {
         Commands::Xmp {
             source_dir,
             output_dir,
+            init,
         } => {
-            copy_xmp(absolute_path(source_dir)?, output_dir)?;
+            if init {
+                init_xmp(absolute_path(source_dir)?)?;
+            } else {
+                copy_xmp(absolute_path(source_dir)?, output_dir)?;
+            }
         }
         Commands::Ocr { media_path, batch, output } => {
             if batch {
@@ -167,7 +169,7 @@ enum Commands {
         #[arg(short, long)]
         move_mode: bool,
     },
-    /// Analyze media metadata
+    /// Retrieve tags from media metadata
     #[command(arg_required_else_help = true)]
     Observe {
         media_dir: PathBuf,
@@ -179,20 +181,29 @@ enum Commands {
             default_value = "./serval_output/serval_observe"
         )]
         output: PathBuf,
-        /// Read from XMP
+        /// Read from XMP files
         #[arg(short, long)]
         xmp: bool,
+        #[arg(short, long)]
+        /// Include Subject metadata
+        subject: bool,
+        #[arg(short, long)]
+        /// Include file modified time
+        modified_time: bool,
         /// Video only
         #[arg(long)]
         video: bool,
         /// Image only
         #[arg(long)]
         image: bool,
+        /// Debug mode
+        #[arg(short, long)]
+        debug: bool,
         /// Temporal independence analysis after retrieving
         #[arg(short, long)]
         independent: bool,
     },
-    /// Rename deployment directory name, from deployment_name to deployment_id
+    /// Rename a deployment directory from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
     Rename {
         project_dir: PathBuf,
@@ -200,7 +211,7 @@ enum Commands {
         #[arg(long)]
         dryrun: bool,
     },
-    /// Write taglist to a (dummy) image file
+    /// Generate a (dummy) image file containing a list of tags
     #[command(arg_required_else_help = true)]
     Tags2img {
         /// Path for the taglist csv file
@@ -211,7 +222,7 @@ enum Commands {
         #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
         tag_type: TagType,
     },
-    /// Perform temporal independence analysis (on csv file)
+    /// Temporal independence analysis on a CSV file
     #[command(arg_required_else_help = true)]
     Capture {
         /// Path for tags.csv
@@ -225,21 +236,21 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    /// Extract and copy resources by filtering target value (based on tags.csv)
+    /// Extract and copy resources by filtering target values (based on tags.csv)
     #[command(arg_required_else_help = true)]
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
-        /// Filter on
+        /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// Target value (or regex for the path)
+        /// Define the target value (or substring for the path filter)
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
-        /// Rename mode (including tags in filenames)
+        /// Enable rename rename mode (including tags in filenames)
         #[arg(long)]
         rename: bool,
-        /// Output directory
+        /// Set the output directory
         #[arg(
             short,
             long,
@@ -248,7 +259,7 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    /// Copy all xmp files to a directory while keeping the directory structure
+    /// Copy all XMP files to a directory while keeping the directory structure
     #[command(arg_required_else_help = true)]
     Xmp {
         /// Path for the source directory
@@ -261,6 +272,9 @@ enum Commands {
             default_value = "./serval_output/serval_xmp"
         )]
         output_dir: PathBuf,
+        /// Init mode (initialize xmp files)
+        #[arg(short, long)]
+        init: bool,
     },
     /// Perform OCR on timestamped video
     #[command(arg_required_else_help = true)]
