@@ -28,6 +28,7 @@ pub fn timmstamp_ocr(media_path: PathBuf, debug_mode: bool) -> anyhow::Result<St
     let engine = OcrEngine::new(OcrEngineParams {
         detection_model: Some(detection_model),
         recognition_model: Some(recognition_model),
+        // alphabet: Some("1234567890:-".to_string()),
         ..Default::default()
     })?;
 
