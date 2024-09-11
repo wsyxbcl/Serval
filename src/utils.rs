@@ -153,20 +153,28 @@ pub fn resources_align(
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
-        let resource_name = if resource_parent.to_str() == deploy_path {
-            let mut resource_name = deploy_id.to_os_string();
+        let mut parent_names: Vec<OsString> = Vec::new();
+
+        let mut resource_name = deploy_id.to_os_string();
+        let mut current_parent = resource.parent();
+        while let Some(parent) = current_parent {
+            if parent.to_str() == deploy_path {
+                break; 
+            }
+            parent_names.push(parent.file_name().unwrap().to_os_string());
+            current_parent = parent.parent();
+        }
+
+        parent_names.reverse();
+        for parent_name in parent_names {
             resource_name.push("-");
-            resource_name.push(resource.file_name().unwrap());
-            resource_name
-        } else {
-            let mut resource_name = deploy_id.to_os_string();
-            resource_name.push("-");
-            resource_name.push(resource.parent().unwrap().file_name().unwrap());
-            resource_name.push("-");
-            resource_name.push(resource.file_name().unwrap());
-            resource_name
-        };
+            resource_name.push(&parent_name);
+        }
+        resource_name.push("-");
+        resource_name.push(resource.file_name().unwrap());
+
         output_path.push(output_dir.join(resource_name));
+        
         if !dry_run {
             if move_mode {
                 fs::rename(resource, output_path)?;
