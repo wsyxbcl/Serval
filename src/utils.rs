@@ -148,7 +148,7 @@ pub fn resources_align(
         resource_type,
         deploy_dir.to_str().unwrap()
     );
-    let pb = indicatif::ProgressBar::new(num_resource as u64);
+
     let mut visited_path: HashSet<String> = HashSet::new();
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
@@ -176,6 +176,8 @@ pub fn resources_align(
         output_path.push(output_dir.join(resource_name));
         
         if !dry_run {
+            let pb = indicatif::ProgressBar::new(num_resource as u64);
+            
             if move_mode {
                 fs::rename(resource, output_path)?;
                 pb.inc(1);
