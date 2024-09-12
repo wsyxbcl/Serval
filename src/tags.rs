@@ -302,17 +302,17 @@ pub fn get_classifications(
         ratings.push(tag.6);
     }
     // Analysis
-    let s_species = Series::new("species_tags", species_tags);
-    let s_individuals = Series::new("individual_tags", individual_tags);
-    let s_subjects = Series::new("subjects", subjects);
-    let s_datetime_original = Series::new("datetime_original", datetime_originals);
-    let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
-    let s_time_modified = Series::new("time_modified", time_modifieds);
-    let s_rating = Series::new("rating", ratings);
+    let s_species = Series::new("species_tags".into(), species_tags);
+    let s_individuals = Series::new("individual_tags".into(), individual_tags);
+    let s_subjects = Series::new("subjects".into(), subjects);
+    let s_datetime_original = Series::new("datetime_original".into(), datetime_originals);
+    let s_datetime_digitized = Series::new("datetime_digitized".into(), datetime_digitizeds);
+    let s_time_modified = Series::new("time_modified".into(), time_modifieds);
+    let s_rating = Series::new("rating".into(), ratings);
 
     let mut df_raw = DataFrame::new(vec![
-        Series::new("path", image_paths),
-        Series::new("filename", image_filenames),
+        Series::new("path".into(), image_paths),
+        Series::new("filename".into(), image_filenames),
         s_species,
         s_individuals,
         s_subjects,
@@ -405,12 +405,7 @@ pub fn get_classifications(
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(
-            true,
-            true,
-            "count".to_string(),
-            false,
-        )])
+        .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
         .unnest([TagType::Species.col_name()])
         .collect()?;
     println!("{:?}", df_count_species);
@@ -650,7 +645,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         "Unknown",
         "Blur",
     ]; // TODO: make it configurable
-    let tag_exclude = Series::new("tag_exclude", exclude);
+    let tag_exclude = Series::new("tag_exclude".into(), exclude);
 
     // Data processing
     let df_cleaned = df
@@ -756,7 +751,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
 
         df_capture_independent = df_sorted
             .lazy()
-            .filter(Series::new("independent", capture_independent).lit())
+            .filter(Series::new("independent".into(), capture_independent).lit())
             .collect()?;
         println!("{}", df_capture_independent);
     }
