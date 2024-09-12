@@ -159,7 +159,7 @@ pub fn resources_align(
         let mut current_parent = resource.parent();
         while let Some(parent) = current_parent {
             if parent.to_str() == deploy_path {
-                break; 
+                break;
             }
             parent_names.push(parent.file_name().unwrap().to_os_string());
             current_parent = parent.parent();
@@ -174,10 +174,10 @@ pub fn resources_align(
         resource_name.push(resource.file_name().unwrap());
 
         output_path.push(output_dir.join(resource_name));
-        
+
         if !dry_run {
             let pb = indicatif::ProgressBar::new(num_resource as u64);
-            
+
             if move_mode {
                 fs::rename(resource, output_path)?;
                 pb.inc(1);
