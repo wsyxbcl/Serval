@@ -185,7 +185,7 @@ pub fn resources_align(
                 fs::copy(resource, output_path)?;
                 pb.inc(1);
             }
-        } else if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
+        } else if !visited_path.contains(resource_parent.to_str().unwrap()) {
             visited_path.insert(resource_parent.to_str().unwrap().to_string());
             println!(
                 "DRYRUN sample: From {} to {}",
