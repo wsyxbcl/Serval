@@ -27,6 +27,14 @@ inherits = "release"
 opt-level = "s"
 lto = true
 
+[lib]
+name = "serval"
+path = "src/lib.rs"
+
 [[bin]]
 name = "serval"
 path = "src/main.rs"
+
+[[bin]]
+name = "serval-xmp-extract"
+path = "bin/serval-xmp-extract.rs"
