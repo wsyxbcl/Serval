@@ -3,6 +3,7 @@ use crate::utils::{
     path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
 };
 use chrono::{DateTime, Local};
+use clap::builder::Str;
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -128,6 +129,8 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 type Metadata = (
     Vec<String>, // species
     Vec<String>, // individuals
+    Vec<String>, // count
+    Vec<String>, // sex
     Vec<String>, // subjects
     String,      // datetime_original
     String,      // datetime_digitized
@@ -149,6 +152,8 @@ fn retrieve_metadata(
 
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
+    let mut count: Vec<String> = Vec::new();
+    let mut sex: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime_original = String::new();
     let mut datetime_digitized = String::new();
@@ -182,7 +187,6 @@ fn retrieve_metadata(
             }
 
             // xmp namespace
-            // let ns_digikam = "http://www.digikam.org/ns/1.0/";
             let ns_adobe = "http://ns.adobe.com/lightroom/1.0/";
             
             // use adobe hierarchicalSubject if available (digikam also writes to this field)
@@ -200,30 +204,27 @@ fn retrieve_metadata(
                             .unwrap()
                             .to_string(),
                     );
+                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                    count.push(
+                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                    sex.push(
+                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
                 }
             }
-
-            // for property in xmp.property_array(ns_digikam, "TagsList") {
-            //     let tag = property.value;
-            //     if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
-            //         species.push(
-            //             tag.strip_prefix(TagType::Species.digikam_tag_prefix())
-            //                 .unwrap()
-            //                 .to_string(),
-            //         );
-            //     } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
-            //         individuals.push(
-            //             tag.strip_prefix(TagType::Individual.digikam_tag_prefix())
-            //                 .unwrap()
-            //                 .to_string(),
-            //         );
-            //     }
-            // }
         }
     }
     Ok((
         species,
         individuals,
+        count,
+        sex,
         subjects,
         datetime_original,
         datetime_digitized,
@@ -262,6 +263,8 @@ pub fn get_classifications(
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let mut count_tags: Vec<String> = Vec::new();
+    let mut sex_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
     let mut datetime_originals: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
@@ -279,6 +282,8 @@ pub fn get_classifications(
                 Ok((
                     species,
                     individuals,
+                    count,
+                    sex,
                     subjects,
                     datetime_original,
                     datetime_digitized,
@@ -289,6 +294,8 @@ pub fn get_classifications(
                     (
                         species.join("|"),
                         individuals.join("|"),
+                        count.join("|"),
+                        sex.join("|"),
                         subjects.join("|"), // for just human review
                         datetime_original,
                         datetime_digitized,
@@ -307,6 +314,8 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
                     )
                 }
             }
@@ -315,15 +324,19 @@ pub fn get_classifications(
     for tag in result {
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
-        subjects.push(tag.2);
-        datetime_originals.push(tag.3);
-        datetime_digitizeds.push(tag.4);
-        time_modifieds.push(tag.5);
-        ratings.push(tag.6);
+        count_tags.push(tag.2);
+        sex_tags.push(tag.3);
+        subjects.push(tag.4);
+        datetime_originals.push(tag.5);
+        datetime_digitizeds.push(tag.6);
+        time_modifieds.push(tag.7);
+        ratings.push(tag.8);
     }
     // Analysis
     let s_species = Series::new("species_tags".into(), species_tags);
     let s_individuals = Series::new("individual_tags".into(), individual_tags);
+    let s_count = Series::new("count_tags".into(), count_tags);
+    let s_sex = Series::new("sex_tags".into(), sex_tags);
     let s_subjects = Series::new("subjects".into(), subjects);
     let s_datetime_original = Series::new("datetime_original".into(), datetime_originals);
     let s_datetime_digitized = Series::new("datetime_digitized".into(), datetime_digitizeds);
@@ -335,6 +348,8 @@ pub fn get_classifications(
         Series::new("filename".into(), image_filenames),
         s_species,
         s_individuals,
+        s_count,
+        s_sex,
         s_subjects,
         s_datetime_original,
         s_datetime_digitized,
@@ -382,6 +397,8 @@ pub fn get_classifications(
                 .str()
                 .split(lit("|"))
                 .alias(TagType::Individual.col_name()),
+            col("count_tags").alias(TagType::Count.col_name()),
+            col("sex_tags").alias(TagType::Sex.col_name()),
             col("subjects"),
             col("rating"),
         ])

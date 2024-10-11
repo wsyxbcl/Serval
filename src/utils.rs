@@ -51,6 +51,8 @@ impl ResourceType {
 pub enum TagType {
     Species,
     Individual,
+    Count,
+    Sex,
 }
 
 impl fmt::Display for TagType {
@@ -64,18 +66,24 @@ impl TagType {
         match self {
             TagType::Individual => "individual",
             TagType::Species => "species",
+            TagType::Count => "count",
+            TagType::Sex => "sex",
         }
     }
     pub fn digikam_tag_prefix(self) -> &'static str {
         match self {
             TagType::Individual => "Individual/",
             TagType::Species => "Species/",
+            TagType::Count => "Count/",
+            TagType::Sex => "Sex/",
         }
     }
     pub fn adobe_tag_prefix(self) -> &'static str {
         match self {
-            TagType::Individual => "Individual|", // TODO
+            TagType::Individual => "Individual|", 
             TagType::Species => "Species|",
+            TagType::Count => "Count|",
+            TagType::Sex => "Sex|",
         }
     }
 }
