@@ -80,7 +80,7 @@ impl TagType {
     }
     pub fn adobe_tag_prefix(self) -> &'static str {
         match self {
-            TagType::Individual => "Individual|", 
+            TagType::Individual => "Individual|",
             TagType::Species => "Species|",
             TagType::Count => "Count|",
             TagType::Sex => "Sex|",

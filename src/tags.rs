@@ -3,7 +3,6 @@ use crate::utils::{
     path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
 };
 use chrono::{DateTime, Local};
-use clap::builder::Str;
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -144,7 +143,7 @@ fn retrieve_metadata(
     include_time_modified: bool,
 ) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
-    // species, individual, sex count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging), 
+    // species, individual, sex count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime_original, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
@@ -188,7 +187,7 @@ fn retrieve_metadata(
 
             // xmp namespace
             let ns_adobe = "http://ns.adobe.com/lightroom/1.0/";
-            
+
             // use adobe hierarchicalSubject if available (digikam also writes to this field)
             for property in xmp.property_array(ns_adobe, "hierarchicalSubject") {
                 let tag = property.value;
