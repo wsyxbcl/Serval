@@ -72,6 +72,12 @@ impl TagType {
             TagType::Species => "Species/",
         }
     }
+    pub fn adobe_tag_prefix(self) -> &'static str {
+        match self {
+            TagType::Individual => "Individual|", // TODO
+            TagType::Species => "Species|",
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]

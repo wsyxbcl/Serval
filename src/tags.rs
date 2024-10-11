@@ -141,7 +141,8 @@ fn retrieve_metadata(
     include_time_modified: bool,
 ) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
-    // digikam taglist (species and individual), subject, datetime_original, datetime_digitized, rating and file modified time
+    // species, individual, sex count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging), 
+    // datetime_original, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
@@ -179,26 +180,45 @@ fn retrieve_metadata(
                     subjects.push(property.value.to_string());
                 }
             }
-            // Register the digikam namespace
-            let ns_digikam = "http://www.digikam.org/ns/1.0/";
-            XmpMeta::register_namespace(ns_digikam, "digiKam")?;
 
-            for property in xmp.property_array(ns_digikam, "TagsList") {
+            // xmp namespace
+            // let ns_digikam = "http://www.digikam.org/ns/1.0/";
+            let ns_adobe = "http://ns.adobe.com/lightroom/1.0/";
+            
+            // use adobe hierarchicalSubject if available (digikam also writes to this field)
+            for property in xmp.property_array(ns_adobe, "hierarchicalSubject") {
                 let tag = property.value;
-                if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
+                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
                     species.push(
-                        tag.strip_prefix(TagType::Species.digikam_tag_prefix())
+                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
                             .unwrap()
                             .to_string(),
                     );
-                } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
+                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
                     individuals.push(
-                        tag.strip_prefix(TagType::Individual.digikam_tag_prefix())
+                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
                             .unwrap()
                             .to_string(),
                     );
                 }
             }
+
+            // for property in xmp.property_array(ns_digikam, "TagsList") {
+            //     let tag = property.value;
+            //     if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
+            //         species.push(
+            //             tag.strip_prefix(TagType::Species.digikam_tag_prefix())
+            //                 .unwrap()
+            //                 .to_string(),
+            //         );
+            //     } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
+            //         individuals.push(
+            //             tag.strip_prefix(TagType::Individual.digikam_tag_prefix())
+            //                 .unwrap()
+            //                 .to_string(),
+            //         );
+            //     }
+            // }
         }
     }
     Ok((
