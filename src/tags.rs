@@ -479,38 +479,63 @@ pub fn extract_resources(
         )
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
-
-    let df_filtered: DataFrame = match filter_type {
-        ExtractFilterType::Species => df
-            .clone()
-            .lazy()
-            .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Path => df
-            .clone()
-            .lazy()
-            //TODO use regex?
-            .filter(col("path").str().contains_literal(lit(filter_value)))
-            .collect()?,
-        ExtractFilterType::Individual => df
-            .clone()
-            .lazy()
-            .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Rating => df
-            .clone()
-            .lazy()
-            .filter(col("rating").eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Custom => df
-            .clone()
-            .lazy()
-            .filter(col("custom").eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
+    let df_filtered: DataFrame = if filter_value == "ALL_VALUES" {
+        match filter_type {
+            ExtractFilterType::Species => df
+                .clone()
+                .lazy()
+                .filter(col(TagType::Species.col_name()).is_not_null())
+                .collect()?,
+            ExtractFilterType::Path => df
+                .clone()
+                .lazy()
+                .filter(col("path").is_not_null())
+                .collect()?,
+            ExtractFilterType::Individual => df
+                .clone()
+                .lazy()
+                .filter(col(TagType::Individual.col_name()).is_not_null())
+                .collect()?,
+            ExtractFilterType::Rating => df
+                .clone()
+                .lazy()
+                .filter(col("rating").is_not_null())
+                .collect()?,
+            ExtractFilterType::Custom => df
+                .clone()
+                .lazy()
+                .filter(col("custom").is_not_null())
+                .collect()?,
+        }
+    } else {
+        match filter_type {
+            ExtractFilterType::Species => df
+                .clone()
+                .lazy()
+                .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
+                .collect()?,
+            ExtractFilterType::Path => df
+                .clone()
+                .lazy()
+                //TODO use regex?
+                .filter(col("path").str().contains_literal(lit(filter_value)))
+                .collect()?,
+            ExtractFilterType::Individual => df
+                .clone()
+                .lazy()
+                .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
+                .collect()?,
+            ExtractFilterType::Rating => df
+                .clone()
+                .lazy()
+                .filter(col("rating").eq(lit(filter_value)))
+                .collect()?,
+            ExtractFilterType::Custom => df
+                .clone()
+                .lazy()
+                .filter(col("custom").eq(lit(filter_value)))
+                .collect()?,
+        }
     };
 
     // Get the top level directory (to keep)
