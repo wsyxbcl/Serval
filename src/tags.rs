@@ -479,6 +479,22 @@ pub fn extract_resources(
         )
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    // Create default values for missing columns
+    // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
+    let column_names = df.get_column_names_str();
+    let required_columns = vec![
+        TagType::Species.col_name(),
+        TagType::Individual.col_name(),
+    ];
+    
+    let df = required_columns.iter().fold(df.clone(), |acc_df, col| {
+        if !column_names.contains(col) {
+            acc_df.lazy().with_columns([lit("").alias(*col)]).collect().unwrap()
+        } else {
+            acc_df
+        }
+    });
+    println!("{}",df);
     let df_filtered: DataFrame = if filter_value == "ALL_VALUES" {
         match filter_type {
             ExtractFilterType::Species => df
@@ -593,6 +609,7 @@ pub fn extract_resources(
             let relative_path_output = Path::new(input_path)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
+                // TODO let user define the pattern
                 output_dir
                     .join(relative_path_output.parent().unwrap())
                     .join(format!(
