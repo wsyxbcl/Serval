@@ -482,19 +482,20 @@ pub fn extract_resources(
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
     let column_names = df.get_column_names_str();
-    let required_columns = vec![
-        TagType::Species.col_name(),
-        TagType::Individual.col_name(),
-    ];
-    
+    let required_columns = [TagType::Species.col_name(), TagType::Individual.col_name()];
+
     let df = required_columns.iter().fold(df.clone(), |acc_df, col| {
         if !column_names.contains(col) {
-            acc_df.lazy().with_columns([lit("").alias(*col)]).collect().unwrap()
+            acc_df
+                .lazy()
+                .with_columns([lit("").alias(*col)])
+                .collect()
+                .unwrap()
         } else {
             acc_df
         }
     });
-    println!("{}",df);
+    println!("{}", df);
     let df_filtered: DataFrame = if filter_value == "ALL_VALUES" {
         match filter_type {
             ExtractFilterType::Species => df
@@ -588,8 +589,8 @@ pub fn extract_resources(
     let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
 
     for (path, species_tag, individual_tag) in izip!(paths, species_tags, individual_tags) {
-        let input_path_xmp:String;
-        let input_path_media:String;
+        let input_path_xmp: String;
+        let input_path_media: String;
         if path.unwrap().ends_with(".xmp") {
             input_path_xmp = path.unwrap().to_string();
             input_path_media = path.unwrap().strip_suffix(".xmp").unwrap().to_string();
@@ -602,19 +603,25 @@ pub fn extract_resources(
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
             let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
-                (output_dir.join(format!(
-                    "{}-{}-{}",
-                    species_tag.unwrap(),
-                    individual_tag.unwrap(),
-                    relative_path_output_xmp.to_string_lossy()
-                )), output_dir.join(format!(
-                    "{}-{}-{}",
-                    species_tag.unwrap(),
-                    individual_tag.unwrap(),
-                    relative_path_output_media.to_string_lossy()
-                )))
+                (
+                    output_dir.join(format!(
+                        "{}-{}-{}",
+                        species_tag.unwrap(),
+                        individual_tag.unwrap(),
+                        relative_path_output_xmp.to_string_lossy()
+                    )),
+                    output_dir.join(format!(
+                        "{}-{}-{}",
+                        species_tag.unwrap(),
+                        individual_tag.unwrap(),
+                        relative_path_output_media.to_string_lossy()
+                    )),
+                )
             } else {
-                (output_dir.join(relative_path_output_xmp), output_dir.join(relative_path_output_media))
+                (
+                    output_dir.join(relative_path_output_xmp),
+                    output_dir.join(relative_path_output_media),
+                )
             }
         } else {
             let relative_path_output_xmp = Path::new(&input_path_xmp)
@@ -623,26 +630,42 @@ pub fn extract_resources(
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
                 // TODO let user define the pattern
-                (output_dir
-                    .join(relative_path_output_xmp.parent().unwrap())
-                    .join(format!(
-                        "{}-{}-{}",
-                        species_tag.unwrap(),
-                        individual_tag.unwrap(),
-                        relative_path_output_xmp.file_name().unwrap().to_string_lossy()
-                    )), output_dir.join(relative_path_output_media.parent().unwrap()).join(format!(
-                    "{}-{}-{}",
-                    species_tag.unwrap(),
-                    individual_tag.unwrap(),
-                    relative_path_output_media.file_name().unwrap().to_string_lossy()
-                )))
-
+                (
+                    output_dir
+                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(format!(
+                            "{}-{}-{}",
+                            species_tag.unwrap(),
+                            individual_tag.unwrap(),
+                            relative_path_output_xmp
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                        )),
+                    output_dir
+                        .join(relative_path_output_media.parent().unwrap())
+                        .join(format!(
+                            "{}-{}-{}",
+                            species_tag.unwrap(),
+                            individual_tag.unwrap(),
+                            relative_path_output_media
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                        )),
+                )
             } else {
-                (output_dir.join(relative_path_output_xmp), output_dir.join(relative_path_output_media))
+                (
+                    output_dir.join(relative_path_output_xmp),
+                    output_dir.join(relative_path_output_media),
+                )
             }
         };
 
-        pb.println(format!("Copying to {}", output_path_media.to_string_lossy()));
+        pb.println(format!(
+            "Copying to {}",
+            output_path_media.to_string_lossy()
+        ));
         fs::create_dir_all(output_path_media.parent().unwrap())?;
         // check if the file exists, if so, rename it
         if output_path_media.exists() {
@@ -658,7 +681,8 @@ pub fn extract_resources(
                 i += 1;
             }
             // get the xmp file from output_path_media_renamed
-            let output_path_xmp_renamed = output_path_media_renamed.to_string_lossy().into_owned() + ".xmp";
+            let output_path_xmp_renamed =
+                output_path_media_renamed.to_string_lossy().into_owned() + ".xmp";
             pb.println(format!(
                 "Renamed to {}",
                 output_path_media_renamed.to_string_lossy()
