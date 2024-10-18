@@ -102,18 +102,45 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             )
             .is_ok()
         {
+            // if let Some(xmp) = media_xmp.xmp() {
+            let xmp_path = working_dir.join(append_ext("xmp", media.clone())?);
+            // Check existence of xmp file
+            if xmp_path.exists() {
+                pb.inc(1);
+                pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+                continue;
+            }
+            fs::File::create(xmp_path.clone())?;
+            let mut xmp_string = "".to_string();
             if let Some(xmp) = media_xmp.xmp() {
-                let xmp_path = working_dir.join(append_ext("xmp", media)?);
-                // Check existence of xmp file
-                if xmp_path.exists() {
-                    pb.inc(1);
-                    pb.println(format!("XMP file already exists: {}", xmp_path.display()));
-                    continue;
-                }
-                fs::File::create(xmp_path.clone())?;
-                let xmp_string = xmp.to_string_with_options(
+                xmp_string = xmp.to_string_with_options(
                     ToStringOptions::default().set_newline("\n".to_string()),
                 )?;
+            }
+            if !xmp_string.contains("exif:DateTimeOriginal")
+                && !xmp_string.contains("xmp:MetadataDate")
+            {
+                // Get the modified time of the file
+                if let Ok(metadata) = fs::metadata(media) {
+                    if let Ok(modified_time) = metadata.modified() {
+                        let datetime: DateTime<Local> = DateTime::from(modified_time);
+                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        xmp_string = format!(
+                            r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+      <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
+    </rdf:Description>              
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#,
+                            datetime_str
+                        );
+                    }
+                }
+                // }
+
                 fs::write(xmp_path, xmp_string)?;
                 pb.inc(1);
             }
