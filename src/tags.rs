@@ -588,65 +588,88 @@ pub fn extract_resources(
     let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
 
     for (path, species_tag, individual_tag) in izip!(paths, species_tags, individual_tags) {
-        let input_path = if path.unwrap().ends_with(".xmp") {
-            path.unwrap().strip_suffix(".xmp").unwrap()
+        let input_path_xmp:String;
+        let input_path_media:String;
+        if path.unwrap().ends_with(".xmp") {
+            input_path_xmp = path.unwrap().to_string();
+            input_path_media = path.unwrap().strip_suffix(".xmp").unwrap().to_string();
         } else {
-            path.unwrap()
-        };
-        let output_path = if deploy_path_index == 0 {
-            let relative_path_output = Path::new(input_path).file_name().unwrap();
+            input_path_xmp = path.unwrap().to_string() + ".xmp";
+            input_path_media = path.unwrap().to_string();
+        }
+
+        let (output_path_xmp, output_path_media) = if deploy_path_index == 0 {
+            let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
+            let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
-                output_dir.join(format!(
+                (output_dir.join(format!(
                     "{}-{}-{}",
                     species_tag.unwrap(),
                     individual_tag.unwrap(),
-                    relative_path_output.to_string_lossy()
-                ))
+                    relative_path_output_xmp.to_string_lossy()
+                )), output_dir.join(format!(
+                    "{}-{}-{}",
+                    species_tag.unwrap(),
+                    individual_tag.unwrap(),
+                    relative_path_output_media.to_string_lossy()
+                )))
             } else {
-                output_dir.join(relative_path_output)
+                (output_dir.join(relative_path_output_xmp), output_dir.join(relative_path_output_media))
             }
         } else {
-            let relative_path_output = Path::new(input_path)
+            let relative_path_output_xmp = Path::new(&input_path_xmp)
+                .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            let relative_path_output_media = Path::new(&input_path_media)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
                 // TODO let user define the pattern
-                output_dir
-                    .join(relative_path_output.parent().unwrap())
+                (output_dir
+                    .join(relative_path_output_xmp.parent().unwrap())
                     .join(format!(
                         "{}-{}-{}",
                         species_tag.unwrap(),
                         individual_tag.unwrap(),
-                        relative_path_output.file_name().unwrap().to_string_lossy()
-                    ))
+                        relative_path_output_xmp.file_name().unwrap().to_string_lossy()
+                    )), output_dir.join(relative_path_output_media.parent().unwrap()).join(format!(
+                    "{}-{}-{}",
+                    species_tag.unwrap(),
+                    individual_tag.unwrap(),
+                    relative_path_output_media.file_name().unwrap().to_string_lossy()
+                )))
+
             } else {
-                output_dir.join(relative_path_output)
+                (output_dir.join(relative_path_output_xmp), output_dir.join(relative_path_output_media))
             }
         };
 
-        pb.println(format!("Copying to {}", output_path.to_string_lossy()));
-        fs::create_dir_all(output_path.parent().unwrap())?;
+        pb.println(format!("Copying to {}", output_path_media.to_string_lossy()));
+        fs::create_dir_all(output_path_media.parent().unwrap())?;
         // check if the file exists, if so, rename it
-        if output_path.exists() {
+        if output_path_media.exists() {
             let mut i = 1;
-            let mut output_path_renamed = output_path.clone();
-            while output_path_renamed.exists() {
-                output_path_renamed = output_path.with_file_name(format!(
+            let mut output_path_media_renamed = output_path_media.clone();
+            while output_path_media_renamed.exists() {
+                output_path_media_renamed = output_path_media.with_file_name(format!(
                     "{}_{}.{}",
-                    output_path.file_stem().unwrap().to_string_lossy(),
+                    output_path_media.file_stem().unwrap().to_string_lossy(),
                     i,
-                    output_path.extension().unwrap().to_string_lossy()
+                    output_path_media.extension().unwrap().to_string_lossy()
                 ));
                 i += 1;
             }
+            // get the xmp file from output_path_media_renamed
+            let output_path_xmp_renamed = output_path_media_renamed.to_string_lossy().into_owned() + ".xmp";
             pb.println(format!(
                 "Renamed to {}",
-                output_path_renamed.to_string_lossy()
+                output_path_media_renamed.to_string_lossy()
             ));
-            fs::copy(input_path, output_path_renamed.clone())?;
-            sync_modified_time(input_path.into(), output_path_renamed)?;
+            fs::copy(input_path_media.clone(), output_path_media_renamed.clone())?;
+            fs::copy(input_path_xmp, output_path_xmp_renamed)?;
+            sync_modified_time(input_path_media.into(), output_path_media_renamed)?;
         } else {
-            fs::copy(input_path, output_path.clone())?;
-            sync_modified_time(input_path.into(), output_path)?;
+            fs::copy(input_path_media.clone(), output_path_media.clone())?;
+            fs::copy(input_path_xmp, output_path_xmp)?;
+            sync_modified_time(input_path_media.into(), output_path_media)?;
         }
         pb.inc(1);
     }
