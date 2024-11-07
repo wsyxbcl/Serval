@@ -359,19 +359,19 @@ pub fn get_classifications(
         ratings.push(tag.8);
     }
     // Analysis
-    let s_species = Series::new("species_tags".into(), species_tags);
-    let s_individuals = Series::new("individual_tags".into(), individual_tags);
-    let s_count = Series::new("count_tags".into(), count_tags);
-    let s_sex = Series::new("sex_tags".into(), sex_tags);
-    let s_subjects = Series::new("subjects".into(), subjects);
-    let s_datetime_original = Series::new("datetime_original".into(), datetime_originals);
-    let s_datetime_digitized = Series::new("datetime_digitized".into(), datetime_digitizeds);
-    let s_time_modified = Series::new("time_modified".into(), time_modifieds);
-    let s_rating = Series::new("rating".into(), ratings);
+    let s_species = Column::new("species_tags".into(), species_tags);
+    let s_individuals = Column::new("individual_tags".into(), individual_tags);
+    let s_count = Column::new("count_tags".into(), count_tags);
+    let s_sex = Column::new("sex_tags".into(), sex_tags);
+    let s_subjects = Column::new("subjects".into(), subjects);
+    let s_datetime_original = Column::new("datetime_original".into(), datetime_originals);
+    let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
+    let s_time_modified = Column::new("time_modified".into(), time_modifieds);
+    let s_rating = Column::new("rating".into(), ratings);
 
     let mut df_raw = DataFrame::new(vec![
-        Series::new("path".into(), image_paths),
-        Series::new("filename".into(), image_filenames),
+        Column::new("path".into(), image_paths),
+        Column::new("filename".into(), image_filenames),
         s_species,
         s_individuals,
         s_count,
@@ -863,7 +863,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         let mut iters = df_sorted
             .columns(["time", target.col_name(), "deployment"])?
             .iter()
-            .map(|s| s.iter())
+            .map(|s| s.as_materialized_series().iter())
             .collect::<Vec<_>>();
 
         let mut capture = Vec::new();
