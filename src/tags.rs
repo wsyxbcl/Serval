@@ -739,12 +739,27 @@ pub fn extract_resources(
 pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let df = CsvReadOptions::default()
+    let df = match CsvReadOptions::default()
         .with_has_header(true)
-        .with_ignore_errors(true)
+        .with_ignore_errors(false)
         .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
-        .try_into_reader_with_file_path(Some(csv_path))?
-        .finish()?;
+        .try_into_reader_with_file_path(Some(csv_path))
+        .and_then(|reader| reader.finish())
+        {
+            Ok(df) => df,
+            Err(e) => {
+                if e.to_string().contains("could not parse") {
+                    eprintln!("Error: Could not parse datetime in the CSV file.");
+                    eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision. \n The program will not parse the datetime until the format is corrected");
+                    eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
+                }
+                else {
+                    eprintln!("Error: {}", e);
+                }
+                std::process::exit(1);
+            }
+        };
+
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
     rl.bind_sequence(
