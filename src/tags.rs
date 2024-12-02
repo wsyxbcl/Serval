@@ -268,8 +268,18 @@ pub fn get_classifications(
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
 
-    let file_paths = path_enumerate(file_dir, resource_type);
+    let file_paths = path_enumerate(file_dir.clone(), resource_type);
     fs::create_dir_all(output_dir.clone())?;
+    // Determine output filename based on parameters
+    let output_suffix = format!(
+        "_{}_{}{}{}_{}.csv",
+        file_dir.file_name().unwrap().to_string_lossy(),
+        resource_type.to_string().to_lowercase(),
+        if include_subject { "-s" } else { "" },
+        if include_time_modified { "-m" } else { "" },
+        Local::now().format("%Y%m%d%H%M%S"),
+    );
+
     let image_paths: Vec<String> = file_paths
         .clone()
         .into_iter()
@@ -454,13 +464,13 @@ pub fn get_classifications(
         .collect()?;
     println!("{}", df_flatten);
 
-    let tags_csv_path = output_dir.join("tags.csv");
+    let tags_csv_path = output_dir.join("tags".to_owned()+&output_suffix);
     let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .include_bom(true)
         .finish(&mut df_flatten)?;
-    println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
+    println!("Saved to {}", tags_csv_path.to_string_lossy());
 
     let mut df_count_species = df_flatten
         .clone()
@@ -470,13 +480,14 @@ pub fn get_classifications(
         .collect()?;
     println!("{:?}", df_count_species);
 
-    let mut file = std::fs::File::create(output_dir.join("species_stats.csv"))?;
+    let species_stats_path = output_dir.join("species_stats".to_owned()+&output_suffix);
+    let mut file = std::fs::File::create(species_stats_path.clone())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df_count_species)?;
     println!(
         "Saved to {}",
-        output_dir.join("species_stats.csv").to_string_lossy()
+        output_dir.join(species_stats_path).to_string_lossy()
     );
 
     if independent {
@@ -905,8 +916,19 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         println!("{}", df_capture_independent);
     }
 
+    // Include parameters in the output filename, LIR: Last Independent Record, LR: Last Record
+    let output_suffix = format!(
+        "_{}_{}m_{}.csv",
+        target.to_string().to_lowercase(),
+        min_delta_time,
+        if delta_time_compared_to == "LastIndependentRecord" {
+            "LIR"
+        } else {
+            "LR"
+        },
+    );
     fs::create_dir_all(output_dir.clone())?;
-    let filename = format!("{}_temporal_independent.csv", target);
+    let filename = format!("temporal-independence{}", output_suffix);
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
@@ -922,7 +944,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .collect()?;
     println!("{}", df_count_independent);
 
-    let filename = format!("{}_temporal_independent_count_by_deployment.csv", target);
+    let filename = format!("count_by_deployment.csv");
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
@@ -938,7 +960,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .collect()?;
     println!("{}", df_count_independent_species);
 
-    let filename = format!("{}_temporal_independent_count_all.csv", target);
+    let filename = format!("count_all.csv");
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
