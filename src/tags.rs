@@ -464,7 +464,7 @@ pub fn get_classifications(
         .collect()?;
     println!("{}", df_flatten);
 
-    let tags_csv_path = output_dir.join("tags".to_owned()+&output_suffix);
+    let tags_csv_path = output_dir.join(format!("tags{}", output_suffix));
     let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
@@ -480,7 +480,7 @@ pub fn get_classifications(
         .collect()?;
     println!("{:?}", df_count_species);
 
-    let species_stats_path = output_dir.join("species_stats".to_owned()+&output_suffix);
+    let species_stats_path = output_dir.join(format!("species_stats{}", output_suffix));
     let mut file = std::fs::File::create(species_stats_path.clone())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
@@ -745,20 +745,20 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
         .try_into_reader_with_file_path(Some(csv_path))
         .and_then(|reader| reader.finish())
-        {
-            Ok(df) => df,
-            Err(e) => {
-                if e.to_string().contains("could not parse") {
-                    eprintln!("Error: Could not parse datetime in the CSV file.");
-                    eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision. \n The program will not parse the datetime until the format is corrected");
-                    eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
-                }
-                else {
-                    eprintln!("Error: {}", e);
-                }
-                std::process::exit(1);
+    {
+        Ok(df) => df,
+        Err(e) => {
+            if e.to_string().contains("could not parse") {
+                eprintln!("Error: Could not parse datetime in the CSV file.");
+                eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision.");
+                eprintln!("The program will not parse the datetime until the format is corrected");
+                eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
+            } else {
+                eprintln!("Error: {}", e);
             }
-        };
+            std::process::exit(1);
+        }
+    };
 
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
@@ -959,8 +959,8 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .collect()?;
     println!("{}", df_count_independent);
 
-    let filename = format!("count_by_deployment.csv");
-    let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+    let filename = "count_by_deployment.csv";
+    let mut file = std::fs::File::create(output_dir.join(filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
@@ -975,8 +975,8 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .collect()?;
     println!("{}", df_count_independent_species);
 
-    let filename = format!("count_all.csv");
-    let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+    let filename = "count_all.csv";
+    let mut file = std::fs::File::create(output_dir.join(filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
