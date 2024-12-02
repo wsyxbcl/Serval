@@ -102,7 +102,6 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             )
             .is_ok()
         {
-            // if let Some(xmp) = media_xmp.xmp() {
             let xmp_path = working_dir.join(append_ext("xmp", media.clone())?);
             // Check existence of xmp file
             if xmp_path.exists() {
@@ -139,11 +138,9 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                         );
                     }
                 }
-                // }
-
-                fs::write(xmp_path, xmp_string)?;
-                pb.inc(1);
             }
+            fs::write(xmp_path, xmp_string)?;
+            pb.inc(1);
         } else {
             pb.println(format!("Failed to open file: {}", media.display()));
             pb.inc(1);
