@@ -47,7 +47,7 @@ impl ResourceType {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
 pub enum TagType {
     Species,
     Individual,

@@ -967,20 +967,22 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .finish(&mut df_count_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
 
-    let mut df_count_independent_species = df_capture_independent
-        .clone()
-        .lazy()
-        .group_by_stable([col(TagType::Species.col_name())])
-        .agg([col(TagType::Species.col_name()).count().alias("count")])
-        .collect()?;
-    println!("{}", df_count_independent_species);
+    if target == TagType::Species {
+        let mut df_count_independent_species = df_capture_independent
+            .clone()
+            .lazy()
+            .group_by_stable([col(TagType::Species.col_name())])
+            .agg([col(TagType::Species.col_name()).count().alias("count")])
+            .collect()?;
+        println!("{}", df_count_independent_species);
 
-    let filename = "count_all.csv";
-    let mut file = std::fs::File::create(output_dir.join(filename))?;
-    CsvWriter::new(&mut file)
-        .include_bom(true)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
-        .finish(&mut df_count_independent_species)?;
-    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+        let filename = "count_all.csv";
+        let mut file = std::fs::File::create(output_dir.join(filename))?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .finish(&mut df_count_independent_species)?;
+        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    }
     Ok(())
 }
