@@ -157,7 +157,7 @@ type Metadata = (
     Vec<String>, // count
     Vec<String>, // sex
     Vec<String>, // subjects
-    String,      // datetime_original
+    String,      // datetime
     String,      // datetime_digitized
     String,      // time_modified
     String,      // rating
@@ -170,7 +170,7 @@ fn retrieve_metadata(
 ) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
     // species, individual, sex count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
-    // datetime_original, datetime_digitized, rating and file modified time
+    // datetime, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default())?;
@@ -180,7 +180,7 @@ fn retrieve_metadata(
     let mut count: Vec<String> = Vec::new();
     let mut sex: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
-    let mut datetime_original = String::new();
+    let mut datetime = String::new();
     let mut datetime_digitized = String::new();
     let mut time_modified = String::new();
     let mut rating = String::new();
@@ -198,14 +198,14 @@ fn retrieve_metadata(
     {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                datetime_original = ignore_timezone(value.value.to_string())?;
+                datetime = ignore_timezone(value.value.to_string())?;
             } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
                 // Workaround for video files, as some manufacturer only write to xmp:CreateDate
                 // And timezone is ignored for they write UTC-8 time but label as UTC
-                
+                // i.e. we follow time shown in the picture without considering timezone in metadata
                 // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
                 if !value.value.to_string().starts_with("1904") {
-                    datetime_original = ignore_timezone(value.value.to_string())?;
+                    datetime = ignore_timezone(value.value.to_string())?;
                 }
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
@@ -260,7 +260,7 @@ fn retrieve_metadata(
         count,
         sex,
         subjects,
-        datetime_original,
+        datetime,
         datetime_digitized,
         time_modified,
         rating,
@@ -310,7 +310,7 @@ pub fn get_classifications(
     let mut count_tags: Vec<String> = Vec::new();
     let mut sex_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
-    let mut datetime_originals: Vec<String> = Vec::new();
+    let mut datetimes: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
@@ -329,7 +329,7 @@ pub fn get_classifications(
                     count,
                     sex,
                     subjects,
-                    datetime_original,
+                    datetime,
                     datetime_digitized,
                     time_modified,
                     rating,
@@ -341,7 +341,7 @@ pub fn get_classifications(
                         count.join("|"),
                         sex.join("|"),
                         subjects.join("|"), // for just human review
-                        datetime_original,
+                        datetime,
                         datetime_digitized,
                         time_modified,
                         rating,
@@ -371,7 +371,7 @@ pub fn get_classifications(
         count_tags.push(tag.2);
         sex_tags.push(tag.3);
         subjects.push(tag.4);
-        datetime_originals.push(tag.5);
+        datetimes.push(tag.5);
         datetime_digitizeds.push(tag.6);
         time_modifieds.push(tag.7);
         ratings.push(tag.8);
@@ -382,7 +382,7 @@ pub fn get_classifications(
     let s_count = Column::new("count_tags".into(), count_tags);
     let s_sex = Column::new("sex_tags".into(), sex_tags);
     let s_subjects = Column::new("subjects".into(), subjects);
-    let s_datetime_original = Column::new("datetime_original".into(), datetime_originals);
+    let s_datetime = Column::new("datetime".into(), datetimes);
     let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
     let s_time_modified = Column::new("time_modified".into(), time_modifieds);
     let s_rating = Column::new("rating".into(), ratings);
@@ -395,7 +395,7 @@ pub fn get_classifications(
         s_count,
         s_sex,
         s_subjects,
-        s_datetime_original,
+        s_datetime,
         s_datetime_digitized,
         s_time_modified,
         s_rating,
@@ -413,7 +413,7 @@ pub fn get_classifications(
         .select([
             col("path"),
             col("filename"),
-            col("datetime_original").str().strptime(
+            col("datetime").str().strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),
                 lit("raise"),
@@ -845,7 +845,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 .list()
                 .get(lit(num_option - deploy_path_index), false)
                 .alias("deployment"),
-            col("datetime_original").alias("time"),
+            col("datetime").alias("time"),
             col(target.col_name()),
         ])
         .drop_nulls(None)
