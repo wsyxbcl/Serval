@@ -96,10 +96,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
-            .open_file(
-                media.clone(),
-                OpenFileOptions::default().repair_file(),
-            )
+            .open_file(media.clone(), OpenFileOptions::default().repair_file())
             .is_ok()
         {
             let xmp_path = working_dir.join(append_ext("xmp", media.clone())?);
@@ -192,10 +189,8 @@ fn retrieve_metadata(
     }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
-    
-    if f.open_file(file_path, OpenFileOptions::default())
-        .is_ok()
-    {
+
+    if f.open_file(file_path, OpenFileOptions::default()).is_ok() {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
                 datetime = ignore_timezone(value.value.to_string())?;
