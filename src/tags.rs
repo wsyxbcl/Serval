@@ -98,7 +98,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
         if media_xmp
             .open_file(
                 media.clone(),
-                OpenFileOptions::default().only_xmp().repair_file(),
+                OpenFileOptions::default().repair_file(),
             )
             .is_ok()
         {
@@ -115,9 +115,11 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                 xmp_string = xmp.to_string_with_options(
                     ToStringOptions::default().set_newline("\n".to_string()),
                 )?;
+                println!("XMP: {}", xmp_string)
             }
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
+                && !xmp_string.contains("xmp:CreateDate")
             {
                 // Get the modified time of the file
                 if let Ok(metadata) = fs::metadata(media) {
@@ -171,7 +173,7 @@ fn retrieve_metadata(
     // datetime_original, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
-    f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
+    f.open_file(file_path, OpenFileOptions::default())?;
 
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
@@ -190,12 +192,21 @@ fn retrieve_metadata(
     }
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
-    if f.open_file(file_path, OpenFileOptions::default().only_xmp())
+    
+    if f.open_file(file_path, OpenFileOptions::default())
         .is_ok()
     {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
                 datetime_original = ignore_timezone(value.value.to_string())?;
+            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+                // And timezone is ignored for they write UTC-8 time but label as UTC
+                
+                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
+                if !value.value.to_string().starts_with("1904") {
+                    datetime_original = ignore_timezone(value.value.to_string())?;
+                }
             }
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
                 datetime_digitized = ignore_timezone(value.value.to_string())?;
