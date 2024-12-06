@@ -124,9 +124,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     // and skip the 0 timestamp if manufacturer write it
                     if !xmp_string.contains("1904-01-01") {
                         let re = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
-                        xmp_string = re
-                            .replace_all(&xmp_string, "$1")
-                            .to_string();
+                        xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                     }
                 } else {
                     // Get the modified time of the file
