@@ -7,6 +7,7 @@ use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
+use regex::Regex;
 use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
     Cmd, Completer, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, Helper,
@@ -112,29 +113,41 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                 xmp_string = xmp.to_string_with_options(
                     ToStringOptions::default().set_newline("\n".to_string()),
                 )?;
-                println!("XMP: {}", xmp_string)
             }
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
-                && !xmp_string.contains("xmp:CreateDate")
             {
-                // Get the modified time of the file
-                if let Ok(metadata) = fs::metadata(media) {
-                    if let Ok(modified_time) = metadata.modified() {
-                        let datetime: DateTime<Local> = DateTime::from(modified_time);
-                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
-                        xmp_string = format!(
-                            r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+                if xmp_string.contains("xmp:CreateDate") {
+                    // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+                    // And timezone is ignored for they write UTC-8 time but label as UTC
+                    // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
+                    // and skip the 0 timestamp if manufacturer write it
+                    if !xmp_string.contains("1904-01-01") {
+                        let re = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
+                        xmp_string = re
+                            .replace_all(&xmp_string, "$1")
+                            .to_string();
+                    }
+                } else {
+                    // Get the modified time of the file
+                    if let Ok(metadata) = fs::metadata(media) {
+                        if let Ok(modified_time) = metadata.modified() {
+                            let datetime: DateTime<Local> = DateTime::from(modified_time);
+                            let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                            xmp_string = format!(
+                                r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
-  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
-      <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
+    <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
     </rdf:Description>              
-  </rdf:RDF>
+</rdf:RDF>
 </x:xmpmeta>
-<?xpacket end="w"?>"#,
-                            datetime_str
-                        );
+<?xpacket end="w"?>
+"#,
+                                datetime_str
+                            );
+                        }
                     }
                 }
             }
