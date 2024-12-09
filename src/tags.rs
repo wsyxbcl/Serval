@@ -756,7 +756,7 @@ pub fn extract_resources(
 pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let df = match CsvReadOptions::default()
+    let mut df = match CsvReadOptions::default()
         .with_has_header(true)
         .with_ignore_errors(false)
         .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
@@ -775,6 +775,12 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             }
             std::process::exit(1);
         }
+    };
+
+    // Rename datetime_original to datetime, adapts to old tags.csv
+    let df = match df.rename("datetime_original", "datetime".into()) {
+        Ok(renamed_df) => renamed_df,
+        Err(_) => &mut df,
     };
 
     // Readlines for parameter setup
