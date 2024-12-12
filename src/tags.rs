@@ -536,7 +536,7 @@ pub fn extract_resources(
     let column_names = df.get_column_names_str();
     let required_columns = [TagType::Species.col_name(), TagType::Individual.col_name()];
 
-    let df = required_columns.iter().fold(df.clone(), |acc_df, col| {
+    let mut df = required_columns.iter().fold(df.clone(), |acc_df, col| {
         if !column_names.contains(col) {
             acc_df
                 .lazy()
@@ -548,6 +548,17 @@ pub fn extract_resources(
         }
     });
     println!("{}", df);
+
+    // Fill null values for columns that will be used for file naming
+    if rename {
+        df = df
+            .clone()
+            .lazy()
+            .with_column(col(TagType::Species.col_name()).fill_null(lit("")))
+            .with_column(col(TagType::Individual.col_name()).fill_null(lit("")))
+            .collect()?;
+    }
+
     let df_filtered: DataFrame = if filter_value == "ALL_VALUES" {
         match filter_type {
             ExtractFilterType::Species => df
