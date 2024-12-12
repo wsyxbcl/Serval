@@ -662,7 +662,7 @@ pub fn extract_resources(
             input_path_media = path.unwrap().to_string();
         }
 
-        let (output_path_xmp, output_path_media) = if deploy_path_index == 0 {
+        let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
             let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
@@ -750,14 +750,17 @@ pub fn extract_resources(
                 "Renamed to {}",
                 output_path_media_renamed.to_string_lossy()
             ));
-            fs::copy(input_path_media.clone(), output_path_media_renamed.clone())?;
-            fs::copy(input_path_xmp, output_path_xmp_renamed)?;
-            sync_modified_time(input_path_media.into(), output_path_media_renamed)?;
-        } else {
-            fs::copy(input_path_media.clone(), output_path_media.clone())?;
-            fs::copy(input_path_xmp, output_path_xmp)?;
-            sync_modified_time(input_path_media.into(), output_path_media)?;
+            output_path_media = output_path_media_renamed.clone();
+            output_path_xmp = output_path_xmp_renamed.into();
         }
+
+        fs::copy(input_path_media.clone(), output_path_media.clone())?;
+        if let Err(_err)= fs::copy(input_path_xmp, output_path_xmp) {
+            pb.println(format!("Missing XMP file ,tag info for certain video files may be lost)"));
+            // eprintln!("Error: {}", err);
+        }
+        sync_modified_time(input_path_media.into(), output_path_media)?;
+
         pb.inc(1);
     }
     pb.finish_with_message("done");
