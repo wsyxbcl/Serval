@@ -779,14 +779,14 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     {
         Ok(df) => df,
         Err(e) => {
-            if e.to_string().contains("could not parse") {
-                eprintln!("Error: Could not parse datetime in the CSV file.");
-                eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision.");
-                eprintln!("The program will not parse the datetime until the format is corrected");
-                eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
-            } else {
-                eprintln!("Error: {}", e);
-            }
+            // if e.to_string().contains("could not parse") {
+            //     eprint!("{}", e);
+            //     eprintln!("Error: Could not parse datetime in the CSV file.");
+            //     eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision.");
+            //     eprintln!("The program will not parse the datetime until the format is corrected");
+            //     eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
+            // } 
+            eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     };
@@ -839,7 +839,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         max: path_levels.len().try_into()?,
     };
     rl.set_helper(Some(h));
-    let readline = rl.readline("Select the path corresponding to the deployment: ");
+    let readline = rl.readline("Select the number corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
     let exclude = [
