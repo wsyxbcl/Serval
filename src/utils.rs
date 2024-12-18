@@ -316,12 +316,16 @@ pub fn is_temporal_independent(
     Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
 }
 
-pub fn get_path_seperator() -> &'static str {
-    if env::consts::OS == "windows" {
-        r"\"
-    } else {
-        r"/"
-    }
+pub fn get_path_levels(path: String) -> Vec<String> {
+    let normalized_path = path.replace('\\', "/");
+
+    let levels: Vec<String> = Path::new(&normalized_path)
+        .components()
+        .map(|comp| comp.as_os_str().to_string_lossy().into_owned())
+        .filter(|comp| !comp.is_empty())
+        .collect();
+
+    levels[1..levels.len() - 1].to_vec()
 }
 
 pub fn ignore_timezone(time: String) -> anyhow::Result<String> {

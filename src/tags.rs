@@ -1,5 +1,5 @@
 use crate::utils::{
-    absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
+    absolute_path, append_ext, get_path_levels, ignore_timezone, is_temporal_independent,
     path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
 };
 use chrono::{DateTime, Local};
@@ -830,19 +830,13 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Find deployment
     let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
     println!("\nHere is a sample of the file path ({})", path_sample);
-    let mut num_option = 0;
-    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
-        .parent()
-        .unwrap()
-        .ancestors()
-        .enumerate()
-    {
-        println!("{}): {}", i + 1, entry.to_string_lossy());
-        num_option += 1;
+    let path_levels = get_path_levels(path_sample);
+    for (i, entry) in path_levels.iter().enumerate() {
+        println!("{}): {}", i + 1, entry);
     }
     let h = NumericSelectValidator {
         min: 1,
-        max: num_option,
+        max: path_levels.len().try_into()?,
     };
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the path corresponding to the deployment: ");
@@ -867,9 +861,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             col("path"),
             col("path")
                 .str()
-                .split(lit(get_path_seperator()))
+                .replace_all(lit("\\"), lit("/"), true)
+                .str()
+                .split(lit("/"))
                 .list()
-                .get(lit(num_option - deploy_path_index), false)
+                .get(lit(deploy_path_index), false)
                 .alias("deployment"),
             col("datetime").alias("time"),
             col(target.col_name()),
