@@ -317,14 +317,22 @@ pub fn is_temporal_independent(
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {
+    // Abandoned for performance
+    // let normalized_path = PathBuf::from(path.replace('\\', "/"));
+    // let levels: Vec<String> = normalized_path
+    //     .components()
+    //     .filter_map(|comp| match comp {
+    //         Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+    //         Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().into_owned()), // For windows path prefixes
+    //         _ => None, // Skip root and other components
+    //     })
+    //     .collect();
+
     let normalized_path = path.replace('\\', "/");
-
-    let levels: Vec<String> = Path::new(&normalized_path)
-        .components()
-        .map(|comp| comp.as_os_str().to_string_lossy().into_owned())
-        .filter(|comp| !comp.is_empty())
+    let levels: Vec<String> = normalized_path
+        .split('/')
+        .map(|comp| comp.to_string())
         .collect();
-
     levels[1..levels.len() - 1].to_vec()
 }
 

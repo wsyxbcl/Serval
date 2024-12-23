@@ -785,7 +785,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             //     eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision.");
             //     eprintln!("The program will not parse the datetime until the format is corrected");
             //     eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
-            // } 
+            // }
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
