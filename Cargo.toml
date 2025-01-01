@@ -15,7 +15,7 @@ keywords = ["camtrap", "camera-trap"]
 [dependencies]
 anyhow = "1.0.93"
 chrono = "0.4.38"
-clap = { version = "4.5.21", features = ["derive"] }
+clap = { version = "4.5.23", features = ["derive"] }
 indicatif = "0.17.9"
 itertools = "0.13.0"
 polars = { version = "0.45.0", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
