@@ -1310,7 +1310,7 @@ dependencies = [
  "rayon",
  "regex",
  "strum_macros",
- "thiserror 2.0.5",
+ "thiserror",
  "version_check",
  "xxhash-rust",
 ]
@@ -1324,7 +1324,7 @@ dependencies = [
  "polars-arrow-format",
  "regex",
  "simdutf8",
- "thiserror 2.0.5",
+ "thiserror",
 ]
 
 [[package]]
@@ -2206,31 +2206,11 @@ checksum = "cfb5fa503293557c5158bd215fdc225695e567a77e453f5d4452a50a193969bd"
 
 [[package]]
 name = "thiserror"
-version = "1.0.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9a7210f5c9a7156bb50aa36aed4c95afb51df0df00713949448cf9e97d382d2"
-dependencies = [
- "thiserror-impl 1.0.50",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "643caef17e3128658ff44d85923ef2d28af81bb71e0d67bbfe1d76f19a73e053"
 dependencies = [
- "thiserror-impl 2.0.5",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "266b2e40bc00e5a6c09c3584011e08b06f123c00362c92b975ba9843aaaa14b8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.87",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2754,14 +2734,14 @@ dependencies = [
 
 [[package]]
 name = "xmp_toolkit"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d260624768df11c388c0bf8ce4ee0254af93a4e307be3e18a49f0d3a5305ea5d"
+checksum = "f2064f77c8bc1b0a1513ce64a6904d9c300c904b65cec4b237322039bab3c477"
 dependencies = [
  "cc",
  "fs_extra",
  "num_enum",
- "thiserror 1.0.50",
+ "thiserror",
 ]
 
 [[package]]
