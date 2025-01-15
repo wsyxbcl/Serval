@@ -775,15 +775,17 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .try_into_reader_with_file_path(Some(csv_path))
         .and_then(|reader| reader.finish())
     {
-        Ok(df) => df,
+        Ok(df) => {
+            // Check if the datetime column is parsed correctly, i.e. the type is not str
+            let datetime_col = df.column("datetime")?;
+            if datetime_col.dtype() == &DataType::String {
+                eprintln!("Error: The datetime column is not parsed correctly.");
+                eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
+                std::process::exit(1);
+            }
+            df
+        }
         Err(e) => {
-            // if e.to_string().contains("could not parse") {
-            //     eprint!("{}", e);
-            //     eprintln!("Error: Could not parse datetime in the CSV file.");
-            //     eprintln!("This is likely caused by saving the CSV in software like Excel, which can result in loss of data precision.");
-            //     eprintln!("The program will not parse the datetime until the format is corrected");
-            //     eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
-            // }
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
