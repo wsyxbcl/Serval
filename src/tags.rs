@@ -117,15 +117,13 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
             {
-                if xmp_string.contains("xmp:CreateDate") {
+                if xmp_string.contains("xmp:CreateDate") && !xmp_string.contains("1904-01-01") {
                     // Workaround for video files, as some manufacturer only write to xmp:CreateDate
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
                     // and skip the 0 timestamp if manufacturer write it
-                    if !xmp_string.contains("1904-01-01") {
-                        let re = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
-                        xmp_string = re.replace_all(&xmp_string, "$1").to_string();
-                    }
+                    let re = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
+                    xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                 } else {
                     // Get the modified time of the file
                     if let Ok(metadata) = fs::metadata(media) {
