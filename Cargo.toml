@@ -14,7 +14,7 @@ keywords = ["camtrap", "camera-trap"]
 
 [dependencies]
 anyhow = "1.0.95"
-chrono = "0.4.38"
+chrono = "0.4.39"
 clap = { version = "4.5.26", features = ["derive"] }
 indicatif = "0.17.9"
 itertools = "0.14.0"
