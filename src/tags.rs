@@ -94,6 +94,8 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
     let pb = ProgressBar::new(media_count.try_into()?);
+    let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
+
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
@@ -122,7 +124,6 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
                     // and skip the 0 timestamp if manufacturer write it
-                    let re = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
                     xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                 } else {
                     // Get the modified time of the file
