@@ -8,7 +8,7 @@ use tags::{
 };
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
-    ExtractFilterType, ResourceType, TagType,
+    tags_csv_translate, ExtractFilterType, ResourceType, TagType,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -122,6 +122,18 @@ fn main() -> anyhow::Result<()> {
             } else {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
+        }
+        Commands::Translate {
+            csv_path,
+            taglist_path,
+            output,
+        } => {
+            println!("Translate tags in {}", csv_path.display());
+            tags_csv_translate(
+                absolute_path(csv_path)?,
+                absolute_path(taglist_path)?,
+                output,
+            )?;
         }
     }
     Ok(())
@@ -266,5 +278,21 @@ enum Commands {
         /// Init mode (initialize xmp files)
         #[arg(short, long)]
         init: bool,
+    },
+    /// Translate tags in csv to different languages
+    Translate {
+        /// Path for tags.csv
+        csv_path: PathBuf,
+        /// Path for the taglist csv file
+        #[arg(short, long, value_name = "TAGLIST", required = true)]
+        taglist_path: PathBuf,
+        /// Output directory
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_translate"
+        )]
+        output: PathBuf,
     },
 }

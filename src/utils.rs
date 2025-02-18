@@ -358,3 +358,38 @@ pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()
     dest.set_times(times)?;
     Ok(())
 }
+
+pub fn tags_csv_translate(
+    source_csv: PathBuf,
+    taglist_csv: PathBuf,
+    output_dir: PathBuf,
+) -> anyhow::Result<()> {
+    // TODO: a reverse mode
+    // TODO: make taglist field configurable
+    let source_df = CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(source_csv.clone()))?
+        .finish()?;
+    let taglist_df = CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(taglist_csv))?
+        .finish()?;
+    let mut result = source_df
+        .clone()
+        .lazy()
+        .join(
+            taglist_df.clone().lazy(),
+            [col("species")],
+            [col("tag")],
+            JoinArgs::new(JoinType::Left),
+        )
+        .collect()?;
+
+    let output_csv = output_dir.join(format!(
+        "{}_translated.csv",
+        source_csv.file_stem().unwrap().to_str().unwrap()
+    ));
+    let mut file = std::fs::File::create(&output_csv).unwrap();
+    CsvWriter::new(&mut file).finish(&mut result).unwrap();
+
+    println!("Translated tags saved to {}", output_csv.display());
+    Ok(())
+}
