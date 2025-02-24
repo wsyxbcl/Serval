@@ -53,6 +53,7 @@ pub enum TagType {
     Individual,
     Count,
     Sex,
+    Bodypart,
 }
 
 impl fmt::Display for TagType {
@@ -68,6 +69,7 @@ impl TagType {
             TagType::Species => "species",
             TagType::Count => "count",
             TagType::Sex => "sex",
+            TagType::Bodypart => "bodypart",
         }
     }
     pub fn digikam_tag_prefix(self) -> &'static str {
@@ -76,6 +78,7 @@ impl TagType {
             TagType::Species => "Species/",
             TagType::Count => "Count/",
             TagType::Sex => "Sex/",
+            TagType::Bodypart => "Bodypart/",
         }
     }
     pub fn adobe_tag_prefix(self) -> &'static str {
@@ -84,6 +87,7 @@ impl TagType {
             TagType::Species => "Species|",
             TagType::Count => "Count|",
             TagType::Sex => "Sex|",
+            TagType::Bodypart => "Bodypart|",
         }
     }
 }

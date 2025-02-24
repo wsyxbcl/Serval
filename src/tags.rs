@@ -163,6 +163,7 @@ type Metadata = (
     Vec<String>, // individuals
     Vec<String>, // count
     Vec<String>, // sex
+    Vec<String>, // bodyparts
     Vec<String>, // subjects
     String,      // datetime
     String,      // datetime_digitized
@@ -176,7 +177,7 @@ fn retrieve_metadata(
     include_time_modified: bool,
 ) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
-    // species, individual, sex count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
+    // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
@@ -186,6 +187,7 @@ fn retrieve_metadata(
     let mut individuals: Vec<String> = Vec::new();
     let mut count: Vec<String> = Vec::new();
     let mut sex: Vec<String> = Vec::new();
+    let mut bodyparts: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime = String::new();
     let mut datetime_digitized = String::new();
@@ -255,6 +257,12 @@ fn retrieve_metadata(
                             .unwrap()
                             .to_string(),
                     );
+                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                    bodyparts.push(
+                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -264,6 +272,7 @@ fn retrieve_metadata(
         individuals,
         count,
         sex,
+        bodyparts,
         subjects,
         datetime,
         datetime_digitized,
@@ -314,6 +323,7 @@ pub fn get_classifications(
     let mut individual_tags: Vec<String> = Vec::new();
     let mut count_tags: Vec<String> = Vec::new();
     let mut sex_tags: Vec<String> = Vec::new();
+    let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
     let mut datetimes: Vec<String> = Vec::new();
     let mut datetime_digitizeds: Vec<String> = Vec::new();
@@ -333,6 +343,7 @@ pub fn get_classifications(
                     individuals,
                     count,
                     sex,
+                    bodyparts,
                     subjects,
                     datetime,
                     datetime_digitized,
@@ -345,7 +356,8 @@ pub fn get_classifications(
                         individuals.join("|"),
                         count.join("|"),
                         sex.join("|"),
-                        subjects.join("|"), // for just human review
+                        bodyparts.join("|"),
+                        subjects.join("|"), // subject just for reviewing
                         datetime,
                         datetime_digitized,
                         time_modified,
@@ -365,6 +377,7 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
                     )
                 }
             }
@@ -375,17 +388,19 @@ pub fn get_classifications(
         individual_tags.push(tag.1);
         count_tags.push(tag.2);
         sex_tags.push(tag.3);
-        subjects.push(tag.4);
-        datetimes.push(tag.5);
-        datetime_digitizeds.push(tag.6);
-        time_modifieds.push(tag.7);
-        ratings.push(tag.8);
+        bodypart_tags.push(tag.4);
+        subjects.push(tag.5);
+        datetimes.push(tag.6);
+        datetime_digitizeds.push(tag.7);
+        time_modifieds.push(tag.8);
+        ratings.push(tag.9);
     }
     // Analysis
     let s_species = Column::new("species_tags".into(), species_tags);
     let s_individuals = Column::new("individual_tags".into(), individual_tags);
     let s_count = Column::new("count_tags".into(), count_tags);
     let s_sex = Column::new("sex_tags".into(), sex_tags);
+    let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
     let s_subjects = Column::new("subjects".into(), subjects);
     let s_datetime = Column::new("datetime".into(), datetimes);
     let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
@@ -399,6 +414,7 @@ pub fn get_classifications(
         s_individuals,
         s_count,
         s_sex,
+        s_bodyparts,
         s_subjects,
         s_datetime,
         s_datetime_digitized,
@@ -448,6 +464,7 @@ pub fn get_classifications(
                 .alias(TagType::Individual.col_name()),
             col("count_tags").alias(TagType::Count.col_name()),
             col("sex_tags").alias(TagType::Sex.col_name()),
+            col("bodypart_tags").alias(TagType::Bodypart.col_name()),
             col("subjects"),
             col("rating"),
         ])
