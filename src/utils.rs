@@ -392,7 +392,10 @@ pub fn tags_csv_translate(
         source_csv.file_stem().unwrap().to_str().unwrap()
     ));
     let mut file = std::fs::File::create(&output_csv).unwrap();
-    CsvWriter::new(&mut file).finish(&mut result).unwrap();
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut result)
+        .unwrap();
 
     println!("Translated tags saved to {}", output_csv.display());
     Ok(())
