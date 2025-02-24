@@ -535,6 +535,8 @@ pub fn extract_resources(
     rename: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
+    use_subdir: bool,
+    subdir_value: ExtractFilterType,
 ) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_has_header(true)
@@ -550,7 +552,12 @@ pub fn extract_resources(
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
     let column_names = df.get_column_names_str();
-    let required_columns = [TagType::Species.col_name(), TagType::Individual.col_name()];
+    let required_columns = [
+        TagType::Species.col_name(),
+        TagType::Individual.col_name(),
+        "rating",
+        "custom",
+    ];
 
     let mut df = required_columns.iter().fold(df.clone(), |acc_df, col| {
         if !column_names.contains(col) {
@@ -666,8 +673,27 @@ pub fn extract_resources(
     let paths = df_filtered.column("path")?.str()?;
     let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
     let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
+    let rating_tags = df_filtered.column("rating")?.str()?;
+    let custom_tags = df_filtered.column("custom")?.str()?;
 
-    for (path, species_tag, individual_tag) in izip!(paths, species_tags, individual_tags) {
+    for (path, species_tag, individual_tag, rating_tag, custom_tag) in izip!(
+        paths,
+        species_tags,
+        individual_tags,
+        rating_tags,
+        custom_tags
+    ) {
+        let subdir = if use_subdir {
+            match subdir_value {
+                ExtractFilterType::Species => species_tag.unwrap(),
+                ExtractFilterType::Individual => individual_tag.unwrap(),
+                ExtractFilterType::Rating => rating_tag.unwrap(),
+                ExtractFilterType::Custom => custom_tag.unwrap(),
+                _ => "", // Currently not support path
+            }
+        } else {
+            ""
+        };
         let input_path_xmp: String;
         let input_path_media: String;
         if path.unwrap().ends_with(".xmp") {
@@ -683,13 +709,13 @@ pub fn extract_resources(
             let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
                 (
-                    output_dir.join(format!(
+                    output_dir.join(subdir).join(format!(
                         "{}-{}-{}",
                         species_tag.unwrap(),
                         individual_tag.unwrap(),
                         relative_path_output_xmp.to_string_lossy()
                     )),
-                    output_dir.join(format!(
+                    output_dir.join(subdir).join(format!(
                         "{}-{}-{}",
                         species_tag.unwrap(),
                         individual_tag.unwrap(),
@@ -698,8 +724,8 @@ pub fn extract_resources(
                 )
             } else {
                 (
-                    output_dir.join(relative_path_output_xmp),
-                    output_dir.join(relative_path_output_media),
+                    output_dir.join(subdir).join(relative_path_output_xmp),
+                    output_dir.join(subdir).join(relative_path_output_media),
                 )
             }
         } else {
@@ -712,6 +738,7 @@ pub fn extract_resources(
                 (
                     output_dir
                         .join(relative_path_output_xmp.parent().unwrap())
+                        .join(subdir)
                         .join(format!(
                             "{}-{}-{}",
                             species_tag.unwrap(),
@@ -723,6 +750,7 @@ pub fn extract_resources(
                         )),
                     output_dir
                         .join(relative_path_output_media.parent().unwrap())
+                        .join(subdir)
                         .join(format!(
                             "{}-{}-{}",
                             species_tag.unwrap(),
@@ -735,8 +763,14 @@ pub fn extract_resources(
                 )
             } else {
                 (
-                    output_dir.join(relative_path_output_xmp),
-                    output_dir.join(relative_path_output_media),
+                    output_dir
+                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(subdir)
+                        .join(relative_path_output_xmp.file_name().unwrap()),
+                    output_dir
+                        .join(relative_path_output_media.parent().unwrap())
+                        .join(subdir)
+                        .join(relative_path_output_media.file_name().unwrap()),
                 )
             }
         };

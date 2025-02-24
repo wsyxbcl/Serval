@@ -109,8 +109,18 @@ fn main() -> anyhow::Result<()> {
             filter_type,
             rename,
             output,
+            use_subdir,
+            subdir_type,
         } => {
-            extract_resources(value, filter_type, rename, csv_path, output)?;
+            extract_resources(
+                value,
+                filter_type,
+                rename,
+                csv_path,
+                output,
+                use_subdir,
+                subdir_type,
+            )?;
         }
         Commands::Xmp {
             source_dir,
@@ -253,6 +263,12 @@ enum Commands {
         /// Enable rename rename mode (including tags in filenames)
         #[arg(long)]
         rename: bool,
+        /// Use subdirectories to organize resources
+        #[arg(long, default_value_t = false)]
+        use_subdir: bool,
+        /// Specify the type used when creating subdirectories
+        #[arg(long, default_value_t = ExtractFilterType::Species, value_enum)]
+        subdir_type: ExtractFilterType,
         /// Set the output directory
         #[arg(
             short,
