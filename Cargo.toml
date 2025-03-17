@@ -41,3 +41,7 @@ path = "src/main.rs"
 [[bin]]
 name = "serval-xmp-extract"
 path = "bin/serval-xmp-extract.rs"
+
+[[bin]]
+name = "serval-check"
+path = "bin/serval-check.rs"

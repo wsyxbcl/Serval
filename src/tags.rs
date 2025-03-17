@@ -289,6 +289,7 @@ pub fn get_classifications(
     include_subject: bool,
     include_time_modified: bool,
     debug_mode: bool,
+    volunteer_mode: bool,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -421,7 +422,44 @@ pub fn get_classifications(
         s_time_modified,
         s_rating,
     ])?;
+    if volunteer_mode {
+        // println!("{:?}", df_raw);
+        let mut df_empty_species = df_raw
+            .clone()
+            .lazy()
+            .filter(col("species_tags").eq(lit("")))
+            .collect()?;
+        let num_xmp = df_raw.height();
+        let num_tagged_sp = num_xmp - df_empty_species.height();
+        let progress = if num_xmp > 0 {
+            (num_tagged_sp as f64 / num_xmp as f64) * 100.0
+        } else {
+            0.0
+        };
 
+        println!("Species Labeling Progress: {:.2}%", progress);
+
+        let pb = ProgressBar::new(num_xmp as u64);
+
+        pb.set_prefix("Species Labeling Progress:");
+        pb.set_position(num_tagged_sp as u64);
+
+        println!("Untagged xmp: {}", df_empty_species.height());
+
+        let mut rl = rustyline::DefaultEditor::new()?;
+        let input = rl.readline("Save CSV of files with missing tags for review? (y/n): ")?;
+
+        if input.trim().eq_ignore_ascii_case("y") {
+            let mut file = std::fs::File::create("serval_check_empty.csv")?;
+            CsvWriter::new(&mut file)
+                .include_bom(true)
+                .finish(&mut df_empty_species)?;
+        } else {
+            println!("Skipping save.");
+        }
+
+        return Ok(());
+    }
     let datetime_options = StrptimeOptions {
         // TODO: Serval does not include timezone info now
         format: Some("%Y-%m-%dT%H:%M:%S".into()),

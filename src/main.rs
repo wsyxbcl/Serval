@@ -81,6 +81,7 @@ fn main() -> anyhow::Result<()> {
                 subject,
                 modified_time,
                 debug,
+                false,
             )?;
         }
         Commands::Rename {
