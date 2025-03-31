@@ -558,7 +558,7 @@ pub fn get_classifications(
         .finish(&mut df_count_species)?;
     println!(
         "Saved to {}",
-        output_dir.join(species_stats_path).to_string_lossy()
+        species_stats_path.to_string_lossy()
     );
 
     if independent {
