@@ -289,7 +289,7 @@ pub fn get_classifications(
     include_subject: bool,
     include_time_modified: bool,
     debug_mode: bool,
-    volunteer_mode: bool,
+    volunteer_mode: bool, //TODO: make a mode argument
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -556,10 +556,7 @@ pub fn get_classifications(
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df_count_species)?;
-    println!(
-        "Saved to {}",
-        species_stats_path.to_string_lossy()
-    );
+    println!("Saved to {}", species_stats_path.to_string_lossy());
 
     if independent {
         get_temporal_independence(tags_csv_path, output_dir)?;
@@ -844,7 +841,7 @@ pub fn extract_resources(
 
         fs::copy(input_path_media.clone(), output_path_media.clone())?;
         if let Err(_err) = fs::copy(input_path_xmp, output_path_xmp) {
-            pb.println("Missing XMP file ,tag info for certain video files may be lost.");
+            pb.println("Missing XMP file, tag info for certain video files may be lost.");
             // eprintln!("Error: {}", err);
         }
         sync_modified_time(input_path_media.into(), output_path_media)?;
