@@ -532,6 +532,7 @@ pub fn get_classifications(
         .select([col("*")])
         .explode([TagType::Individual.col_name()])
         .explode([TagType::Species.col_name()])
+        .sort(["path"], SortMultipleOptions::default())
         .collect()?;
     println!("{}", df_flatten);
 
@@ -573,6 +574,14 @@ pub fn extract_resources(
     use_subdir: bool,
     subdir_value: ExtractFilterType,
 ) -> anyhow::Result<()> {
+    // Use subdir for default output_dir in case of overwrite
+    let output_dir = if output_dir.ends_with("serval_extract") {
+        let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
+        output_dir.join(format!("{}_{}", current_time, filter_value))
+    } else {
+        output_dir
+    };
+
     let df = CsvReadOptions::default()
         .with_has_header(true)
         .with_infer_schema_length(Some(0)) // parse all columns as string
