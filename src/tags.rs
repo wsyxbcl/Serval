@@ -132,15 +132,30 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                         if let Ok(modified_time) = metadata.modified() {
                             let datetime: DateTime<Local> = DateTime::from(modified_time);
                             let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
-                            let rdf_exif_datetime = format!(
-                                r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+                            if xmp_string.contains("rdf") {
+                                let rdf_exif_datetime = format!(
+                                    r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
             <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
         </rdf:Description>"#,
-                                datetime_str
-                            );
-                            xmp_string = re_rdf
-                                .replace(&xmp_string, format!("$1\n{}", rdf_exif_datetime))
-                                .to_string();
+                                    datetime_str
+                                );
+                                xmp_string = re_rdf
+                                    .replace(&xmp_string, format!("$1\n{}", rdf_exif_datetime))
+                                    .to_string();
+                            } else {
+                                xmp_string = format!(
+                                    r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+        <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
+    </rdf:Description>              
+</rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#,
+                                    datetime_str
+                                );
+                            }
                         }
                     }
                 }
