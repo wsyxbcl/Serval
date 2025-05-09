@@ -184,7 +184,7 @@ type Metadata = (
 );
 
 fn retrieve_metadata(
-    file_path: &String,
+    file_path: &Path,
     include_subject: bool,
     include_time_modified: bool,
 ) -> anyhow::Result<Metadata> {
@@ -346,11 +346,7 @@ pub fn get_classifications(
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(|i| {
-            match retrieve_metadata(
-                &file_paths[i].to_string_lossy().into_owned(),
-                include_subject,
-                include_time_modified,
-            ) {
+            match retrieve_metadata(&file_paths[i], include_subject, include_time_modified) {
                 Ok((
                     species,
                     individuals,
