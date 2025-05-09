@@ -23,7 +23,7 @@ rayon = "1.10.0"
 regex = "1.11.1"
 rustyline = { version = "15.0.0", features = ["derive"] }
 walkdir = "2.5.0"
-xmp_toolkit = "1.9.2"
+xmp_toolkit = "1.10.0"
 
 [profile.release-lto]
 inherits = "release"
