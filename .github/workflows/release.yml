@@ -15,6 +15,7 @@ env:
   MAIN_BINARY_NAME: serval
   CHECK_BINARY_NAME: serval-check
   XMP_EXTRACT_BINARY_NAME: serval-xmp-extract
+  RELEASE_PROFILE_NAME: release-lto
 
 jobs:
   build_release:
@@ -59,19 +60,18 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          # Include target in cache key for more specific caching
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-
 
       - name: Build all binaries in release mode
-        run: cargo build --release --bins --target ${{ matrix.target }}
+        run: cargo build --profile ${{ env.RELEASE_PROFILE_NAME }} --bins --target ${{ matrix.target }}
 
       - name: Prepare artifacts for ${{ matrix.os }} (${{ matrix.artifact_suffix }})
         shell: bash 
         run: |
-          SOURCE_RELEASE_DIR="target/${{ matrix.target }}/release"
-          # Use matrix.artifact_suffix in the staging directory name for uniqueness
+          # The output directory for a custom profile is target/<target_triple>/<profile_name>
+          SOURCE_RELEASE_DIR="target/${{ matrix.target }}/${{ env.RELEASE_PROFILE_NAME }}"
           STAGING_DIR="staging/${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}"
           mkdir -p "${STAGING_DIR}"
 
@@ -90,7 +90,6 @@ jobs:
             7z a "${ARCHIVE_BASENAME}.zip" "./${STAGING_DIR}/*" 
             echo "ARCHIVE_NAME=${ARCHIVE_BASENAME}.zip" >> $GITHUB_ENV
           else
-            # Ensure the tar command archives the directory itself with the correct name
             tar czvf "${ARCHIVE_BASENAME}.tar.gz" -C "./staging" "${ARCHIVE_BASENAME}"
             echo "ARCHIVE_NAME=${ARCHIVE_BASENAME}.tar.gz" >> $GITHUB_ENV
           fi
@@ -100,7 +99,6 @@ jobs:
       - name: Upload artifact for ${{ matrix.os }} (${{ matrix.artifact_suffix }})
         uses: actions/upload-artifact@v4
         with:
-          # Use matrix.artifact_suffix in the artifact name for uniqueness
           name: ${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
           path: ${{ env.ARCHIVE_NAME }} 
           if-no-files-found: error 
