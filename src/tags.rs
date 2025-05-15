@@ -96,6 +96,8 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let pb = ProgressBar::new(media_count.try_into()?);
     let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
     let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
+    // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
+    let re_device_setting = Regex::new(r"(?s)<exif:DeviceSettingDescription[^>]*>.*?</exif:DeviceSettingDescription>\s*")?;
 
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
@@ -116,6 +118,10 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                 xmp_string = xmp.to_string_with_options(
                     ToStringOptions::default().set_newline("\n".to_string()),
                 )?;
+                if re_device_setting.is_match(&xmp_string) {
+                    // Workaround: knock off
+                    xmp_string = re_device_setting.replace_all(&xmp_string, "").into_owned();
+                }
             }
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
