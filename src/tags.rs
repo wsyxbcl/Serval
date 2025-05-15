@@ -97,7 +97,9 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
     let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
     // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
-    let re_device_setting = Regex::new(r"(?s)<exif:DeviceSettingDescription[^>]*>.*?</exif:DeviceSettingDescription>\s*")?;
+    let re_device_setting = Regex::new(
+        r"(?s)<exif:DeviceSettingDescription[^>]*>.*?</exif:DeviceSettingDescription>\s*",
+    )?;
 
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
