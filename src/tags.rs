@@ -317,14 +317,24 @@ pub fn get_classifications(
     let file_paths = path_enumerate(file_dir.clone(), resource_type);
     fs::create_dir_all(output_dir.clone())?;
     // Determine output filename based on parameters
-    let output_suffix = format!(
-        "_{}_{}{}{}_{}.csv",
-        file_dir.file_name().unwrap().to_string_lossy(),
-        resource_type.to_string().to_lowercase(),
-        if include_subject { "-s" } else { "" },
-        if include_time_modified { "-m" } else { "" },
-        Local::now().format("%Y%m%d%H%M%S"),
-    );
+    let output_suffix = if volunteer_mode {
+        String::new()
+    } else {
+        let file_name = file_dir
+            .file_name()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("unk")); // For root dir
+
+        let suffix = format!(
+            "_{}_{}{}{}_{}.csv",
+            file_name,
+            resource_type.to_string().to_lowercase(),
+            if include_subject { "-s" } else { "" },
+            if include_time_modified { "-m" } else { "" },
+            Local::now().format("%Y%m%d%H%M%S"),
+        );
+        suffix
+    };
 
     let image_paths: Vec<String> = file_paths
         .clone()
