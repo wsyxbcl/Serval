@@ -4,7 +4,7 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist,
+    extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist, update_tags
 };
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
@@ -127,9 +127,14 @@ fn main() -> anyhow::Result<()> {
             source_dir,
             output_dir,
             init,
+            update,
+            tag_type,
         } => {
             if init {
                 init_xmp(absolute_path(source_dir)?)?;
+            } else if update {
+                let tag_type = tag_type.ok_or_else(|| anyhow::anyhow!("Tag type must be specified for update operation"))?;
+                update_tags(absolute_path(source_dir)?, tag_type)?;
             } else {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
@@ -295,6 +300,12 @@ enum Commands {
         /// Init mode (initialize xmp files)
         #[arg(short, long)]
         init: bool,
+        /// Update mode (update xmp files)
+        #[arg(short, long)]
+        update: bool,
+        /// Tag type to update (species or individual)
+        #[arg(short, long, value_name = "TYPE", value_enum)]
+        tag_type: Option<TagType>,
     },
     /// Translate tags in csv to different languages
     Translate {
