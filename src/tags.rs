@@ -1146,7 +1146,6 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
-    println!("Successfully parsed XMP metadata");
     
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
 
@@ -1172,29 +1171,21 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
             match xmp.property(LIGHTROOM_NS, array_item_path) {
                 Some(prop) => {
                     let value = prop.value;
-                    println!("Checking item {}: {}", i, value);
-
                     let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
                     if value.contains(&prefix) {
                         let new_value = value.replace(&prefix, &format!("{}{}", tag_type.adobe_tag_prefix(), new_value));
-
-                        println!("Found match! Updating:");
-                        println!("  From: {}", value);
-                        println!("  To:   {}", new_value);
-
                         let new_xmp_value = XmpValue::new(new_value);
                         match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
                             Ok(_) => {
-                                println!("Successfully updated item {}", i);
+                                // println!("Updated tag: {}", value);
                             }
                             Err(e) => {
-                                eprintln!("Error updating item {}: {:?}", i, e);
+                                println!("Error updating tag {}: {:?}", i, e);
                             }
                         }
                     }
                 }
                 None => {
-                    println!("No value found for array item {}", i);
                 }
             }
         }
@@ -1205,10 +1196,10 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
     )?;
     let backup_path = format!("{}.backup", file_path.display());
     fs::copy(&file_path, &backup_path)?;
-    println!("Created backup: {}", backup_path);
+    // println!("Created backup: {}", backup_path);
 
     fs::write(&file_path, modified_xmp)?;
-    println!("Successfully updated XMP file: {}", file_path.display());
+    // println!("Successfully updated XMP file: {}", file_path.display());
 
     Ok(())
 }
@@ -1225,7 +1216,11 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         .filter(col("xmp_update").is_not_null())
         .collect()?;
 
-    println!("Found {} rows with updates", df_filtered.height());
+    let num_updates = df_filtered.height();
+    println!("Found {} rows with updates", num_updates);
+    
+    let pb = ProgressBar::new(num_updates as u64);
+    pb.set_message("Processing XMP updates...");
     
     let path_col = df_filtered.column("path")?.str()?;
     let xmp_update_col = df_filtered.column("xmp_update")?.str()?;
@@ -1249,13 +1244,12 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
     for (path, xmp_update, tag_original) in iter {
         if let Some(path_str) = path {
-            println!("{}", path_str);
             let current_path = PathBuf::from(path_str);
-
             let xmp_update = xmp_update.unwrap_or("");
+            
             if !xmp_update.is_empty() {
                 let tag_original = tag_original.unwrap_or("");
-                println!("Updating {} from '{}' to '{}' in {}", tag_type, tag_original, xmp_update, path_str);
+                pb.println(format!("Processing: {}", path_str));
                 update_xmp(
                     current_path.clone(),
                     tag_original.to_string(),
@@ -1264,9 +1258,11 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
                 )?;
             }
         } else {
-             eprintln!("Missing xmp path, skipping.");
+            pb.println("Missing xmp path, skipping.");
         }
+        pb.inc(1);
     }
-    println!("Finished updating tags");
+    
+    pb.finish_with_message("Finished processing all XMP updates");
     Ok(())
 }
