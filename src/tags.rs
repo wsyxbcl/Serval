@@ -20,6 +20,9 @@ use std::{
 };
 use xmp_toolkit::{xmp_ns, OpenFileOptions, ToStringOptions, FromStrOptions, XmpFile, XmpMeta, XmpValue};
 
+const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
+const HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
+
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
     fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
@@ -247,11 +250,8 @@ fn retrieve_metadata(
                 }
             }
 
-            // xmp namespace
-            let ns_adobe = "http://ns.adobe.com/lightroom/1.0/";
-
             // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(ns_adobe, "hierarchicalSubject") {
+            for property in xmp.property_array(LIGHTROOM_NS, HIERARCHICAL_SUBJECT) {
                 let tag = property.value;
                 if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
                     species.push(
@@ -1147,49 +1147,59 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
     println!("Successfully parsed XMP metadata");
-    const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
-    const HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
-    let _ = XmpMeta::register_namespace(LIGHTROOM_NS, "lr");
-    let property_exists = match xmp.property(LIGHTROOM_NS, HIERARCHICAL_SUBJECT) {
-        Some(_) => true,
-        None => false,
-    };
-    if !property_exists {
-        println!("No hierarchicalSubject property found in Lightroom namespace");
-        return Ok(());
-    }
-    let array_len = xmp.array_len(LIGHTROOM_NS, HIERARCHICAL_SUBJECT);
-    for i in 1..=array_len {
-        let array_item_path = &format!("{}[{}]", HIERARCHICAL_SUBJECT, i);
-        match xmp.property(LIGHTROOM_NS, array_item_path) {
-            Some(prop) => {
-                let value = prop.value;
-                println!("Checking item {}: {}", i, value);
+    
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
 
-                let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
-                if value.contains(&prefix) {
-                    let new_value = value.replace(&prefix, &format!("{}{}", tag_type.adobe_tag_prefix(), new_value));
+    if old_value.is_empty() {
+        let new_tag = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
+        println!("Inserting new tag: {}", new_tag);
+        let array_name = XmpValue::new(HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
+        let item_value = XmpValue::new(new_tag);
+        
+        xmp.append_array_item(LIGHTROOM_NS, &array_name, &item_value)?; // will create array if it doesn't exist
+    } else {
+        let property_exists = match xmp.property(LIGHTROOM_NS, HIERARCHICAL_SUBJECT) {
+            Some(_) => true,
+            None => false,
+        };
+        if !property_exists {
+            println!("No hierarchicalSubject property found in Lightroom namespace");
+            return Ok(());
+        }
+        let array_len = xmp.array_len(LIGHTROOM_NS, HIERARCHICAL_SUBJECT);
+        for i in 1..=array_len {
+            let array_item_path = &format!("{}[{}]", HIERARCHICAL_SUBJECT, i);
+            match xmp.property(LIGHTROOM_NS, array_item_path) {
+                Some(prop) => {
+                    let value = prop.value;
+                    println!("Checking item {}: {}", i, value);
 
-                    println!("Found match! Updating:");
-                    println!("  From: {}", value);
-                    println!("  To:   {}", new_value);
+                    let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
+                    if value.contains(&prefix) {
+                        let new_value = value.replace(&prefix, &format!("{}{}", tag_type.adobe_tag_prefix(), new_value));
 
-                    let new_xmp_value = XmpValue::new(new_value);
-                    match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
-                        Ok(_) => {
-                            println!("Successfully updated item {}", i);
-                        }
-                        Err(e) => {
-                            eprintln!("Error updating item {}: {:?}", i, e);
+                        println!("Found match! Updating:");
+                        println!("  From: {}", value);
+                        println!("  To:   {}", new_value);
+
+                        let new_xmp_value = XmpValue::new(new_value);
+                        match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
+                            Ok(_) => {
+                                println!("Successfully updated item {}", i);
+                            }
+                            Err(e) => {
+                                eprintln!("Error updating item {}: {:?}", i, e);
+                            }
                         }
                     }
                 }
-            }
-            None => {
-                println!("No value found for array item {}", i);
+                None => {
+                    println!("No value found for array item {}", i);
+                }
             }
         }
     }
+
     let modified_xmp = xmp.to_string_with_options(
         ToStringOptions::default().set_newline("\n".to_string()),
     )?;
@@ -1244,20 +1254,17 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
             let xmp_update = xmp_update.unwrap_or("");
             if !xmp_update.is_empty() {
-                if let Some(tag_original) = tag_original {
-                    println!("Updating {} from '{}' to '{}' in {}", tag_type, tag_original, xmp_update, path_str);
-                    update_xmp(
-                        current_path.clone(),
-                        tag_original.to_string(),
-                        xmp_update.to_string(),
-                        tag_type,
-                    )?;
-                } else {
-                    eprintln!("Warning: {} update found for '{}', but original {} is missing.", tag_type, path_str, tag_type);
-                }
+                let tag_original = tag_original.unwrap_or("");
+                println!("Updating {} from '{}' to '{}' in {}", tag_type, tag_original, xmp_update, path_str);
+                update_xmp(
+                    current_path.clone(),
+                    tag_original.to_string(),
+                    xmp_update.to_string(),
+                    tag_type,
+                )?;
             }
         } else {
-             eprintln!("Warning: Skipping row due to missing path.");
+             eprintln!("Missing xmp path, skipping.");
         }
     }
     println!("Finished updating tags");
