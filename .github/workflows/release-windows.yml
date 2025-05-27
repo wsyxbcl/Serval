@@ -1,0 +1,88 @@
+name: Build Windows Release Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v0.0.0-snapshot'
+
+env:
+  CARGO_TERM_COLOR: always
+  MAIN_BINARY_NAME: serval
+  CHECK_BINARY_NAME: serval-check
+  XMP_EXTRACT_BINARY_NAME: serval-xmp-extract
+  RELEASE_PROFILE_NAME: release-lto
+
+jobs:
+  build_windows_release:
+    name: Build for Windows (${{ matrix.artifact_suffix }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_suffix: windows-amd64
+            binary_ext: ".exe"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-
+
+      - name: Build all binaries in release mode for Windows
+        run: cargo build --profile ${{ env.RELEASE_PROFILE_NAME }} --bins --target ${{ matrix.target }}
+
+      - name: Prepare artifacts for Windows (${{ matrix.artifact_suffix }})
+        shell: bash
+        run: |
+          SOURCE_RELEASE_DIR="target/${{ matrix.target }}/${{ env.RELEASE_PROFILE_NAME }}"
+          ARCHIVE_BASENAME="${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}"
+          FULL_STAGING_PATH="staging/${ARCHIVE_BASENAME}"
+          mkdir -p "${FULL_STAGING_PATH}"
+
+          echo "Source release directory: ${SOURCE_RELEASE_DIR}"
+          echo "Full staging path: ${FULL_STAGING_PATH}"
+          echo "Binary extension: ${{ matrix.binary_ext }}"
+          
+          cp "${SOURCE_RELEASE_DIR}/${{ env.MAIN_BINARY_NAME }}${{ matrix.binary_ext }}" "${FULL_STAGING_PATH}/"
+          cp "${SOURCE_RELEASE_DIR}/${{ env.CHECK_BINARY_NAME }}${{ matrix.binary_ext }}" "${FULL_STAGING_PATH}/"
+          cp "${SOURCE_RELEASE_DIR}/${{ env.XMP_EXTRACT_BINARY_NAME }}${{ matrix.binary_ext }}" "${FULL_STAGING_PATH}/"
+          
+          echo "Contents of the staging directory (${FULL_STAGING_PATH}):"
+          ls -R "${FULL_STAGING_PATH}"
+
+          ARCHIVE_FILE_NAME="${ARCHIVE_BASENAME}.zip"
+          
+          echo "Creating archive ${ARCHIVE_FILE_NAME} from contents of ${FULL_STAGING_PATH}"
+          (cd "${FULL_STAGING_PATH}" && 7z a "../../${ARCHIVE_FILE_NAME}" *)
+          
+          echo "ARCHIVE_NAME=${ARCHIVE_FILE_NAME}" >> $GITHUB_ENV
+          
+          echo "Archive created: ${ARCHIVE_FILE_NAME}"
+
+      - name: Upload artifact for Windows (${{ matrix.artifact_suffix }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
+          path: ${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
