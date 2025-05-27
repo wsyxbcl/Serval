@@ -123,22 +123,17 @@ fn main() -> anyhow::Result<()> {
                 subdir_type,
             )?;
         }
-        Commands::Xmp {
-            source_dir,
-            output_dir,
-            init,
-            update,
-            tag_type,
-        } => {
-            if init {
-                init_xmp(absolute_path(source_dir)?)?;
-            } else if update {
-                let tag_type = tag_type.ok_or_else(|| anyhow::anyhow!("Tag type must be specified for update operation"))?;
-                update_tags(absolute_path(source_dir)?, tag_type)?;
-            } else {
+        Commands::Xmp(xmp_cmd) => match xmp_cmd {
+            XmpCommands::Copy { source_dir, output_dir } => {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
-        }
+            XmpCommands::Init { source_dir } => {
+                init_xmp(absolute_path(source_dir)?)?;
+            }
+            XmpCommands::Update { csv_path, tag_type } => {
+                update_tags(absolute_path(csv_path)?, tag_type)?;
+            }
+        },
         Commands::Translate {
             csv_path,
             taglist_path,
@@ -284,29 +279,9 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    /// Copy all XMP files to a directory while keeping the directory structure
-    #[command(arg_required_else_help = true)]
-    Xmp {
-        /// Path for the source directory
-        source_dir: PathBuf,
-        /// Output directory
-        #[arg(
-            short,
-            long,
-            value_name = "OUTPUT_DIR",
-            default_value = "./serval_output/serval_xmp"
-        )]
-        output_dir: PathBuf,
-        /// Init mode (initialize xmp files)
-        #[arg(short, long)]
-        init: bool,
-        /// Update mode (update xmp files)
-        #[arg(short, long)]
-        update: bool,
-        /// Tag type to update (species or individual)
-        #[arg(short, long, value_name = "TYPE", value_enum)]
-        tag_type: Option<TagType>,
-    },
+    /// XMP file operations
+    #[command(subcommand)]
+    Xmp(XmpCommands),
     /// Translate tags in csv to different languages
     Translate {
         /// Path for tags.csv
@@ -324,4 +299,34 @@ enum Commands {
         output: PathBuf,
     },
     // TODO serval check: check tagging coverage
+}
+
+#[derive(Debug, Subcommand)]
+enum XmpCommands {
+    /// Copy XMP files to a directory while keeping the directory structure
+    Copy {
+        /// Path for the source directory
+        source_dir: PathBuf,
+        /// Output directory
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_xmp"
+        )]
+        output_dir: PathBuf,
+    },
+    /// Initialize XMP files in a directory
+    Init {
+        /// Path for the source directory
+        source_dir: PathBuf,
+    },
+    /// Update tags in XMP files
+    Update {
+        /// Path for the CSV file containing tag updates
+        csv_path: PathBuf,
+        /// Tag type to update
+        #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
+        tag_type: TagType,
+    },
 }
