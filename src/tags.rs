@@ -1249,6 +1249,19 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
             let xmp_update = xmp_update.unwrap_or("");
 
             if !xmp_update.is_empty() {
+                // Check if the file has .xmp extension
+                if let Some(ext) = current_path.extension() {
+                    if ext != "xmp" {
+                        pb.println(format!("Skipping non-XMP file: {}", path_str));
+                        pb.inc(1);
+                        continue;
+                    }
+                } else {
+                    pb.println(format!("Skipping file without extension: {}", path_str));
+                    pb.inc(1);
+                    continue;
+                }
+
                 let tag_original = tag_original.unwrap_or("");
                 pb.println(format!("Processing: {}", path_str));
                 update_xmp(
