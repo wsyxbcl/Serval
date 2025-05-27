@@ -298,12 +298,11 @@ enum Commands {
         )]
         output: PathBuf,
     },
-    // TODO serval check: check tagging coverage
 }
 
 #[derive(Debug, Subcommand)]
 enum XmpCommands {
-    /// Copy XMP files to a directory while keeping the directory structure
+    /// Copy all XMP files from source_dir while keeping the directory structure
     Copy {
         /// Path for the source directory
         source_dir: PathBuf,
@@ -321,7 +320,7 @@ enum XmpCommands {
         /// Path for the source directory
         source_dir: PathBuf,
     },
-    /// Update tags in XMP files
+    /// Update tags in XMP files, by reading column xmp_update in csv file
     Update {
         /// Path for the CSV file containing tag updates
         csv_path: PathBuf,
