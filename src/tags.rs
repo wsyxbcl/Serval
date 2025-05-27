@@ -1194,9 +1194,12 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
     let modified_xmp = xmp.to_string_with_options(
         ToStringOptions::default().set_newline("\n".to_string()),
     )?;
-    let backup_path = format!("{}.backup", file_path.display());
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+    
     fs::copy(&file_path, &backup_path)?;
-    // println!("Created backup: {}", backup_path);
+    // println!("Created backup: {}", final_backup_path);
 
     fs::write(&file_path, modified_xmp)?;
     // println!("Successfully updated XMP file: {}", file_path.display());
