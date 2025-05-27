@@ -4,7 +4,8 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    extract_resources, get_classifications, get_temporal_independence, init_xmp, write_taglist, update_tags
+    extract_resources, get_classifications, get_temporal_independence, init_xmp, update_tags,
+    write_taglist,
 };
 use utils::{
     absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
@@ -124,7 +125,10 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
         Commands::Xmp(xmp_cmd) => match xmp_cmd {
-            XmpCommands::Copy { source_dir, output_dir } => {
+            XmpCommands::Copy {
+                source_dir,
+                output_dir,
+            } => {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
             XmpCommands::Init { source_dir } => {

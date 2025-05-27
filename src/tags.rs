@@ -18,7 +18,9 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use xmp_toolkit::{xmp_ns, OpenFileOptions, ToStringOptions, FromStrOptions, XmpFile, XmpMeta, XmpValue};
+use xmp_toolkit::{
+    xmp_ns, FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue,
+};
 
 const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
 const HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
@@ -1142,11 +1144,16 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     Ok(())
 }
 
-fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type: TagType) -> anyhow::Result<()> {
+fn update_xmp(
+    file_path: PathBuf,
+    old_value: String,
+    new_value: String,
+    tag_type: TagType,
+) -> anyhow::Result<()> {
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
-    
+
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
 
     if old_value.is_empty() {
@@ -1154,13 +1161,10 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
         println!("Inserting new tag: {}", new_tag);
         let array_name = XmpValue::new(HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
         let item_value = XmpValue::new(new_tag);
-        
+
         xmp.append_array_item(LIGHTROOM_NS, &array_name, &item_value)?; // will create array if it doesn't exist
     } else {
-        let property_exists = match xmp.property(LIGHTROOM_NS, HIERARCHICAL_SUBJECT) {
-            Some(_) => true,
-            None => false,
-        };
+        let property_exists = xmp.property(LIGHTROOM_NS, HIERARCHICAL_SUBJECT).is_some();
         if !property_exists {
             println!("No hierarchicalSubject property found in Lightroom namespace");
             return Ok(());
@@ -1168,36 +1172,34 @@ fn update_xmp(file_path: PathBuf, old_value: String, new_value: String, tag_type
         let array_len = xmp.array_len(LIGHTROOM_NS, HIERARCHICAL_SUBJECT);
         for i in 1..=array_len {
             let array_item_path = &format!("{}[{}]", HIERARCHICAL_SUBJECT, i);
-            match xmp.property(LIGHTROOM_NS, array_item_path) {
-                Some(prop) => {
-                    let value = prop.value;
-                    let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
-                    if value.contains(&prefix) {
-                        let new_value = value.replace(&prefix, &format!("{}{}", tag_type.adobe_tag_prefix(), new_value));
-                        let new_xmp_value = XmpValue::new(new_value);
-                        match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
-                            Ok(_) => {
-                                // println!("Updated tag: {}", value);
-                            }
-                            Err(e) => {
-                                println!("Error updating tag {}: {:?}", i, e);
-                            }
+            if let Some(prop) = xmp.property(LIGHTROOM_NS, array_item_path) {
+                let value = prop.value;
+                let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
+                if value.contains(&prefix) {
+                    let new_value = value.replace(
+                        &prefix,
+                        &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
+                    );
+                    let new_xmp_value = XmpValue::new(new_value);
+                    match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
+                        Ok(_) => {
+                            // println!("Updated tag: {}", value);
+                        }
+                        Err(e) => {
+                            println!("Error updating tag {}: {:?}", i, e);
                         }
                     }
-                }
-                None => {
                 }
             }
         }
     }
 
-    let modified_xmp = xmp.to_string_with_options(
-        ToStringOptions::default().set_newline("\n".to_string()),
-    )?;
+    let modified_xmp =
+        xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
-    
+
     fs::copy(&file_path, &backup_path)?;
     // println!("Created backup: {}", final_backup_path);
 
@@ -1221,35 +1223,31 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
     let num_updates = df_filtered.height();
     println!("Found {} rows with updates", num_updates);
-    
+
     let pb = ProgressBar::new(num_updates as u64);
     pb.set_message("Processing XMP updates...");
-    
+
     let path_col = df_filtered.column("path")?.str()?;
     let xmp_update_col = df_filtered.column("xmp_update")?.str()?;
-    let tag_original_col;
-    match tag_type {
-        TagType::Species => {
-            tag_original_col = df_filtered.column("species")?.str()?;
-        }
-        TagType::Individual => {
-            tag_original_col = df_filtered.column("individual")?.str()?;
-        }
+    let tag_original_col = match tag_type {
+        TagType::Species => df_filtered.column("species")?.str()?,
+        TagType::Individual => df_filtered.column("individual")?.str()?,
         _ => {
             return Err(anyhow::anyhow!("Invalid tag type"));
         }
-    }
+    };
 
-    let iter = path_col.iter()
+    let iter = path_col
+        .iter()
         .zip(xmp_update_col.iter())
         .zip(tag_original_col.iter())
-        .map(|((path, xmp_up), tag_orig)| (path, xmp_up, tag_orig)); 
+        .map(|((path, xmp_up), tag_orig)| (path, xmp_up, tag_orig));
 
     for (path, xmp_update, tag_original) in iter {
         if let Some(path_str) = path {
             let current_path = PathBuf::from(path_str);
             let xmp_update = xmp_update.unwrap_or("");
-            
+
             if !xmp_update.is_empty() {
                 let tag_original = tag_original.unwrap_or("");
                 pb.println(format!("Processing: {}", path_str));
@@ -1265,7 +1263,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         }
         pb.inc(1);
     }
-    
+
     pb.finish_with_message("Finished processing all XMP updates");
     Ok(())
 }
