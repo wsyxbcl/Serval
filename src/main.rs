@@ -8,8 +8,8 @@ use tags::{
     write_taglist,
 };
 use utils::{
-    absolute_path, copy_xmp, deployments_align, deployments_rename, resources_align,
-    tags_csv_translate, ExtractFilterType, ResourceType, TagType,
+    ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
+    deployments_rename, resources_align, tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {

@@ -1,6 +1,6 @@
 use crate::utils::{
-    absolute_path, append_ext, get_path_levels, ignore_timezone, is_temporal_independent,
-    path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
+    ExtractFilterType, ResourceType, TagType, absolute_path, append_ext, get_path_levels,
+    ignore_timezone, is_temporal_independent, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -9,9 +9,9 @@ use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
 use regex::Regex;
 use rustyline::{
-    validate::{ValidationContext, ValidationResult, Validator},
     Cmd, Completer, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, Helper,
     Highlighter, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount, Result,
+    validate::{ValidationContext, ValidationResult, Validator},
 };
 use std::{
     fs,
@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
 };
 use xmp_toolkit::{
-    xmp_ns, FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue,
+    FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue, xmp_ns,
 };
 
 const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
@@ -904,7 +904,9 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             let datetime_col = df.column("datetime")?;
             if datetime_col.dtype() == &DataType::String {
                 eprintln!("Error: The datetime column is not parsed correctly.");
-                eprintln!("\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m");
+                eprintln!(
+                    "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
+                );
                 std::process::exit(1);
             }
             df
@@ -995,7 +997,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             col(target.col_name()),
         ])
         .drop_nulls(None)
-        .filter(col(target.col_name()).is_in(lit(tag_exclude).implode(), false).not())
+        .filter(
+            col(target.col_name())
+                .is_in(lit(tag_exclude).implode(), false)
+                .not(),
+        )
         .unique(
             Some(vec![
                 "deployment".to_string(),
