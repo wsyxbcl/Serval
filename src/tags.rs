@@ -995,7 +995,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             col(target.col_name()),
         ])
         .drop_nulls(None)
-        .filter(col(target.col_name()).is_in(lit(tag_exclude), false).not())
+        .filter(col(target.col_name()).is_in(lit(tag_exclude).implode(), false).not())
         .unique(
             Some(vec![
                 "deployment".to_string(),
