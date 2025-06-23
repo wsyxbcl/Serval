@@ -142,12 +142,16 @@ fn main() -> anyhow::Result<()> {
             csv_path,
             taglist_path,
             output,
+            from,
+            to,
         } => {
             println!("Translate tags in {}", csv_path.display());
             tags_csv_translate(
                 absolute_path(csv_path)?,
                 absolute_path(taglist_path)?,
                 output,
+                &from,
+                &to,
             )?;
         }
     }
@@ -286,7 +290,7 @@ enum Commands {
     /// XMP file operations
     #[command(subcommand)]
     Xmp(XmpCommands),
-    /// Translate tags in csv to different languages
+    /// Translate species column in csv according to taglist
     Translate {
         /// Path for tags.csv
         csv_path: PathBuf,
@@ -301,6 +305,12 @@ enum Commands {
             default_value = "./serval_output/serval_translate"
         )]
         output: PathBuf,
+        /// Column name (in taglist) to translate from
+        #[arg(long, value_name = "FROM", required = true)]
+        from: String,
+        /// Column name (in taglist) to translate to
+        #[arg(long, value_name = "TO", required = true)]
+        to: String,
     },
 }
 

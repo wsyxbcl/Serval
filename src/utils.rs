@@ -367,36 +367,40 @@ pub fn tags_csv_translate(
     source_csv: PathBuf,
     taglist_csv: PathBuf,
     output_dir: PathBuf,
+    from: &str,
+    to: &str,
 ) -> anyhow::Result<()> {
-    // TODO: a reverse mode
-    // TODO: make taglist field configurable
     let source_df = CsvReadOptions::default()
         .try_into_reader_with_file_path(Some(source_csv.clone()))?
         .finish()?;
     let taglist_df = CsvReadOptions::default()
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
+
     let mut result = source_df
         .clone()
         .lazy()
         .join(
             taglist_df.clone().lazy(),
             [col("species")],
-            [col("tag")],
+            [col(from)],
             JoinArgs::new(JoinType::Left),
         )
+        .drop(vec!["species"])
+        .rename(vec![to], vec!["species"], true)
+        // .with_column(col(to).alias("species"))
         .collect()?;
 
     let output_csv = output_dir.join(format!(
         "{}_translated.csv",
         source_csv.file_stem().unwrap().to_str().unwrap()
     ));
-    let mut file = std::fs::File::create(&output_csv).unwrap();
+    fs::create_dir_all(output_dir.clone())?;
+    let mut file = std::fs::File::create(&output_csv)?;
     CsvWriter::new(&mut file)
         .include_bom(true)
-        .finish(&mut result)
-        .unwrap();
+        .finish(&mut result)?;
 
-    println!("Translated tags saved to {}", output_csv.display());
+    println!("Saved to {}", output_csv.display());
     Ok(())
 }
