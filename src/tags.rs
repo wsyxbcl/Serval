@@ -743,17 +743,30 @@ pub fn extract_resources(
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
 
     let paths = df_filtered.column("path")?.str()?;
-    let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
-    let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
-    let rating_tags = df_filtered.column("rating")?.str()?;
-    let custom_tags = df_filtered.column("custom")?.str()?;
+    // Remove dot from tags, as it causes issues when cross-platform
+    let species_tags = df_filtered
+        .column(TagType::Species.col_name())?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let individual_tags = df_filtered
+        .column(TagType::Individual.col_name())?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let rating_tags = df_filtered
+        .column("rating")?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let custom_tags = df_filtered
+        .column("custom")?
+        .str()?
+        .replace_all(r"\.", "")?;
 
     for (path, species_tag, individual_tag, rating_tag, custom_tag) in izip!(
         paths,
-        species_tags,
-        individual_tags,
-        rating_tags,
-        custom_tags
+        &species_tags,
+        &individual_tags,
+        &rating_tags,
+        &custom_tags
     ) {
         let subdir = if use_subdir {
             match subdir_value {
