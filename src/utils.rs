@@ -145,7 +145,7 @@ pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<Pat
     paths
 }
 
-pub fn resources_align(
+pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
     resource_type: ResourceType,
@@ -235,7 +235,7 @@ pub fn deployments_align(
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
         let collection_output_dir = output_dir.join(collection_name);
-        resources_align(
+        resources_flatten(
             deploy_dir,
             collection_output_dir.clone(),
             resource_type,
@@ -255,11 +255,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let path = entry.path();
         if path.is_dir() {
             let mut collection_dir = path;
-            let original_collection_name = collection_dir
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap();
+            let original_collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
             let collection_name_lower = original_collection_name.to_lowercase();
             if original_collection_name != collection_name_lower {
                 let mut new_collection_dir = collection_dir.clone();
@@ -279,12 +275,8 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     collection_dir = new_collection_dir;
                 }
             }
-            let collection_name = collection_dir
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap();
-            for deploy in collection_dir.read_dir()?.into_iter() {
+            let collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
+            for deploy in collection_dir.read_dir()? {
                 let deploy_dir = deploy.unwrap().path();
                 if deploy_dir.is_file() {
                     continue;
@@ -295,11 +287,17 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     if dry_run {
                         println!(
                             "Will rename {} to {}_{}",
-                            deploy_name, deploy_name.to_lowercase(), collection_name.to_lowercase()
+                            deploy_name,
+                            deploy_name.to_lowercase(),
+                            collection_name.to_lowercase()
                         );
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(format!("{}_{}", deploy_name.to_lowercase(), collection_name.to_lowercase()));
+                        deploy_id_dir.set_file_name(format!(
+                            "{}_{}",
+                            deploy_name.to_lowercase(),
+                            collection_name.to_lowercase()
+                        ));
                         println!(
                             "Renaming {} to {}",
                             deploy_dir.display(),

@@ -9,7 +9,7 @@ use tags::{
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, resources_align, tags_csv_translate,
+    deployments_rename, resources_flatten, tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
                 )?;
             } else {
                 println!("Aligning resources in {}", path.display());
-                resources_align(
+                resources_flatten(
                     absolute_path(path)?,
                     output,
                     type_resource,
@@ -168,7 +168,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Align resources in given Deployment or Project (recursively)
+    /// Align & clean resources in given Deployment or Project (recursively)
     #[command(arg_required_else_help = true)]
     Align {
         path: PathBuf,
