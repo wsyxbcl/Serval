@@ -254,30 +254,57 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            let collection = path;
-            for deploy in collection.read_dir()? {
+            let mut collection_dir = path;
+            let original_collection_name = collection_dir
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let collection_name_lower = original_collection_name.to_lowercase();
+            if original_collection_name != collection_name_lower {
+                let mut new_collection_dir = collection_dir.clone();
+                new_collection_dir.set_file_name(&collection_name_lower);
+                if dry_run {
+                    println!(
+                        "Will rename collection {} to {}",
+                        original_collection_name, collection_name_lower
+                    );
+                } else {
+                    println!(
+                        "Renaming collection {} to {}",
+                        collection_dir.display(),
+                        new_collection_dir.display()
+                    );
+                    fs::rename(&collection_dir, &new_collection_dir)?;
+                    collection_dir = new_collection_dir;
+                }
+            }
+            let collection_name = collection_dir
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            for deploy in collection_dir.read_dir()?.into_iter() {
                 let deploy_dir = deploy.unwrap().path();
                 if deploy_dir.is_file() {
                     continue;
                 }
                 count += 1;
-                let collection_name = deploy_dir
-                    .parent()
-                    .unwrap()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap();
                 let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
                 if !deploy_name.contains(collection_name) {
                     if dry_run {
                         println!(
                             "Will rename {} to {}_{}",
-                            deploy_name, deploy_name, collection_name
+                            deploy_name, deploy_name.to_lowercase(), collection_name.to_lowercase()
                         );
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(format!("{}_{}", deploy_name, collection_name));
+                        deploy_id_dir.set_file_name(format!("{}_{}", deploy_name.to_lowercase(), collection_name.to_lowercase()));
+                        println!(
+                            "Renaming {} to {}",
+                            deploy_dir.display(),
+                            deploy_id_dir.display()
+                        );
                         fs::rename(deploy_dir, deploy_id_dir)?;
                     }
                 }
