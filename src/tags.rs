@@ -191,7 +191,7 @@ type Metadata = (
     Vec<String>, // bodyparts
     Vec<String>, // subjects
     String,      // datetime
-    String,      // datetime_digitized
+    // String,      // datetime_digitized
     String,      // time_modified
     String,      // rating
 );
@@ -215,7 +215,7 @@ fn retrieve_metadata(
     let mut bodyparts: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime = String::new();
-    let mut datetime_digitized = String::new();
+    // let mut datetime_digitized = String::new();
     let mut time_modified = String::new();
     let mut rating = String::new();
 
@@ -240,9 +240,9 @@ fn retrieve_metadata(
                     datetime = ignore_timezone(value.value.to_string())?;
                 }
             }
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-                datetime_digitized = ignore_timezone(value.value.to_string())?;
-            }
+            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+            // }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
             }
@@ -297,7 +297,7 @@ fn retrieve_metadata(
         bodyparts,
         subjects,
         datetime,
-        datetime_digitized,
+        // datetime_digitized,
         time_modified,
         rating,
     ))
@@ -359,7 +359,7 @@ pub fn get_classifications(
     let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
     let mut datetimes: Vec<String> = Vec::new();
-    let mut datetime_digitizeds: Vec<String> = Vec::new();
+    // let mut datetime_digitizeds: Vec<String> = Vec::new();
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
@@ -375,7 +375,7 @@ pub fn get_classifications(
                     bodyparts,
                     subjects,
                     datetime,
-                    datetime_digitized,
+                    // datetime_digitized,
                     time_modified,
                     rating,
                 )) => {
@@ -388,7 +388,7 @@ pub fn get_classifications(
                         bodyparts.join("|"),
                         subjects.join("|"), // subject just for reviewing
                         datetime,
-                        datetime_digitized,
+                        // datetime_digitized,
                         time_modified,
                         rating,
                     )
@@ -397,7 +397,6 @@ pub fn get_classifications(
                     pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     (
-                        "".to_string(),
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -420,9 +419,9 @@ pub fn get_classifications(
         bodypart_tags.push(tag.4);
         subjects.push(tag.5);
         datetimes.push(tag.6);
-        datetime_digitizeds.push(tag.7);
-        time_modifieds.push(tag.8);
-        ratings.push(tag.9);
+        // datetime_digitizeds.push(tag.7);
+        time_modifieds.push(tag.7);
+        ratings.push(tag.8);
     }
     // Analysis
     let s_species = Column::new("species_tags".into(), species_tags);
@@ -432,7 +431,7 @@ pub fn get_classifications(
     let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
     let s_subjects = Column::new("subjects".into(), subjects);
     let s_datetime = Column::new("datetime".into(), datetimes);
-    let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
+    // let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
     let s_time_modified = Column::new("time_modified".into(), time_modifieds);
     let s_rating = Column::new("rating".into(), ratings);
 
@@ -446,7 +445,7 @@ pub fn get_classifications(
         s_bodyparts,
         s_subjects,
         s_datetime,
-        s_datetime_digitized,
+        // s_datetime_digitized,
         s_time_modified,
         s_rating,
     ])?;
@@ -505,11 +504,11 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("datetime_digitized").str().strptime(
-                DataType::Datetime(TimeUnit::Milliseconds, None),
-                datetime_options.clone(),
-                lit("raise"),
-            ),
+            // col("datetime_digitized").str().strptime(
+            //     DataType::Datetime(TimeUnit::Milliseconds, None),
+            //     datetime_options.clone(),
+            //     lit("raise"),
+            // ),
             col("time_modified")
                 .str()
                 .to_datetime(
