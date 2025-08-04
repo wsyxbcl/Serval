@@ -190,8 +190,8 @@ type Metadata = (
     Vec<String>, // subjects
     String,      // datetime
     // String,      // datetime_digitized
-    String,      // time_modified
-    String,      // rating
+    String, // time_modified
+    String, // rating
 );
 
 fn retrieve_metadata(
