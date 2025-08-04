@@ -148,12 +148,11 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                             if xmp_string.contains("rdf") {
                                 let rdf_exif_datetime = format!(
                                     r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
-            <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
-        </rdf:Description>"#,
-                                    datetime_str
+            <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
+        </rdf:Description>"#
                                 );
                                 xmp_string = re_rdf
-                                    .replace(&xmp_string, format!("$1\n{}", rdf_exif_datetime))
+                                    .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
                                     .to_string();
                             } else {
                                 xmp_string = format!(
@@ -161,12 +160,11 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
-        <exif:DateTimeOriginal>{}</exif:DateTimeOriginal>
+        <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
     </rdf:Description>              
 </rdf:RDF>
 </x:xmpmeta>
-<?xpacket end="w"?>"#,
-                                    datetime_str
+<?xpacket end="w"?>"#
                                 );
                             }
                         }
@@ -349,7 +347,7 @@ pub fn get_classifications(
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     let num_images = file_paths.len();
-    println!("Total {}: {}.", resource_type, num_images);
+    println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
 
     let mut species_tags: Vec<String> = Vec::new();
@@ -464,7 +462,7 @@ pub fn get_classifications(
             0.0
         };
 
-        println!("Species Labeling Progress: {:.2}%", progress);
+        println!("Species Labeling Progress: {progress:.2}%");
 
         let pb = ProgressBar::new(num_xmp as u64);
 
@@ -534,7 +532,7 @@ pub fn get_classifications(
             col("rating"),
         ])
         .collect()?;
-    println!("{:?}", df_split);
+    println!("{df_split:?}");
 
     if !include_subject {
         let _ = df_split.drop_in_place("subjects")?;
@@ -543,7 +541,7 @@ pub fn get_classifications(
         let _ = df_split.drop_in_place("time_modified")?;
     }
     if debug_mode {
-        println!("{}", df_raw);
+        println!("{df_raw}");
         let debug_csv_path = output_dir.join("raw.csv");
         let mut file = std::fs::File::create(debug_csv_path.clone())?;
         CsvWriter::new(&mut file)
@@ -561,9 +559,9 @@ pub fn get_classifications(
         .explode(cols([TagType::Species.col_name()]))
         .sort(["path"], SortMultipleOptions::default())
         .collect()?;
-    println!("{}", df_flatten);
+    println!("{df_flatten}");
 
-    let tags_csv_path = output_dir.join(format!("tags{}", output_suffix));
+    let tags_csv_path = output_dir.join(format!("tags{output_suffix}"));
     let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
@@ -577,9 +575,9 @@ pub fn get_classifications(
         .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
         .unnest(cols([TagType::Species.col_name()]))
         .collect()?;
-    println!("{:?}", df_count_species);
+    println!("{df_count_species:?}");
 
-    let species_stats_path = output_dir.join(format!("species_stats{}", output_suffix));
+    let species_stats_path = output_dir.join(format!("species_stats{output_suffix}"));
     let mut file = std::fs::File::create(species_stats_path.clone())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
@@ -604,7 +602,7 @@ pub fn extract_resources(
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
-        output_dir.join(format!("{}_{}", current_time, filter_value))
+        output_dir.join(format!("{current_time}_{filter_value}"))
     } else {
         output_dir
     };
@@ -641,7 +639,7 @@ pub fn extract_resources(
             acc_df
         }
     });
-    println!("{}", df);
+    println!("{df}");
 
     // Fill null values for columns that will be used for file naming
     if rename {
@@ -714,7 +712,7 @@ pub fn extract_resources(
 
     // Get the top level directory (to keep)
     let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
-    println!("Here is a sample of the file path ({}): ", path_sample);
+    println!("Here is a sample of the file path ({path_sample}): ");
     let mut num_option = 0;
     println!("0): File Only (no directory)");
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
@@ -924,7 +922,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             df
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     };
@@ -967,7 +965,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     };
     // Find deployment
     let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
-    println!("\nHere is a sample of the file path ({})", path_sample);
+    println!("\nHere is a sample of the file path ({path_sample})");
     let path_levels = get_path_levels(path_sample);
     for (i, entry) in path_levels.iter().enumerate() {
         println!("{}): {}", i + 1, entry);
@@ -1038,7 +1036,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 col("time"),
                 [col("deployment"), col(target.col_name())],
                 RollingGroupOptions {
-                    period: Duration::parse(format!("{}m", min_delta_time).as_str()),
+                    period: Duration::parse(format!("{min_delta_time}m").as_str()),
                     offset: Duration::parse("0m"),
                     ..Default::default()
                 },
@@ -1055,7 +1053,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 col(target.col_name()),
             ])
             .collect()?;
-        println!("{}", df_capture_independent);
+        println!("{df_capture_independent}");
     } else {
         df_sorted.as_single_chunk_par();
         let mut iters = df_sorted
@@ -1103,7 +1101,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             .lazy()
             .filter(Series::new("independent".into(), capture_independent).lit())
             .collect()?;
-        println!("{}", df_capture_independent);
+        println!("{df_capture_independent}");
     }
 
     // Include parameters in the output filename, LIR: Last Independent Record, LR: Last Record
@@ -1118,7 +1116,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         },
     );
     fs::create_dir_all(output_dir.clone())?;
-    let filename = format!("temporal-independence{}", output_suffix);
+    let filename = format!("temporal-independence{output_suffix}");
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
@@ -1132,7 +1130,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .group_by_stable([col("deployment"), col(target.col_name())])
         .agg([col(target.col_name()).count().alias("count")])
         .collect()?;
-    println!("{}", df_count_independent);
+    println!("{df_count_independent}");
 
     let filename = "count_by_deployment.csv";
     let mut file = std::fs::File::create(output_dir.join(filename))?;
@@ -1149,7 +1147,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             .group_by_stable([col(TagType::Species.col_name())])
             .agg([col(TagType::Species.col_name()).count().alias("count")])
             .collect()?;
-        println!("{}", df_count_independent_species);
+        println!("{df_count_independent_species}");
 
         let filename = "count_all.csv";
         let mut file = std::fs::File::create(output_dir.join(filename))?;
@@ -1176,7 +1174,7 @@ fn update_xmp(
 
     if old_value.is_empty() {
         let new_tag = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
-        println!("Inserting new tag: {}", new_tag);
+        println!("Inserting new tag: {new_tag}");
         let array_name = XmpValue::new(HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
         let item_value = XmpValue::new(new_tag);
 
@@ -1189,7 +1187,7 @@ fn update_xmp(
         }
         let array_len = xmp.array_len(LIGHTROOM_NS, HIERARCHICAL_SUBJECT);
         for i in 1..=array_len {
-            let array_item_path = &format!("{}[{}]", HIERARCHICAL_SUBJECT, i);
+            let array_item_path = &format!("{HIERARCHICAL_SUBJECT}[{i}]");
             if let Some(prop) = xmp.property(LIGHTROOM_NS, array_item_path) {
                 let value = prop.value;
                 let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
@@ -1204,7 +1202,7 @@ fn update_xmp(
                             // println!("Updated tag: {}", value);
                         }
                         Err(e) => {
-                            println!("Error updating tag {}: {:?}", i, e);
+                            println!("Error updating tag {i}: {e:?}");
                         }
                     }
                 }
@@ -1240,7 +1238,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         .collect()?;
 
     let num_updates = df_filtered.height();
-    println!("Found {} rows with updates", num_updates);
+    println!("Found {num_updates} rows with updates");
 
     let pb = ProgressBar::new(num_updates as u64);
     pb.set_message("Processing XMP updates...");
@@ -1270,18 +1268,18 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
                 // Check if the file has .xmp extension
                 if let Some(ext) = current_path.extension() {
                     if ext != "xmp" {
-                        pb.println(format!("Skipping non-XMP file: {}", path_str));
+                        pb.println(format!("Skipping non-XMP file: {path_str}"));
                         pb.inc(1);
                         continue;
                     }
                 } else {
-                    pb.println(format!("Skipping file without extension: {}", path_str));
+                    pb.println(format!("Skipping file without extension: {path_str}"));
                     pb.inc(1);
                     continue;
                 }
 
                 let tag_original = tag_original.unwrap_or("");
-                pb.println(format!("Processing: {}", path_str));
+                pb.println(format!("Processing: {path_str}"));
                 update_xmp(
                     current_path.clone(),
                     tag_original.to_string(),

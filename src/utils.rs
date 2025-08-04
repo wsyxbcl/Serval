@@ -22,7 +22,7 @@ pub enum ResourceType {
 
 impl fmt::Display for ResourceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -58,7 +58,7 @@ pub enum TagType {
 
 impl fmt::Display for TagType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -262,8 +262,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                 new_collection_dir.set_file_name(&collection_name_lower);
                 if dry_run {
                     println!(
-                        "Will rename collection {} to {}",
-                        original_collection_name, collection_name_lower
+                        "Will rename collection {original_collection_name} to {collection_name_lower}"
                     );
                 } else {
                     println!(
@@ -309,7 +308,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
             }
         }
     }
-    println!("Total directories: {}", count);
+    println!("Total directories: {count}");
     Ok(())
 }
 
@@ -317,7 +316,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    println!("{} xmp files found", num_xmp);
+    println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
 
     for xmp in xmp_paths {
