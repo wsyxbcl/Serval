@@ -557,8 +557,8 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([col("*")])
-        .explode([TagType::Individual.col_name()])
-        .explode([TagType::Species.col_name()])
+        .explode(cols([TagType::Individual.col_name()]))
+        .explode(cols([TagType::Species.col_name()]))
         .sort(["path"], SortMultipleOptions::default())
         .collect()?;
     println!("{}", df_flatten);
@@ -575,7 +575,7 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
-        .unnest([TagType::Species.col_name()])
+        .unnest(cols([TagType::Species.col_name()]))
         .collect()?;
     println!("{:?}", df_count_species);
 
@@ -1015,11 +1015,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 .not(),
         )
         .unique(
-            Some(vec![
+            Some(cols(vec![
                 "deployment".to_string(),
                 "time".to_string(),
                 target.col_name().to_string(),
-            ]),
+            ])),
             UniqueKeepStrategy::Any,
         )
         .collect()?;

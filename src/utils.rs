@@ -407,12 +407,12 @@ pub fn tags_csv_translate(
         .lazy()
         .join(
             taglist_df.clone().lazy(),
-            [col("species")],
+            [col(TagType::Species.col_name())],
             [col(from)],
             JoinArgs::new(JoinType::Left),
         )
-        .drop(vec!["species"])
-        .rename(vec![to], vec!["species"], true)
+        .drop(cols([TagType::Species.col_name()]))
+        .rename(vec![to], vec![TagType::Species.col_name()], true)
         // .with_column(col(to).alias("species"))
         .collect()?;
 
