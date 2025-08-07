@@ -19,13 +19,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Align {
             path,
             output,
-            project,
             deploy_table,
             type_resource,
             dryrun,
             move_mode,
         } => {
-            if project {
+            if let Some(deploy_table) = deploy_table {
                 println!("Aligning deployments in {}", path.display());
                 deployments_align(
                     absolute_path(path)?,
@@ -36,7 +35,7 @@ fn main() -> anyhow::Result<()> {
                     move_mode,
                 )?;
             } else {
-                println!("Aligning resources in {}", path.display());
+                println!("Flatten resources in {}", path.display());
                 resources_flatten(
                     absolute_path(path)?,
                     output,
@@ -168,19 +167,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Align & clean resources in given Deployment or Project (recursively)
+    /// Align & clean resources in a Project (when deploy_table is provided) or flatten a directory
     #[command(arg_required_else_help = true)]
     Align {
+        /// Path to the Project directory (align mode) or target directory (flatten mode)
         path: PathBuf,
-        /// Directory for output(aligned) resources
+        /// Directory for output (aligned) resources
         #[arg(short, long, value_name = "OUTPUT_DIR", required = true)]
         output: PathBuf,
-        /// If the given path is a Project
-        #[arg(short, long)]
-        project: bool,
-        /// Path for deployments table (deployments.csv)
-        #[arg(short, long, value_name = "FILE", required = true)]
-        deploy_table: PathBuf,
+        /// Path for deployments table (deployments.csv). If provided, align deployments, else flatten resources
+        #[arg(short, long, value_name = "FILE")]
+        deploy_table: Option<PathBuf>,
         /// Resource type
         #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
         type_resource: ResourceType,
