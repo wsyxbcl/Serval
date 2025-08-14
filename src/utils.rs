@@ -331,6 +331,38 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+// Remove all XMP files recursively from a directory
+pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let num_xmp = xmp_paths.len();
+    
+    if num_xmp == 0 {
+        println!("No XMP files found in {}", source_dir.display());
+        return Ok(());
+    }
+    
+    println!("Found {} XMP files in {}", num_xmp, source_dir.display());
+     
+    let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    let mut removed_count = 0;
+    
+    for xmp in xmp_paths {
+        match fs::remove_file(&xmp) {
+            Ok(_) => {
+                removed_count += 1;
+                pb.inc(1);
+            }
+            Err(e) => {
+                eprintln!("Failed to remove {}: {}", xmp.display(), e);
+            }
+        }
+    }
+    
+    pb.finish();
+    println!("Successfully removed {} XMP files", removed_count);
+    Ok(())
+}
+
 pub fn is_temporal_independent(
     time_ref: String,
     time: String,

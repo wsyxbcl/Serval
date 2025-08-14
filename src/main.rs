@@ -9,7 +9,7 @@ use tags::{
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, resources_flatten, tags_csv_translate,
+    deployments_rename, resources_flatten, tags_csv_translate, remove_xmp_files,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -135,6 +135,9 @@ fn main() -> anyhow::Result<()> {
             }
             XmpCommands::Update { csv_path, tag_type } => {
                 update_tags(absolute_path(csv_path)?, tag_type)?;
+            }
+            XmpCommands::Remove { source_dir } => {
+                remove_xmp_files(absolute_path(source_dir)?)?;
             }
         },
         Commands::Translate {
@@ -313,30 +316,22 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum XmpCommands {
-    /// Copy all XMP files from source_dir while keeping the directory structure
+    /// Copy XMP files to output directory
     Copy {
-        /// Path for the source directory
         source_dir: PathBuf,
-        /// Output directory
-        #[arg(
-            short,
-            long,
-            value_name = "OUTPUT_DIR",
-            default_value = "./serval_output/serval_xmp"
-        )]
         output_dir: PathBuf,
     },
-    /// Initialize XMP files in a directory
+    /// Initialize XMP files for media files
     Init {
-        /// Path for the source directory
         source_dir: PathBuf,
     },
-    /// Update tags in XMP files, by reading column xmp_update in csv file
+    /// Update XMP files from CSV
     Update {
-        /// Path for the CSV file containing tag updates
         csv_path: PathBuf,
-        /// Tag type to update
-        #[arg(short, long, value_name = "TYPE", required = true, value_enum)]
         tag_type: TagType,
+    },
+    /// Remove all XMP files recursively from a directory
+    Remove {
+        source_dir: PathBuf,
     },
 }
