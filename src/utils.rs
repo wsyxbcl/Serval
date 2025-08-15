@@ -335,17 +335,17 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
 pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    
+
     if num_xmp == 0 {
         println!("No XMP files found in {}", source_dir.display());
         return Ok(());
     }
-    
+
     println!("Found {} XMP files in {}", num_xmp, source_dir.display());
-     
+
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
     let mut removed_count = 0;
-    
+
     for xmp in xmp_paths {
         match fs::remove_file(&xmp) {
             Ok(_) => {
@@ -357,9 +357,9 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
             }
         }
     }
-    
+
     pb.finish();
-    println!("Successfully removed {} XMP files", removed_count);
+    println!("Successfully removed {removed_count} XMP files");
     Ok(())
 }
 

@@ -1314,7 +1314,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
         );
         return Err(anyhow::anyhow!("Datetime column parsing failed"));
     }
-    
+
     let df_filtered = df
         .lazy()
         .filter(col("xmp_update_datetime").is_not_null())
@@ -1330,15 +1330,12 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let datetime_col = df_filtered.column("xmp_update_datetime")?.datetime()?;
     let datetime_strings = datetime_col.to_string("%Y-%m-%dT%H:%M:%S")?;
 
-    let iter = path_col
-        .iter()
-        .zip(datetime_strings.iter())
-        .map(|(path, datetime)| (path, datetime));
+    let iter = path_col.iter().zip(datetime_strings.iter());
 
     for (path, datetime) in iter {
         if let Some(path_str) = path {
             let current_path = PathBuf::from(path_str);
-            
+
             if let Some(datetime_str) = datetime {
                 // Check if the file has .xmp extension
                 if let Some(ext) = current_path.extension() {
@@ -1353,7 +1350,9 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
                     continue;
                 }
 
-                pb.println(format!("Processing datetime update: {path_str} -> {datetime_str}"));
+                pb.println(format!(
+                    "Processing datetime update: {path_str} -> {datetime_str}"
+                ));
                 update_xmp_datetime(current_path.clone(), datetime_str.to_string())?;
             }
         } else {
@@ -1374,10 +1373,10 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
     // Update the exif:DateTimeOriginal field
     let exif_ns = "http://ns.adobe.com/exif/1.0/";
     XmpMeta::register_namespace(exif_ns, "exif")?;
-    
+
     let datetime_property = "exif:DateTimeOriginal";
     let new_datetime_value = XmpValue::new(iso8601_datetime);
-    
+
     xmp.set_property(exif_ns, datetime_property, &new_datetime_value)?;
 
     let modified_xmp =

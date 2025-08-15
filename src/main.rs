@@ -4,12 +4,12 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    extract_resources, get_classifications, get_temporal_independence, init_xmp, update_tags,
-    write_taglist, update_datetime,
+    extract_resources, get_classifications, get_temporal_independence, init_xmp, update_datetime,
+    update_tags, write_taglist,
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, resources_flatten, tags_csv_translate, remove_xmp_files,
+    deployments_rename, remove_xmp_files, resources_flatten, tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -141,9 +141,8 @@ fn main() -> anyhow::Result<()> {
                 if datetime {
                     update_datetime(absolute_path(csv_path)?)?;
                 } else {
-                    let tag_type = tag_type.ok_or_else(|| {
-                        anyhow::anyhow!("Tag type is required")
-                    })?;
+                    let tag_type =
+                        tag_type.ok_or_else(|| anyhow::anyhow!("Tag type is required"))?;
                     update_tags(absolute_path(csv_path)?, tag_type)?;
                 }
             }
@@ -333,9 +332,7 @@ enum XmpCommands {
         output_dir: PathBuf,
     },
     /// Initialize XMP files for media files
-    Init {
-        source_dir: PathBuf,
-    },
+    Init { source_dir: PathBuf },
     /// Update XMP files from CSV
     Update {
         csv_path: PathBuf,
@@ -347,7 +344,5 @@ enum XmpCommands {
         datetime: bool,
     },
     /// Remove all XMP files recursively from a directory
-    Remove {
-        source_dir: PathBuf,
-    },
+    Remove { source_dir: PathBuf },
 }
