@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
     extract_resources, get_classifications, get_temporal_independence, init_xmp, update_tags,
-    write_taglist,
+    write_taglist, update_datetime,
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
@@ -133,8 +133,19 @@ fn main() -> anyhow::Result<()> {
             XmpCommands::Init { source_dir } => {
                 init_xmp(absolute_path(source_dir)?)?;
             }
-            XmpCommands::Update { csv_path, tag_type } => {
-                update_tags(absolute_path(csv_path)?, tag_type)?;
+            XmpCommands::Update {
+                csv_path,
+                tag_type,
+                datetime,
+            } => {
+                if datetime {
+                    update_datetime(absolute_path(csv_path)?)?;
+                } else {
+                    let tag_type = tag_type.ok_or_else(|| {
+                        anyhow::anyhow!("Tag type is required")
+                    })?;
+                    update_tags(absolute_path(csv_path)?, tag_type)?;
+                }
             }
             XmpCommands::Remove { source_dir } => {
                 remove_xmp_files(absolute_path(source_dir)?)?;
@@ -328,7 +339,12 @@ enum XmpCommands {
     /// Update XMP files from CSV
     Update {
         csv_path: PathBuf,
-        tag_type: TagType,
+        /// Tag type (required when not using --datetime)
+        #[arg(short, long, value_name = "TYPE", required_unless_present = "datetime")]
+        tag_type: Option<TagType>,
+        /// Update datetime instead of tags
+        #[arg(long)]
+        datetime: bool,
     },
     /// Remove all XMP files recursively from a directory
     Remove {

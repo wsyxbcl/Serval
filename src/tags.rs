@@ -1296,3 +1296,98 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     pb.finish_with_message("Finished processing all XMP updates");
     Ok(())
 }
+
+pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
+    let df = CsvReadOptions::default()
+        .with_has_header(true)
+        .with_ignore_errors(false)
+        .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+
+    // Check if the datetime column is parsed correctly
+    let datetime_col = df.column("xmp_update_datetime")?;
+    if datetime_col.dtype() == &DataType::String {
+        eprintln!("Error: The xmp_update_datetime column is not parsed correctly.");
+        eprintln!(
+            "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
+        );
+        return Err(anyhow::anyhow!("Datetime column parsing failed"));
+    }
+    
+    let df_filtered = df
+        .lazy()
+        .filter(col("xmp_update_datetime").is_not_null())
+        .collect()?;
+
+    let num_updates = df_filtered.height();
+    println!("Found {num_updates} rows with valid datetime updates");
+
+    let pb = ProgressBar::new(num_updates as u64);
+    pb.set_message("Processing XMP datetime updates...");
+
+    let path_col = df_filtered.column("path")?.str()?;
+    let datetime_col = df_filtered.column("xmp_update_datetime")?.datetime()?;
+    let datetime_strings = datetime_col.to_string("%Y-%m-%dT%H:%M:%S")?;
+
+    let iter = path_col
+        .iter()
+        .zip(datetime_strings.iter())
+        .map(|(path, datetime)| (path, datetime));
+
+    for (path, datetime) in iter {
+        if let Some(path_str) = path {
+            let current_path = PathBuf::from(path_str);
+            
+            if let Some(datetime_str) = datetime {
+                // Check if the file has .xmp extension
+                if let Some(ext) = current_path.extension() {
+                    if ext != "xmp" {
+                        pb.println(format!("Skipping non-XMP file: {path_str}"));
+                        pb.inc(1);
+                        continue;
+                    }
+                } else {
+                    pb.println(format!("Skipping file without extension: {path_str}"));
+                    pb.inc(1);
+                    continue;
+                }
+
+                pb.println(format!("Processing datetime update: {path_str} -> {datetime_str}"));
+                update_xmp_datetime(current_path.clone(), datetime_str.to_string())?;
+            }
+        } else {
+            pb.println("Missing xmp path, skipping.");
+        }
+        pb.inc(1);
+    }
+
+    pb.finish_with_message("Finished processing all XMP datetime updates");
+    Ok(())
+}
+
+fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::Result<()> {
+    let xmp_content = fs::read_to_string(&file_path)?;
+    let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
+
+    // Update the exif:DateTimeOriginal field
+    let exif_ns = "http://ns.adobe.com/exif/1.0/";
+    XmpMeta::register_namespace(exif_ns, "exif")?;
+    
+    let datetime_property = "exif:DateTimeOriginal";
+    let new_datetime_value = XmpValue::new(iso8601_datetime);
+    
+    xmp.set_property(exif_ns, datetime_property, &new_datetime_value)?;
+
+    let modified_xmp =
+        xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+
+    fs::copy(&file_path, &backup_path)?;
+    fs::write(&file_path, modified_xmp)?;
+
+    Ok(())
+}
