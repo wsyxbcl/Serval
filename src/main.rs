@@ -9,7 +9,7 @@ use tags::{
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, remove_xmp_files, resources_flatten, tags_csv_translate,
+    deployments_rename, resources_flatten, tags_csv_translate, remove_xmp_files, sync_xmp_directory, sync_xmp_from_csv,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -148,6 +148,15 @@ fn main() -> anyhow::Result<()> {
             }
             XmpCommands::Remove { source_dir } => {
                 remove_xmp_files(absolute_path(source_dir)?)?;
+            }
+            XmpCommands::Sync { dir, csv } => {
+                if let Some(dir) = dir {
+                    sync_xmp_directory(absolute_path(dir)?)?;
+                } else if let Some(csv) = csv {
+                    sync_xmp_from_csv(absolute_path(csv)?)?;
+                } else {
+                    return Err(anyhow::anyhow!("Either --csv or directory path must be specified"));
+                }
             }
         },
         Commands::Translate {
@@ -344,5 +353,16 @@ enum XmpCommands {
         datetime: bool,
     },
     /// Remove all XMP files recursively from a directory
-    Remove { source_dir: PathBuf },
+    Remove {
+        source_dir: PathBuf,
+    },
+    /// Sync XMP metadata to corresponding media files
+    Sync {
+        /// Directory containing XMP files to sync
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// CSV file with paths to XMP files to sync
+        #[arg(long, value_name = "CSV_PATH")]
+        csv: Option<PathBuf>,
+    },
 }

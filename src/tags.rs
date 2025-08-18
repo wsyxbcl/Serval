@@ -1196,7 +1196,7 @@ fn update_xmp(
         old_prefix: &str,
         new_prefix: &str,
     ) -> anyhow::Result<()> {
-        if !xmp.property(ns, array_name).is_some() {
+        if xmp.property(ns, array_name).is_none() {
             println!("No {array_name} property found in namespace {ns}");
             return Ok(());
         }
@@ -1219,7 +1219,7 @@ fn update_xmp(
     }
 
     if old_value.is_empty() {
-        pb.println(format!("Inserting new {} tag: {}", tag_type, new_value));
+        pb.println(format!("Inserting new {tag_type} tag: {new_value}"));
 
         let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
         let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
@@ -1229,8 +1229,7 @@ fn update_xmp(
         insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
     } else { 
         pb.println(format!(
-            "Updating {} tag from '{}' to '{}'",
-            tag_type, old_value, new_value
+            "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
         ));
         // Update Lightroom
         update_tag_array(
