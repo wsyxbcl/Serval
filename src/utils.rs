@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use walkdir::{DirEntry, WalkDir};
+use indicatif::{ProgressBar, ProgressStyle};
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -104,6 +105,7 @@ pub enum ExtractFilterType {
     Custom,
 }
 
+// Serval ignores
 fn is_ignored(entry: &DirEntry) -> bool {
     entry
         .file_name()
@@ -111,6 +113,15 @@ fn is_ignored(entry: &DirEntry) -> bool {
         .map(|s| s.starts_with('.') || s.contains("精选")) // ignore 精选 and .dtrash
         .unwrap_or(false)
 }
+
+// Serval bar style
+pub fn serval_pb_style() -> ProgressStyle {
+    ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap()
+        .progress_chars("=> ")
+}
+
 
 // workaround for https://github.com/rust-lang/rust/issues/42869
 // ref. https://github.com/sharkdp/fd/pull/72/files
@@ -171,6 +182,8 @@ pub fn resources_flatten(
     );
 
     let mut visited_path: HashSet<String> = HashSet::new();
+    let pb = if !dry_run { Some(indicatif::ProgressBar::new(num_resource as u64)) } else { None };
+    if let Some(pb_ref) = &pb { pb_ref.set_style(serval_pb_style()); }
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
@@ -197,15 +210,12 @@ pub fn resources_flatten(
         output_path.push(output_dir.join(resource_name));
 
         if !dry_run {
-            let pb = indicatif::ProgressBar::new(num_resource as u64);
-
             if move_mode {
                 fs::rename(resource, output_path)?;
-                pb.inc(1);
             } else {
                 fs::copy(resource, output_path)?;
-                pb.inc(1);
             }
+            if let Some(pb_ref) = &pb { pb_ref.inc(1); }
         } else if !visited_path.contains(resource_parent.to_str().unwrap()) {
             visited_path.insert(resource_parent.to_str().unwrap().to_string());
             println!(
@@ -215,6 +225,7 @@ pub fn resources_flatten(
             );
         }
     }
+    if let Some(pb_ref) = pb { pb_ref.finish(); }
     Ok(())
 }
 
@@ -234,6 +245,7 @@ pub fn deployments_align(
     let deploy_iter = deploy_array.into_iter();
     let num_iter = deploy_iter.len();
     let pb = indicatif::ProgressBar::new(num_iter as u64);
+    pb.set_style(serval_pb_style());
     for deploy_id in deploy_iter {
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
@@ -247,6 +259,7 @@ pub fn deployments_align(
         )?;
         pb.inc(1);
     }
+    pb.finish();
     Ok(())
 }
 
@@ -319,8 +332,9 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    println!("{num_xmp} xmp files found");
+    println!("{} xmp files found", num_xmp);
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    pb.set_style(serval_pb_style());
 
     for xmp in xmp_paths {
         let mut output_path = output_dir.clone();
@@ -375,6 +389,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     );
 
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    pb.set_style(serval_pb_style());
     pb.set_message("Syncing XMP metadata to media files...");
 
     let results: Vec<anyhow::Result<()>> = xmp_paths
@@ -430,6 +445,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     println!("Found {num_files} XMP files in CSV to sync");
 
     let pb = indicatif::ProgressBar::new(num_files as u64);
+    pb.set_style(serval_pb_style());
     pb.set_message("Syncing XMP files in CSV...");
 
     let path_col = df_filtered.column("path")?.str()?;
@@ -475,6 +491,7 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
     println!("Found {} XMP files in {}", num_xmp, source_dir.display());
 
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    pb.set_style(serval_pb_style());
     pb.set_message("Removing XMP files...");
 
     let results: Vec<anyhow::Result<()>> = xmp_paths

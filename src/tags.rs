@@ -1,9 +1,9 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, TagType, absolute_path, append_ext, get_path_levels,
+    ExtractFilterType, ResourceType, TagType, serval_pb_style, absolute_path, append_ext, get_path_levels,
     ignore_timezone, is_temporal_independent, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
@@ -103,6 +103,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
     let pb = ProgressBar::new(media_count.try_into()?);
+    pb.set_style(serval_pb_style());
     let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
     let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
     // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
@@ -182,6 +183,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             pb.inc(1);
         }
     }
+    pb.finish();
     Ok(())
 }
 
@@ -353,6 +355,7 @@ pub fn get_classifications(
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
+    pb.set_style(serval_pb_style());
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
@@ -425,6 +428,7 @@ pub fn get_classifications(
         time_modifieds.push(tag.7);
         ratings.push(tag.8);
     }
+    pb.finish();
     // Analysis
     let s_species = Column::new("species_tags".into(), species_tags);
     let s_individuals = Column::new("individual_tags".into(), individual_tags);
@@ -469,7 +473,6 @@ pub fn get_classifications(
         println!("Species Labeling Progress: {progress:.2}%");
 
         let pb = ProgressBar::new(num_xmp as u64);
-
         pb.set_prefix("Species Labeling Progress:");
         pb.set_position(num_tagged_sp as u64);
 
@@ -742,6 +745,7 @@ pub fn extract_resources(
         .nth(deploy_path_index + 1)
         .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
+    pb.set_style(serval_pb_style());
 
     let paths = df_filtered.column("path")?.str()?;
     // Remove dot from tags, as it causes issues when cross-platform
@@ -1289,6 +1293,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     println!("Found {num_updates} rows with updates");
 
     let pb = ProgressBar::new(num_updates as u64);
+    pb.set_style(serval_pb_style());
     pb.set_message("Processing XMP updates...");
 
     let path_col = df_filtered.column("path")?.str()?;
@@ -1373,6 +1378,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     println!("Found {num_updates} rows with valid datetime updates");
 
     let pb = ProgressBar::new(num_updates as u64);
+    pb.set_style(serval_pb_style());
     pb.set_message("Processing XMP datetime updates...");
 
     let path_col = df_filtered.column("path")?.str()?;
