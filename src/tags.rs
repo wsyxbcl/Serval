@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
 };
 use xmp_toolkit::{
-    FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue, xmp_ns,
+    xmp_ns, FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue
 };
 
 // Namesapce for "taglists"
@@ -1169,6 +1169,7 @@ fn update_xmp(
     old_value: String,
     new_value: String,
     tag_type: TagType,
+    pb: &ProgressBar,
 ) -> anyhow::Result<()> {
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
@@ -1176,42 +1177,81 @@ fn update_xmp(
 
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
 
-    if old_value.is_empty() {
-        let new_tag = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
-        println!("Inserting new tag: {new_tag}");
-        let array_name = XmpValue::new(LR_HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
-        let item_value = XmpValue::new(new_tag);
+    fn insert_tag(
+        xmp: &mut XmpMeta,
+        ns: &str,
+        array_name: &str,
+        tag_value: String,
+    ) -> anyhow::Result<()> {
+        let array_name = XmpValue::new(array_name.to_string()).set_is_array(true);
+        let item_value = XmpValue::new(tag_value);
+        xmp.append_array_item(ns, &array_name, &item_value)?;
+        Ok(())
+    }
 
-        xmp.append_array_item(LIGHTROOM_NS, &array_name, &item_value)?; // will create array if it doesn't exist
-    } else {
-        let property_exists = xmp.property(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT).is_some();
-        if !property_exists {
-            println!("No hierarchicalSubject property found in Lightroom namespace");
+    fn update_tag_array(
+        xmp: &mut XmpMeta,
+        ns: &str,
+        array_name: &str,
+        old_prefix: &str,
+        new_prefix: &str,
+    ) -> anyhow::Result<()> {
+        if !xmp.property(ns, array_name).is_some() {
+            println!("No {array_name} property found in namespace {ns}");
             return Ok(());
         }
-        let array_len = xmp.array_len(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT);
+
+        let array_len = xmp.array_len(ns, array_name);
         for i in 1..=array_len {
-            let array_item_path = &format!("{LR_HIERARCHICAL_SUBJECT}[{i}]");
-            if let Some(prop) = xmp.property(LIGHTROOM_NS, array_item_path) {
-                let value = prop.value;
-                let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
-                if value.contains(&prefix) {
-                    let new_value = value.replace(
-                        &prefix,
-                        &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
-                    );
+            let array_item_path = &format!("{array_name}[{i}]");
+            if let Some(prop) = xmp.property(ns, array_item_path) {
+                let value = &prop.value;
+                if value.contains(old_prefix) {
+                    let new_value = value.replace(old_prefix, new_prefix);
                     let new_xmp_value = XmpValue::new(new_value);
-                    match xmp.set_property(LIGHTROOM_NS, array_item_path, &new_xmp_value) {
-                        Ok(_) => {
-                            // println!("Updated tag: {}", value);
-                        }
-                        Err(e) => {
-                            println!("Error updating tag {i}: {e:?}");
-                        }
+                    if let Err(e) = xmp.set_property(ns, array_item_path, &new_xmp_value) {
+                        println!("Error updating tag {i} in {array_name}: {e:?}");
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    if old_value.is_empty() {
+        pb.println(format!("Inserting new {} tag: {}", tag_type, new_value));
+
+        let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
+        let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
+
+        insert_tag(&mut xmp, LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT, new_tag_adobe)?;
+        insert_tag(&mut xmp, DIGIKAM_NS, DIGIKAM_TAGSLIST, new_tag_digikam)?;
+        insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
+    } else { 
+        pb.println(format!(
+            "Updating {} tag from '{}' to '{}'",
+            tag_type, old_value, new_value
+        ));
+        // Update Lightroom
+        update_tag_array(
+            &mut xmp,
+            LIGHTROOM_NS,
+            LR_HIERARCHICAL_SUBJECT,
+            &format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
+            &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
+        )?;
+
+        // Update Digikam
+        update_tag_array(
+            &mut xmp,
+            DIGIKAM_NS,
+            DIGIKAM_TAGSLIST,
+            &format!("{}{}", tag_type.digikam_tag_prefix(), old_value),
+            &format!("{}{}", tag_type.digikam_tag_prefix(), new_value),
+        )?;
+
+        // Update Subject (no prefix, just replace old_value with new_value)
+        update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
     }
 
     let modified_xmp =
@@ -1289,6 +1329,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
                     tag_original.to_string(),
                     xmp_update.to_string(),
                     tag_type,
+                    &pb,
                 )?;
             }
         } else {
