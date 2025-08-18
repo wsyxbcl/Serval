@@ -22,8 +22,13 @@ use xmp_toolkit::{
     FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue, xmp_ns,
 };
 
+// Namesapce for "taglists"
+// Adobe
 const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
-const HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
+const LR_HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
+// DigiKam
+const DIGIKAM_NS: &str = "http://www.digikam.org/ns/1.0/";
+const DIGIKAM_TAGSLIST: &str = "TagsList";
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -76,14 +81,13 @@ pub fn write_taglist(
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
-    let ns_digikam = "http://www.digikam.org/ns/1.0/";
-    XmpMeta::register_namespace(ns_digikam, "digiKam")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
     let mut meta = XmpMeta::from_str(dummy_xmp)?;
     for tag in tags.str()? {
         meta.set_array_item(
-            ns_digikam,
-            "TagsList",
+            DIGIKAM_NS,
+            DIGIKAM_TAGSLIST,
             xmp_toolkit::ItemPlacement::InsertBeforeIndex(1),
             &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag.unwrap())),
         )?;
@@ -251,7 +255,7 @@ fn retrieve_metadata(
             }
 
             // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(LIGHTROOM_NS, HIERARCHICAL_SUBJECT) {
+            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
                 let tag = property.value;
                 if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
                     species.push(
@@ -1175,19 +1179,19 @@ fn update_xmp(
     if old_value.is_empty() {
         let new_tag = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
         println!("Inserting new tag: {new_tag}");
-        let array_name = XmpValue::new(HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
+        let array_name = XmpValue::new(LR_HIERARCHICAL_SUBJECT.to_string()).set_is_array(true);
         let item_value = XmpValue::new(new_tag);
 
         xmp.append_array_item(LIGHTROOM_NS, &array_name, &item_value)?; // will create array if it doesn't exist
     } else {
-        let property_exists = xmp.property(LIGHTROOM_NS, HIERARCHICAL_SUBJECT).is_some();
+        let property_exists = xmp.property(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT).is_some();
         if !property_exists {
             println!("No hierarchicalSubject property found in Lightroom namespace");
             return Ok(());
         }
-        let array_len = xmp.array_len(LIGHTROOM_NS, HIERARCHICAL_SUBJECT);
+        let array_len = xmp.array_len(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT);
         for i in 1..=array_len {
-            let array_item_path = &format!("{HIERARCHICAL_SUBJECT}[{i}]");
+            let array_item_path = &format!("{LR_HIERARCHICAL_SUBJECT}[{i}]");
             if let Some(prop) = xmp.property(LIGHTROOM_NS, array_item_path) {
                 let value = prop.value;
                 let prefix = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
