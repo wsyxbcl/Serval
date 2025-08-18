@@ -1,5 +1,6 @@
 use chrono::NaiveDateTime;
 use core::fmt;
+use indicatif::ProgressStyle;
 use polars::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -12,7 +13,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use walkdir::{DirEntry, WalkDir};
-use indicatif::{ProgressBar, ProgressStyle};
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -122,7 +122,6 @@ pub fn serval_pb_style() -> ProgressStyle {
         .progress_chars("=> ")
 }
 
-
 // workaround for https://github.com/rust-lang/rust/issues/42869
 // ref. https://github.com/sharkdp/fd/pull/72/files
 fn path_to_absolute(path: PathBuf) -> io::Result<PathBuf> {
@@ -182,8 +181,14 @@ pub fn resources_flatten(
     );
 
     let mut visited_path: HashSet<String> = HashSet::new();
-    let pb = if !dry_run { Some(indicatif::ProgressBar::new(num_resource as u64)) } else { None };
-    if let Some(pb_ref) = &pb { pb_ref.set_style(serval_pb_style()); }
+    let pb = if !dry_run {
+        Some(indicatif::ProgressBar::new(num_resource as u64))
+    } else {
+        None
+    };
+    if let Some(pb_ref) = &pb {
+        pb_ref.set_style(serval_pb_style());
+    }
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
@@ -215,7 +220,9 @@ pub fn resources_flatten(
             } else {
                 fs::copy(resource, output_path)?;
             }
-            if let Some(pb_ref) = &pb { pb_ref.inc(1); }
+            if let Some(pb_ref) = &pb {
+                pb_ref.inc(1);
+            }
         } else if !visited_path.contains(resource_parent.to_str().unwrap()) {
             visited_path.insert(resource_parent.to_str().unwrap().to_string());
             println!(
@@ -225,7 +232,9 @@ pub fn resources_flatten(
             );
         }
     }
-    if let Some(pb_ref) = pb { pb_ref.finish(); }
+    if let Some(pb_ref) = pb {
+        pb_ref.finish();
+    }
     Ok(())
 }
 
@@ -332,7 +341,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    println!("{} xmp files found", num_xmp);
+    println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
     pb.set_style(serval_pb_style());
 

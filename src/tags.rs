@@ -1,9 +1,9 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, TagType, serval_pb_style, absolute_path, append_ext, get_path_levels,
-    ignore_timezone, is_temporal_independent, path_enumerate, sync_modified_time,
+    ExtractFilterType, ResourceType, TagType, absolute_path, append_ext, get_path_levels,
+    ignore_timezone, is_temporal_independent, path_enumerate, serval_pb_style, sync_modified_time,
 };
 use chrono::{DateTime, Local};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
