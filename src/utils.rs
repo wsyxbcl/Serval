@@ -1,17 +1,17 @@
 use chrono::NaiveDateTime;
 use core::fmt;
 use polars::prelude::*;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, FileTimes};
-use std::str::FromStr;
 use std::io;
+use std::str::FromStr;
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
 use walkdir::{DirEntry, WalkDir};
-use rayon::prelude::*;
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -340,7 +340,10 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
     let media_path = Path::new(media_path_str);
 
     if !media_path.exists() {
-        eprintln!("Warning: Skipping,'{}' does not exist.", media_path.display());
+        eprintln!(
+            "Warning: Skipping,'{}' does not exist.",
+            media_path.display()
+        );
         return Ok(());
     }
 
@@ -359,18 +362,23 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
 pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    
+
     if num_xmp == 0 {
         println!("No XMP files found in {}", source_dir.display());
         return Ok(());
     }
-    
-    println!("Found {} XMP files to sync in {}", num_xmp, source_dir.display());
-    
+
+    println!(
+        "Found {} XMP files to sync in {}",
+        num_xmp,
+        source_dir.display()
+    );
+
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
     pb.set_message("Syncing XMP metadata to media files...");
 
-    let results: Vec<anyhow::Result<()>> = xmp_paths.par_iter()
+    let results: Vec<anyhow::Result<()>> = xmp_paths
+        .par_iter()
         .map(|xmp_path| {
             let result = sync_xmp_to_media(xmp_path);
             pb.inc(1);
@@ -379,21 +387,20 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter()
-        .partition(Result::is_ok);
-    
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
     let num_synced = successes.len();
     let num_sikpped = failures.len();
-    
+
     for result in failures {
         if let Err(e) = result {
             eprintln!("Failed to sync: {e}");
         }
     }
-    
+
     println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
-    
+
     Ok(())
 }
 
@@ -408,9 +415,12 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .lazy()
         .filter(col("path").is_not_null())
         .filter(col("path").str().ends_with(lit(".xmp")))
-        .unique(Some(cols(vec!["path".to_string()])), UniqueKeepStrategy::First)
+        .unique(
+            Some(cols(vec!["path".to_string()])),
+            UniqueKeepStrategy::First,
+        )
         .collect()?;
-    
+
     let num_files = df_filtered.height();
     if num_files == 0 {
         println!("No XMP files found in CSV");
@@ -418,13 +428,14 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     }
 
     println!("Found {num_files} XMP files in CSV to sync");
-    
+
     let pb = indicatif::ProgressBar::new(num_files as u64);
     pb.set_message("Syncing XMP files in CSV...");
 
     let path_col = df_filtered.column("path")?.str()?;
-    
-    let results: Vec<anyhow::Result<()>> = path_col.par_iter()
+
+    let results: Vec<anyhow::Result<()>> = path_col
+        .par_iter()
         .filter_map(|path| path.map(PathBuf::from))
         .map(|xmp_path| {
             let result = sync_xmp_to_media(&xmp_path);
@@ -434,21 +445,20 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter()
-        .partition(Result::is_ok);
-    
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
     let num_synced = successes.len();
     let num_sikpped = failures.len();
-    
+
     for result in failures {
         if let Err(e) = result {
             eprintln!("Failed to sync: {e}");
         }
     }
-    
+
     println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
-    
+
     Ok(())
 }
 
@@ -456,18 +466,19 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
 pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    
+
     if num_xmp == 0 {
         println!("No XMP files found in {}", source_dir.display());
         return Ok(());
     }
-    
+
     println!("Found {} XMP files in {}", num_xmp, source_dir.display());
-    
+
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
     pb.set_message("Removing XMP files...");
 
-    let results: Vec<anyhow::Result<()>> = xmp_paths.par_iter()
+    let results: Vec<anyhow::Result<()>> = xmp_paths
+        .par_iter()
         .map(|xmp_path| {
             let result = fs::remove_file(xmp_path);
             pb.inc(1);
@@ -476,19 +487,18 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter()
-        .partition(Result::is_ok);
-    
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
     let num_removed = successes.len();
     let num_failed = failures.len();
-    
+
     for result in failures {
         if let Err(e) = result {
             eprintln!("{e}");
         }
     }
-    
+
     println!("Successfully removed {num_removed} XMP files, failed to remove {num_failed} files");
     Ok(())
 }

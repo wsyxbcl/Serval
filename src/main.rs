@@ -9,7 +9,8 @@ use tags::{
 };
 use utils::{
     ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, resources_flatten, tags_csv_translate, remove_xmp_files, sync_xmp_directory, sync_xmp_from_csv,
+    deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory, sync_xmp_from_csv,
+    tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -155,7 +156,9 @@ fn main() -> anyhow::Result<()> {
                 } else if let Some(csv) = csv {
                     sync_xmp_from_csv(absolute_path(csv)?)?;
                 } else {
-                    return Err(anyhow::anyhow!("Either --csv or directory path must be specified"));
+                    return Err(anyhow::anyhow!(
+                        "Either --csv or directory path must be specified"
+                    ));
                 }
             }
         },
@@ -353,9 +356,7 @@ enum XmpCommands {
         datetime: bool,
     },
     /// Remove all XMP files recursively from a directory
-    Remove {
-        source_dir: PathBuf,
-    },
+    Remove { source_dir: PathBuf },
     /// Sync XMP metadata to corresponding media files
     Sync {
         /// Directory containing XMP files to sync

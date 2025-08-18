@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
 };
 use xmp_toolkit::{
-    xmp_ns, FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue
+    FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue, xmp_ns,
 };
 
 // Namesapce for "taglists"
@@ -1224,10 +1224,15 @@ fn update_xmp(
         let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
         let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
 
-        insert_tag(&mut xmp, LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT, new_tag_adobe)?;
+        insert_tag(
+            &mut xmp,
+            LIGHTROOM_NS,
+            LR_HIERARCHICAL_SUBJECT,
+            new_tag_adobe,
+        )?;
         insert_tag(&mut xmp, DIGIKAM_NS, DIGIKAM_TAGSLIST, new_tag_digikam)?;
         insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
-    } else { 
+    } else {
         pb.println(format!(
             "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
         ));
