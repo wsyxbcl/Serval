@@ -895,9 +895,12 @@ pub fn extract_resources(
         }
 
         fs::copy(input_path_media.clone(), output_path_media.clone())?;
-        if let Err(_err) = fs::copy(input_path_xmp, output_path_xmp) {
-            pb.println("Missing XMP file, tag info for certain video files may be lost.");
-            // eprintln!("Error: {}", err);
+        if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                pb.println("Missing XMP file, tag info for certain video files may be lost.");
+            } else {
+                return Err(anyhow::anyhow!("Failed to copy XMP file: {}", err));
+            }
         }
         sync_modified_time(input_path_media.into(), output_path_media)?;
 

@@ -535,11 +535,14 @@ pub fn is_temporal_independent(
     min_delta_time: i32,
 ) -> anyhow::Result<bool> {
     // TODO Timezone
-    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
-    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
+    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse reference datetime '{}': {}", time_ref, e))?;
+    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", time, e))?;
     let diff = dt - dt_ref;
 
-    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
+    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into())
+        .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {}", min_delta_time))?)
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {
