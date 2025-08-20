@@ -415,7 +415,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     let num_synced = successes.len();
-    let num_sikpped = failures.len();
+    let num_skipped = failures.len();
 
     for result in failures {
         if let Err(e) = result {
@@ -423,7 +423,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
 
     Ok(())
 }
@@ -474,7 +474,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     let num_synced = successes.len();
-    let num_sikpped = failures.len();
+    let num_skipped = failures.len();
 
     for result in failures {
         if let Err(e) = result {
@@ -482,7 +482,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
 
     Ok(())
 }
