@@ -30,6 +30,17 @@ const LR_HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
 const DIGIKAM_NS: &str = "http://www.digikam.org/ns/1.0/";
 const DIGIKAM_TAGSLIST: &str = "TagsList";
 
+// Default species/tags to exclude from temporal independence analysis
+const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
+    "",
+    "Blank",
+    "Useless data",
+    "Unidentified",
+    "Human",
+    "Unknown",
+    "Blur",
+];
+
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
     fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
@@ -989,16 +1000,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let readline = rl.readline("Select the number corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
-    let exclude = [
-        "",
-        "Blank",
-        "Useless data",
-        "Unidentified",
-        "Human",
-        "Unknown",
-        "Blur",
-    ]; // TODO: make it configurable
-    let tag_exclude = Series::new("tag_exclude".into(), exclude);
+    let tag_exclude = Series::new("tag_exclude".into(), DEFAULT_EXCLUDE_TAGS);
 
     // Data processing
     let df_cleaned = df
