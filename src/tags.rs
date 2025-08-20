@@ -157,22 +157,23 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                 } else {
                     // Get the modified time of the file
-                    if let Ok(metadata) = fs::metadata(media) {
-                        if let Ok(modified_time) = metadata.modified() {
-                            let datetime: DateTime<Local> = DateTime::from(modified_time);
-                            let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
-                            if xmp_string.contains("rdf") {
-                                let rdf_exif_datetime = format!(
-                                    r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+                    if let Ok(metadata) = fs::metadata(media)
+                        && let Ok(modified_time) = metadata.modified()
+                    {
+                        let datetime: DateTime<Local> = DateTime::from(modified_time);
+                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        if xmp_string.contains("rdf") {
+                            let rdf_exif_datetime = format!(
+                                r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
             <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
         </rdf:Description>"#
-                                );
-                                xmp_string = re_rdf
-                                    .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
-                                    .to_string();
-                            } else {
-                                xmp_string = format!(
-                                    r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+                            );
+                            xmp_string = re_rdf
+                                .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
+                                .to_string();
+                        } else {
+                            xmp_string = format!(
+                                r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
@@ -181,8 +182,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"#
-                                );
-                            }
+                            );
                         }
                     }
                 }
@@ -242,65 +242,65 @@ fn retrieve_metadata(
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
 
-    if f.open_file(file_path, OpenFileOptions::default()).is_ok() {
-        if let Some(xmp) = f.xmp() {
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+    if f.open_file(file_path, OpenFileOptions::default()).is_ok()
+        && let Some(xmp) = f.xmp()
+    {
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            datetime = ignore_timezone(value.value.to_string())?;
+        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+            // And timezone is ignored for they write UTC-8 time but label as UTC
+            // i.e. we follow time shown in the picture without considering timezone in metadata
+            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
+            if !value.value.to_string().starts_with("1904") {
                 datetime = ignore_timezone(value.value.to_string())?;
-            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-                // And timezone is ignored for they write UTC-8 time but label as UTC
-                // i.e. we follow time shown in the picture without considering timezone in metadata
-                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
-                if !value.value.to_string().starts_with("1904") {
-                    datetime = ignore_timezone(value.value.to_string())?;
-                }
             }
-            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-            // }
-            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
-                rating = value.value.to_string();
+        }
+        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+        // }
+        if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+            rating = value.value.to_string();
+        }
+        if include_subject {
+            for property in xmp.property_array(xmp_ns::DC, "subject") {
+                subjects.push(property.value.to_string());
             }
-            if include_subject {
-                for property in xmp.property_array(xmp_ns::DC, "subject") {
-                    subjects.push(property.value.to_string());
-                }
-            }
+        }
 
-            // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
-                let tag = property.value;
-                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                    species.push(
-                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                    individuals.push(
-                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                    count.push(
-                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                    sex.push(
-                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                    bodyparts.push(
-                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                }
+        // use adobe hierarchicalSubject if available (digikam also writes to this field)
+        for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
+            let tag = property.value;
+            if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
+                species.push(
+                    tag.strip_prefix(TagType::Species.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
+                individuals.push(
+                    tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                count.push(
+                    tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                sex.push(
+                    tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                bodyparts.push(
+                    tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
             }
         }
     }

@@ -541,8 +541,9 @@ pub fn is_temporal_independent(
         .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", time, e))?;
     let diff = dt - dt_ref;
 
-    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into())
-        .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {}", min_delta_time))?)
+    Ok(diff
+        >= chrono::Duration::try_minutes(min_delta_time.into())
+            .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {}", min_delta_time))?)
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {
