@@ -964,7 +964,14 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Read min_delta_time
     let readline = rl.readline(
         "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
-    let min_delta_time: i32 = readline?.trim().parse()?;
+    let min_delta_time: i32 = readline?.trim().parse()
+        .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?;
+        if min_delta_time <= 0 {
+        return Err(anyhow::anyhow!("Invalid time difference: must be greater than 0"));
+    }
+    if min_delta_time > 10080 { // 1 week
+        println!("Note: {} minutes is unusually large (> 1 week)", min_delta_time);
+    }
     // Read delta_time_compared_to
     let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
