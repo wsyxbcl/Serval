@@ -194,9 +194,8 @@ pub fn resources_flatten(
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
+        // Collect parent directory names by traversing up
         let mut parent_names: Vec<OsString> = Vec::new();
-
-        let mut resource_name = deploy_id.to_os_string();
         let mut current_parent = resource.parent();
         while let Some(parent) = current_parent {
             if parent.to_str() == deploy_path {
@@ -208,17 +207,17 @@ pub fn resources_flatten(
             current_parent = parent.parent();
         }
 
+        // OPTIMIZATION: Efficient string building
         parent_names.reverse();
-        for parent_name in parent_names {
-            resource_name.push("-");
-            resource_name.push(&parent_name);
-        }
-        resource_name.push("-");
+        let mut name_parts = Vec::with_capacity(parent_names.len() + 2);
+        name_parts.push(deploy_id.to_os_string());
+        name_parts.extend(parent_names);
         if let Some(file_name) = resource.file_name() {
-            resource_name.push(file_name);
+            name_parts.push(file_name.to_os_string());
         } else {
-            resource_name.push("unnamed_file");
+            name_parts.push("unnamed_file".into());
         }
+        let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
 
         output_path.push(output_dir.join(resource_name));
 
