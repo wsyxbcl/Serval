@@ -165,7 +165,9 @@ pub fn resources_flatten(
     dry_run: bool,
     move_mode: bool,
 ) -> anyhow::Result<()> {
-    let deploy_id = deploy_dir.file_name().unwrap();
+    let deploy_id = deploy_dir
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
     let deploy_path = deploy_dir.to_str();
 
     let output_dir = working_dir.join(deploy_id);
@@ -200,7 +202,9 @@ pub fn resources_flatten(
             if parent.to_str() == deploy_path {
                 break;
             }
-            parent_names.push(parent.file_name().unwrap().to_os_string());
+            if let Some(file_name) = parent.file_name() {
+                parent_names.push(file_name.to_os_string());
+            }
             current_parent = parent.parent();
         }
 
@@ -210,7 +214,11 @@ pub fn resources_flatten(
             resource_name.push(&parent_name);
         }
         resource_name.push("-");
-        resource_name.push(resource.file_name().unwrap());
+        if let Some(file_name) = resource.file_name() {
+            resource_name.push(file_name);
+        } else {
+            resource_name.push("unnamed_file");
+        }
 
         output_path.push(output_dir.join(resource_name));
 
@@ -280,7 +288,10 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let path = entry.path();
         if path.is_dir() {
             let mut collection_dir = path;
-            let original_collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
+            let original_collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
             let collection_name_lower = original_collection_name.to_lowercase();
             if original_collection_name != collection_name_lower {
                 let mut new_collection_dir = collection_dir.clone();
@@ -299,14 +310,20 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     collection_dir = new_collection_dir;
                 }
             }
-            let collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
+            let collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
             for deploy in collection_dir.read_dir()? {
-                let deploy_dir = deploy.unwrap().path();
+                let deploy_dir = deploy?.path();
                 if deploy_dir.is_file() {
                     continue;
                 }
                 count += 1;
-                let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
+                let deploy_name = deploy_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory name"))?;
                 if !deploy_name.contains(collection_name) {
                     if dry_run {
                         println!(
