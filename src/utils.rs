@@ -207,7 +207,6 @@ pub fn resources_flatten(
             current_parent = parent.parent();
         }
 
-        // OPTIMIZATION: Efficient string building
         parent_names.reverse();
         let mut name_parts = Vec::with_capacity(parent_names.len() + 2);
         name_parts.push(deploy_id.to_os_string());
