@@ -786,10 +786,10 @@ pub fn extract_resources(
     ) {
         let subdir = if use_subdir {
             match subdir_value {
-                ExtractFilterType::Species => species_tag.unwrap(),
-                ExtractFilterType::Individual => individual_tag.unwrap(),
-                ExtractFilterType::Rating => rating_tag.unwrap(),
-                ExtractFilterType::Custom => custom_tag.unwrap(),
+                ExtractFilterType::Species => species_tag.unwrap_or("untagged_species"),
+                ExtractFilterType::Individual => individual_tag.unwrap_or("untagged_individual"),
+                ExtractFilterType::Rating => rating_tag.unwrap_or("unrated"),
+                ExtractFilterType::Custom => custom_tag.unwrap_or("no_custom"),
                 _ => "", // Currently not support path
             }
         } else {
@@ -809,12 +809,22 @@ pub fn extract_resources(
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
             let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
-                let filename_prefix = format!("{}-{}-", species_tag.unwrap(), individual_tag.unwrap());
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("untagged_species"),
+                    individual_tag.unwrap_or("untagged_individual")
+                );
                 (
-                    output_dir.join(subdir).join(format!("{}{}", 
-                        filename_prefix, relative_path_output_xmp.to_string_lossy())),
-                    output_dir.join(subdir).join(format!("{}{}", 
-                        filename_prefix, relative_path_output_media.to_string_lossy())),
+                    output_dir.join(subdir).join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_xmp.to_string_lossy()
+                    )),
+                    output_dir.join(subdir).join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_media.to_string_lossy()
+                    )),
                 )
             } else {
                 (
@@ -828,22 +838,34 @@ pub fn extract_resources(
             let relative_path_output_media = Path::new(&input_path_media)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
-                let filename_prefix = format!("{}-{}-", species_tag.unwrap(), individual_tag.unwrap());
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("unknown_species"),
+                    individual_tag.unwrap_or("unknown_individual")
+                );
                 (
                     output_dir
                         .join(relative_path_output_xmp.parent().unwrap())
                         .join(subdir)
-                        .join(format!("{}{}", filename_prefix, relative_path_output_xmp
+                        .join(format!(
+                            "{}{}",
+                            filename_prefix,
+                            relative_path_output_xmp
                                 .file_name()
                                 .unwrap()
-                                .to_string_lossy())),
+                                .to_string_lossy()
+                        )),
                     output_dir
                         .join(relative_path_output_media.parent().unwrap())
                         .join(subdir)
-                        .join(format!("{}{}", filename_prefix, relative_path_output_media
+                        .join(format!(
+                            "{}{}",
+                            filename_prefix,
+                            relative_path_output_media
                                 .file_name()
                                 .unwrap()
-                                .to_string_lossy())),
+                                .to_string_lossy()
+                        )),
                 )
             } else {
                 (
