@@ -42,11 +42,17 @@ impl ResourceType {
     }
 
     fn is_resource(self, path: &Path) -> bool {
-        match path.extension() {
+        let ext = match path.extension() {
+            None => return false,
+            Some(ext) => ext,
+        };
+        
+        match ext.to_str() {
             None => false,
-            Some(x) => self
-                .extension()
-                .contains(&x.to_str().unwrap().to_lowercase().as_str()),
+            Some(ext_str) => {
+                let ext_lower = ext_str.to_ascii_lowercase();
+                self.extension().contains(&ext_lower.as_str())
+            }
         }
     }
 }
@@ -146,16 +152,14 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
 }
 
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = vec![];
-    for entry in WalkDir::new(root_dir)
+    WalkDir::new(root_dir)
         .into_iter()
         .filter_entry(|e| !is_ignored(e))
+        .par_bridge()
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
-    {
-        paths.push(entry.into_path());
-    }
-    paths
+        .map(|e| e.into_path())
+        .collect()
 }
 
 pub fn resources_flatten(
