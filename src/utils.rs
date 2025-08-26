@@ -183,7 +183,7 @@ pub fn resources_flatten(
         "{} {}(s) found in {}",
         num_resource,
         resource_type,
-        deploy_dir.to_str().unwrap()
+        deploy_dir.to_string_lossy()
     );
 
     let mut visited_path: HashSet<String> = HashSet::new();
@@ -233,8 +233,8 @@ pub fn resources_flatten(
             if let Some(pb_ref) = &pb {
                 pb_ref.inc(1);
             }
-        } else if !visited_path.contains(resource_parent.to_str().unwrap()) {
-            visited_path.insert(resource_parent.to_str().unwrap().to_string());
+        } else if !visited_path.contains(&resource_parent.to_string_lossy()) {
+            visited_path.insert(resource_parent.to_string_lossy().to_string());
             println!(
                 "DRYRUN sample: From {} to {}",
                 resource.display(),
@@ -378,7 +378,13 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
 
 // Sync XMP metadata to corresponding media files
 pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
-    let media_path_str = xmp_path.to_str().unwrap().trim_end_matches(".xmp");
+    let media_path_str = match xmp_path.to_str() {
+        Some(path_str) => path_str.trim_end_matches(".xmp"),
+        None => {
+            eprintln!("Warning: Skipping XMP file with non-UTF-8 path: {}", xmp_path.display());
+            return Ok(());
+        }
+    };
     let media_path = Path::new(media_path_str);
 
     if !media_path.exists() {
@@ -638,7 +644,9 @@ pub fn tags_csv_translate(
 
     let output_csv = output_dir.join(format!(
         "{}_translated.csv",
-        source_csv.file_stem().unwrap().to_str().unwrap()
+        source_csv.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("tags")
     ));
     fs::create_dir_all(output_dir.clone())?;
     let mut file = std::fs::File::create(&output_csv)?;
