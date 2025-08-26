@@ -940,17 +940,15 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             // Check if the datetime column is parsed correctly, i.e. the type is not str
             let datetime_col = df.column("datetime")?;
             if datetime_col.dtype() == &DataType::String {
-                eprintln!("Error: The datetime column is not parsed correctly.");
-                eprintln!(
-                    "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
-                );
-                std::process::exit(1);
+                return Err(anyhow::anyhow!(
+                    "Datetime column parsing failed: column contains string data instead of datetime values.\n\
+                    Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+                ));
             }
             df
         }
         Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
+            return Err(anyhow::anyhow!("Failed to read or parse CSV file: {}", e));
         }
     };
 
@@ -1387,11 +1385,10 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     // Check if the datetime column is parsed correctly
     let datetime_col = df.column("xmp_update_datetime")?;
     if datetime_col.dtype() == &DataType::String {
-        eprintln!("Error: The xmp_update_datetime column is not parsed correctly.");
-        eprintln!(
-            "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
-        );
-        return Err(anyhow::anyhow!("Datetime column parsing failed"));
+        return Err(anyhow::anyhow!(
+            "XMP update datetime column parsing failed: column contains string data instead of datetime values.\n\
+            Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+        ));
     }
 
     let df_filtered = df
