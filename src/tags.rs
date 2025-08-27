@@ -1197,8 +1197,8 @@ fn update_xmp(
         xmp: &mut XmpMeta,
         ns: &str,
         array_name: &str,
-        old_prefix: &str,
-        new_prefix: &str,
+        old_tag: &str,
+        new_tag: &str,
     ) -> anyhow::Result<()> {
         if xmp.property(ns, array_name).is_none() {
             println!("No {array_name} property found in namespace {ns}");
@@ -1210,8 +1210,8 @@ fn update_xmp(
             let array_item_path = &format!("{array_name}[{i}]");
             if let Some(prop) = xmp.property(ns, array_item_path) {
                 let value = &prop.value;
-                if value.contains(old_prefix) {
-                    let new_value = value.replace(old_prefix, new_prefix);
+                if value.contains(old_tag) {
+                    let new_value = value.replace(old_tag, new_tag);
                     let new_xmp_value = XmpValue::new(new_value);
                     if let Err(e) = xmp.set_property(ns, array_item_path, &new_xmp_value) {
                         println!("Error updating tag {i} in {array_name}: {e:?}");
