@@ -1224,7 +1224,7 @@ fn update_xmp(
         pb.println(format!(
             "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
         ));
-        // Update Lightroom
+        // adobe hierarchical subject
         update_tag_array(
             &mut xmp,
             LIGHTROOM_NS,
@@ -1233,7 +1233,7 @@ fn update_xmp(
             &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
         )?;
 
-        // Update Digikam
+        // digiKam taglist
         update_tag_array(
             &mut xmp,
             DIGIKAM_NS,
@@ -1242,7 +1242,7 @@ fn update_xmp(
             &format!("{}{}", tag_type.digikam_tag_prefix(), new_value),
         )?;
 
-        // Update Subject (no prefix, just replace old_value with new_value)
+        // subject 
         update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
     }
 
@@ -1251,13 +1251,12 @@ fn update_xmp(
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
 
     fs::copy(&file_path, &backup_path)?;
-    // println!("Created backup: {}", final_backup_path);
-
-    fs::write(&file_path, modified_xmp)?;
-    // println!("Successfully updated XMP file: {}", file_path.display());
-
+    fs::write(&temp_path, &modified_xmp)?;
+    fs::rename(&temp_path, &file_path)?;
+    
     Ok(())
 }
 
@@ -1422,9 +1421,11 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
 
     fs::copy(&file_path, &backup_path)?;
-    fs::write(&file_path, modified_xmp)?;
-
+    fs::write(&temp_path, &modified_xmp)?;
+    fs::rename(&temp_path, &file_path)?;
+    
     Ok(())
 }
