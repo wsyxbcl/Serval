@@ -30,6 +30,17 @@ const LR_HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
 const DIGIKAM_NS: &str = "http://www.digikam.org/ns/1.0/";
 const DIGIKAM_TAGSLIST: &str = "TagsList";
 
+// Default species/tags to exclude from temporal independence analysis
+const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
+    "",
+    "Blank",
+    "Useless data",
+    "Unidentified",
+    "Human",
+    "Unknown",
+    "Blur",
+];
+
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
     fn handle(&self, evt: &Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
@@ -146,22 +157,23 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                 } else {
                     // Get the modified time of the file
-                    if let Ok(metadata) = fs::metadata(media) {
-                        if let Ok(modified_time) = metadata.modified() {
-                            let datetime: DateTime<Local> = DateTime::from(modified_time);
-                            let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
-                            if xmp_string.contains("rdf") {
-                                let rdf_exif_datetime = format!(
-                                    r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+                    if let Ok(metadata) = fs::metadata(media)
+                        && let Ok(modified_time) = metadata.modified()
+                    {
+                        let datetime: DateTime<Local> = DateTime::from(modified_time);
+                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        if xmp_string.contains("rdf") {
+                            let rdf_exif_datetime = format!(
+                                r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
             <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
         </rdf:Description>"#
-                                );
-                                xmp_string = re_rdf
-                                    .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
-                                    .to_string();
-                            } else {
-                                xmp_string = format!(
-                                    r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+                            );
+                            xmp_string = re_rdf
+                                .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
+                                .to_string();
+                        } else {
+                            xmp_string = format!(
+                                r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
@@ -170,8 +182,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"#
-                                );
-                            }
+                            );
                         }
                     }
                 }
@@ -231,65 +242,65 @@ fn retrieve_metadata(
     // Retrieve digikam taglist and datetime from file
     let mut f = XmpFile::new()?;
 
-    if f.open_file(file_path, OpenFileOptions::default()).is_ok() {
-        if let Some(xmp) = f.xmp() {
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+    if f.open_file(file_path, OpenFileOptions::default()).is_ok()
+        && let Some(xmp) = f.xmp()
+    {
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            datetime = ignore_timezone(value.value.to_string())?;
+        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+            // And timezone is ignored for they write UTC-8 time but label as UTC
+            // i.e. we follow time shown in the picture without considering timezone in metadata
+            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
+            if !value.value.to_string().starts_with("1904") {
                 datetime = ignore_timezone(value.value.to_string())?;
-            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-                // And timezone is ignored for they write UTC-8 time but label as UTC
-                // i.e. we follow time shown in the picture without considering timezone in metadata
-                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904
-                if !value.value.to_string().starts_with("1904") {
-                    datetime = ignore_timezone(value.value.to_string())?;
-                }
             }
-            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-            // }
-            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
-                rating = value.value.to_string();
+        }
+        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+        // }
+        if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+            rating = value.value.to_string();
+        }
+        if include_subject {
+            for property in xmp.property_array(xmp_ns::DC, "subject") {
+                subjects.push(property.value.to_string());
             }
-            if include_subject {
-                for property in xmp.property_array(xmp_ns::DC, "subject") {
-                    subjects.push(property.value.to_string());
-                }
-            }
+        }
 
-            // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
-                let tag = property.value;
-                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                    species.push(
-                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                    individuals.push(
-                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                    count.push(
-                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                    sex.push(
-                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                    bodyparts.push(
-                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                }
+        // use adobe hierarchicalSubject if available (digikam also writes to this field)
+        for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
+            let tag = property.value;
+            if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
+                species.push(
+                    tag.strip_prefix(TagType::Species.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
+                individuals.push(
+                    tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                count.push(
+                    tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                sex.push(
+                    tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                bodyparts.push(
+                    tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
             }
         }
     }
@@ -658,64 +669,25 @@ pub fn extract_resources(
             .collect()?;
     }
 
-    let df_filtered: DataFrame = if filter_value == "ALL_VALUES" {
+    let filter_expr = if filter_value == "ALL_VALUES" {
         match filter_type {
-            ExtractFilterType::Species => df
-                .clone()
-                .lazy()
-                .filter(col(TagType::Species.col_name()).is_not_null())
-                .collect()?,
-            ExtractFilterType::Path => df
-                .clone()
-                .lazy()
-                .filter(col("path").is_not_null())
-                .collect()?,
-            ExtractFilterType::Individual => df
-                .clone()
-                .lazy()
-                .filter(col(TagType::Individual.col_name()).is_not_null())
-                .collect()?,
-            ExtractFilterType::Rating => df
-                .clone()
-                .lazy()
-                .filter(col("rating").is_not_null())
-                .collect()?,
-            ExtractFilterType::Custom => df
-                .clone()
-                .lazy()
-                .filter(col("custom").is_not_null())
-                .collect()?,
+            ExtractFilterType::Species => col(TagType::Species.col_name()).is_not_null(),
+            ExtractFilterType::Path => col("path").is_not_null(),
+            ExtractFilterType::Individual => col(TagType::Individual.col_name()).is_not_null(),
+            ExtractFilterType::Rating => col("rating").is_not_null(),
+            ExtractFilterType::Custom => col("custom").is_not_null(),
         }
     } else {
         match filter_type {
-            ExtractFilterType::Species => df
-                .clone()
-                .lazy()
-                .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
-                .collect()?,
-            ExtractFilterType::Path => df
-                .clone()
-                .lazy()
-                //TODO use regex?
-                .filter(col("path").str().contains_literal(lit(filter_value)))
-                .collect()?,
-            ExtractFilterType::Individual => df
-                .clone()
-                .lazy()
-                .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
-                .collect()?,
-            ExtractFilterType::Rating => df
-                .clone()
-                .lazy()
-                .filter(col("rating").eq(lit(filter_value)))
-                .collect()?,
-            ExtractFilterType::Custom => df
-                .clone()
-                .lazy()
-                .filter(col("custom").eq(lit(filter_value)))
-                .collect()?,
+            ExtractFilterType::Species => col(TagType::Species.col_name()).eq(lit(filter_value.clone())),
+            ExtractFilterType::Path => col("path").str().contains_literal(lit(filter_value.clone())),
+            ExtractFilterType::Individual => col(TagType::Individual.col_name()).eq(lit(filter_value.clone())),
+            ExtractFilterType::Rating => col("rating").eq(lit(filter_value.clone())),
+            ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
         }
     };
+    
+    let df_filtered = df.lazy().filter(filter_expr).collect()?;
 
     // Get the top level directory (to keep)
     let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
@@ -775,10 +747,10 @@ pub fn extract_resources(
     ) {
         let subdir = if use_subdir {
             match subdir_value {
-                ExtractFilterType::Species => species_tag.unwrap(),
-                ExtractFilterType::Individual => individual_tag.unwrap(),
-                ExtractFilterType::Rating => rating_tag.unwrap(),
-                ExtractFilterType::Custom => custom_tag.unwrap(),
+                ExtractFilterType::Species => species_tag.unwrap_or("untagged_species"),
+                ExtractFilterType::Individual => individual_tag.unwrap_or("untagged_individual"),
+                ExtractFilterType::Rating => rating_tag.unwrap_or("unrated"),
+                ExtractFilterType::Custom => custom_tag.unwrap_or("no_custom"),
                 _ => "", // Currently not support path
             }
         } else {
@@ -798,17 +770,20 @@ pub fn extract_resources(
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
             let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("untagged_species"),
+                    individual_tag.unwrap_or("untagged_individual")
+                );
                 (
                     output_dir.join(subdir).join(format!(
-                        "{}-{}-{}",
-                        species_tag.unwrap(),
-                        individual_tag.unwrap(),
+                        "{}{}",
+                        filename_prefix,
                         relative_path_output_xmp.to_string_lossy()
                     )),
                     output_dir.join(subdir).join(format!(
-                        "{}-{}-{}",
-                        species_tag.unwrap(),
-                        individual_tag.unwrap(),
+                        "{}{}",
+                        filename_prefix,
                         relative_path_output_media.to_string_lossy()
                     )),
                 )
@@ -824,15 +799,18 @@ pub fn extract_resources(
             let relative_path_output_media = Path::new(&input_path_media)
                 .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
             if rename {
-                // TODO let user define the pattern
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("unknown_species"),
+                    individual_tag.unwrap_or("unknown_individual")
+                );
                 (
                     output_dir
                         .join(relative_path_output_xmp.parent().unwrap())
                         .join(subdir)
                         .join(format!(
-                            "{}-{}-{}",
-                            species_tag.unwrap(),
-                            individual_tag.unwrap(),
+                            "{}{}",
+                            filename_prefix,
                             relative_path_output_xmp
                                 .file_name()
                                 .unwrap()
@@ -842,9 +820,8 @@ pub fn extract_resources(
                         .join(relative_path_output_media.parent().unwrap())
                         .join(subdir)
                         .join(format!(
-                            "{}-{}-{}",
-                            species_tag.unwrap(),
-                            individual_tag.unwrap(),
+                            "{}{}",
+                            filename_prefix,
                             relative_path_output_media
                                 .file_name()
                                 .unwrap()
@@ -895,9 +872,12 @@ pub fn extract_resources(
         }
 
         fs::copy(input_path_media.clone(), output_path_media.clone())?;
-        if let Err(_err) = fs::copy(input_path_xmp, output_path_xmp) {
-            pb.println("Missing XMP file, tag info for certain video files may be lost.");
-            // eprintln!("Error: {}", err);
+        if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                pb.println("Missing XMP file, tag info for certain video files may be lost.");
+            } else {
+                return Err(anyhow::anyhow!("Failed to copy XMP file: {}", err));
+            }
         }
         sync_modified_time(input_path_media.into(), output_path_media)?;
 
@@ -921,17 +901,15 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             // Check if the datetime column is parsed correctly, i.e. the type is not str
             let datetime_col = df.column("datetime")?;
             if datetime_col.dtype() == &DataType::String {
-                eprintln!("Error: The datetime column is not parsed correctly.");
-                eprintln!(
-                    "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
-                );
-                std::process::exit(1);
+                return Err(anyhow::anyhow!(
+                    "Datetime column parsing failed: column contains string data instead of datetime values.\n\
+                    Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+                ));
             }
             df
         }
         Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
+            return Err(anyhow::anyhow!("Failed to read or parse CSV file: {}", e));
         }
     };
 
@@ -950,7 +928,22 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Read min_delta_time
     let readline = rl.readline(
         "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
-    let min_delta_time: i32 = readline?.trim().parse()?;
+    let min_delta_time: i32 = readline?
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?;
+    if min_delta_time <= 0 {
+        return Err(anyhow::anyhow!(
+            "Invalid time difference: must be greater than 0"
+        ));
+    }
+    if min_delta_time > 10080 {
+        // 1 week
+        println!(
+            "Note: {} minutes is unusually large (> 1 week)",
+            min_delta_time
+        );
+    }
     // Read delta_time_compared_to
     let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
@@ -986,16 +979,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let readline = rl.readline("Select the number corresponding to the deployment: ");
     let deploy_path_index = readline?.trim().parse::<i32>()?;
 
-    let exclude = [
-        "",
-        "Blank",
-        "Useless data",
-        "Unidentified",
-        "Human",
-        "Unknown",
-        "Blur",
-    ]; // TODO: make it configurable
-    let tag_exclude = Series::new("tag_exclude".into(), exclude);
+    let tag_exclude = Series::new("tag_exclude".into(), DEFAULT_EXCLUDE_TAGS);
 
     // Data processing
     let df_cleaned = df
@@ -1362,11 +1346,10 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     // Check if the datetime column is parsed correctly
     let datetime_col = df.column("xmp_update_datetime")?;
     if datetime_col.dtype() == &DataType::String {
-        eprintln!("Error: The xmp_update_datetime column is not parsed correctly.");
-        eprintln!(
-            "\x1b[1;33mHint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'.\x1b[0m"
-        );
-        return Err(anyhow::anyhow!("Datetime column parsing failed"));
+        return Err(anyhow::anyhow!(
+            "XMP update datetime column parsing failed: column contains string data instead of datetime values.\n\
+            Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+        ));
     }
 
     let df_filtered = df

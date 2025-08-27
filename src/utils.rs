@@ -42,11 +42,17 @@ impl ResourceType {
     }
 
     fn is_resource(self, path: &Path) -> bool {
-        match path.extension() {
+        let ext = match path.extension() {
+            None => return false,
+            Some(ext) => ext,
+        };
+        
+        match ext.to_str() {
             None => false,
-            Some(x) => self
-                .extension()
-                .contains(&x.to_str().unwrap().to_lowercase().as_str()),
+            Some(ext_str) => {
+                let ext_lower = ext_str.to_ascii_lowercase();
+                self.extension().contains(&ext_lower.as_str())
+            }
         }
     }
 }
@@ -146,16 +152,14 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
 }
 
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = vec![];
-    for entry in WalkDir::new(root_dir)
+    WalkDir::new(root_dir)
         .into_iter()
         .filter_entry(|e| !is_ignored(e))
+        .par_bridge()
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
-    {
-        paths.push(entry.into_path());
-    }
-    paths
+        .map(|e| e.into_path())
+        .collect()
 }
 
 pub fn resources_flatten(
@@ -165,7 +169,9 @@ pub fn resources_flatten(
     dry_run: bool,
     move_mode: bool,
 ) -> anyhow::Result<()> {
-    let deploy_id = deploy_dir.file_name().unwrap();
+    let deploy_id = deploy_dir
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
     let deploy_path = deploy_dir.to_str();
 
     let output_dir = working_dir.join(deploy_id);
@@ -177,7 +183,7 @@ pub fn resources_flatten(
         "{} {}(s) found in {}",
         num_resource,
         resource_type,
-        deploy_dir.to_str().unwrap()
+        deploy_dir.to_string_lossy()
     );
 
     let mut visited_path: HashSet<String> = HashSet::new();
@@ -192,25 +198,29 @@ pub fn resources_flatten(
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
+        // Collect parent directory names by traversing up
         let mut parent_names: Vec<OsString> = Vec::new();
-
-        let mut resource_name = deploy_id.to_os_string();
         let mut current_parent = resource.parent();
         while let Some(parent) = current_parent {
             if parent.to_str() == deploy_path {
                 break;
             }
-            parent_names.push(parent.file_name().unwrap().to_os_string());
+            if let Some(file_name) = parent.file_name() {
+                parent_names.push(file_name.to_os_string());
+            }
             current_parent = parent.parent();
         }
 
         parent_names.reverse();
-        for parent_name in parent_names {
-            resource_name.push("-");
-            resource_name.push(&parent_name);
+        let mut name_parts = Vec::with_capacity(parent_names.len() + 2);
+        name_parts.push(deploy_id.to_os_string());
+        name_parts.extend(parent_names);
+        if let Some(file_name) = resource.file_name() {
+            name_parts.push(file_name.to_os_string());
+        } else {
+            name_parts.push("unnamed_file".into());
         }
-        resource_name.push("-");
-        resource_name.push(resource.file_name().unwrap());
+        let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
 
         output_path.push(output_dir.join(resource_name));
 
@@ -223,8 +233,8 @@ pub fn resources_flatten(
             if let Some(pb_ref) = &pb {
                 pb_ref.inc(1);
             }
-        } else if !visited_path.contains(resource_parent.to_str().unwrap()) {
-            visited_path.insert(resource_parent.to_str().unwrap().to_string());
+        } else if !visited_path.contains(&resource_parent.to_string_lossy()) {
+            visited_path.insert(resource_parent.to_string_lossy().to_string());
             println!(
                 "DRYRUN sample: From {} to {}",
                 resource.display(),
@@ -280,7 +290,10 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let path = entry.path();
         if path.is_dir() {
             let mut collection_dir = path;
-            let original_collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
+            let original_collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
             let collection_name_lower = original_collection_name.to_lowercase();
             if original_collection_name != collection_name_lower {
                 let mut new_collection_dir = collection_dir.clone();
@@ -299,14 +312,20 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     collection_dir = new_collection_dir;
                 }
             }
-            let collection_name = collection_dir.file_name().unwrap().to_str().unwrap();
+            let collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
             for deploy in collection_dir.read_dir()? {
-                let deploy_dir = deploy.unwrap().path();
+                let deploy_dir = deploy?.path();
                 if deploy_dir.is_file() {
                     continue;
                 }
                 count += 1;
-                let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
+                let deploy_name = deploy_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory name"))?;
                 if !deploy_name.contains(collection_name) {
                     if dry_run {
                         println!(
@@ -359,7 +378,13 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
 
 // Sync XMP metadata to corresponding media files
 pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
-    let media_path_str = xmp_path.to_str().unwrap().trim_end_matches(".xmp");
+    let media_path_str = match xmp_path.to_str() {
+        Some(path_str) => path_str.trim_end_matches(".xmp"),
+        None => {
+            eprintln!("Warning: Skipping XMP file with non-UTF-8 path: {}", xmp_path.display());
+            return Ok(());
+        }
+    };
     let media_path = Path::new(media_path_str);
 
     if !media_path.exists() {
@@ -415,7 +440,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     let num_synced = successes.len();
-    let num_sikpped = failures.len();
+    let num_skipped = failures.len();
 
     for result in failures {
         if let Err(e) = result {
@@ -423,7 +448,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
 
     Ok(())
 }
@@ -474,7 +499,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     let num_synced = successes.len();
-    let num_sikpped = failures.len();
+    let num_skipped = failures.len();
 
     for result in failures {
         if let Err(e) = result {
@@ -482,7 +507,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    println!("Successfully synced {num_synced} XMP files, skipped {num_sikpped} files");
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
 
     Ok(())
 }
@@ -535,11 +560,15 @@ pub fn is_temporal_independent(
     min_delta_time: i32,
 ) -> anyhow::Result<bool> {
     // TODO Timezone
-    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
-    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
+    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse reference datetime '{}': {}", time_ref, e))?;
+    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", time, e))?;
     let diff = dt - dt_ref;
 
-    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
+    Ok(diff
+        >= chrono::Duration::try_minutes(min_delta_time.into())
+            .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {}", min_delta_time))?)
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {
@@ -615,7 +644,9 @@ pub fn tags_csv_translate(
 
     let output_csv = output_dir.join(format!(
         "{}_translated.csv",
-        source_csv.file_stem().unwrap().to_str().unwrap()
+        source_csv.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("tags")
     ));
     fs::create_dir_all(output_dir.clone())?;
     let mut file = std::fs::File::create(&output_csv)?;
