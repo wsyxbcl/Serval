@@ -233,7 +233,7 @@ pub fn resources_flatten(
             if let Some(pb_ref) = &pb {
                 pb_ref.inc(1);
             }
-        } else if !visited_path.contains(&resource_parent.to_string_lossy()) {
+        } else if !visited_path.contains(resource_parent.to_string_lossy().as_ref()) {
             visited_path.insert(resource_parent.to_string_lossy().to_string());
             println!(
                 "DRYRUN sample: From {} to {}",
