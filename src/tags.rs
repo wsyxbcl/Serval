@@ -1029,7 +1029,8 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 [col("deployment"), col(target.col_name())],
                 RollingGroupOptions {
                     period: Duration::parse(format!("{min_delta_time}m").as_str()),
-                    offset: Duration::parse("0m"),
+                    offset: Duration::parse(format!("-{min_delta_time}m").as_str()),
+                    closed_window: ClosedWindow::Right,
                     ..Default::default()
                 },
             )
