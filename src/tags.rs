@@ -680,15 +680,21 @@ pub fn extract_resources(
         }
     } else {
         match filter_type {
-            ExtractFilterType::Species => col(TagType::Species.col_name()).eq(lit(filter_value.clone())),
-            ExtractFilterType::Path => col("path").str().contains_literal(lit(filter_value.clone())),
-            ExtractFilterType::Individual => col(TagType::Individual.col_name()).eq(lit(filter_value.clone())),
+            ExtractFilterType::Species => {
+                col(TagType::Species.col_name()).eq(lit(filter_value.clone()))
+            }
+            ExtractFilterType::Path => col("path")
+                .str()
+                .contains_literal(lit(filter_value.clone())),
+            ExtractFilterType::Individual => {
+                col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
+            }
             ExtractFilterType::Rating => col("rating").eq(lit(filter_value.clone())),
             ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
             ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
         }
     };
-    
+
     let df_filtered = df.lazy().filter(filter_expr).collect()?;
 
     // Get the top level directory (to keep)
@@ -889,7 +895,11 @@ pub fn extract_resources(
     Ok(())
 }
 
-pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, event: bool) -> anyhow::Result<()> {
+pub fn get_temporal_independence(
+    csv_path: PathBuf,
+    output_dir: PathBuf,
+    event: bool,
+) -> anyhow::Result<()> {
     // Temporal independence analysis
 
     let mut df = match CsvReadOptions::default()
@@ -941,10 +951,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, event: 
     }
     if min_delta_time > 10080 {
         // 1 week
-        println!(
-            "Note: {} minutes is unusually large (> 1 week)",
-            min_delta_time
-        );
+        println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
     }
     // Read delta_time_compared_to
     let h = NumericSelectValidator { min: 1, max: 2 };
@@ -1001,7 +1008,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, event: 
             col(target.col_name()),
         ])
         .collect()?;
-    
+
     let df_cleaned = df_deployment
         .clone()
         .lazy()
@@ -1142,13 +1149,16 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, event: 
             true,
             false, // Sortedness of columns cannot be checked when 'by' groups provided
         )?;
-        df_with_events = df_with_events.lazy().select([
-            col("path"),
-            col("deployment"),
-            col("time"),
-            col(target.col_name()),
-            col("event_id"),
-        ]).collect()?;
+        df_with_events = df_with_events
+            .lazy()
+            .select([
+                col("path"),
+                col("deployment"),
+                col("time"),
+                col(target.col_name()),
+                col("event_id"),
+            ])
+            .collect()?;
         let filename = format!("events{output_suffix}");
         let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
         CsvWriter::new(&mut file)
@@ -1284,7 +1294,7 @@ fn update_xmp(
             &format!("{}{}", tag_type.digikam_tag_prefix(), new_value),
         )?;
 
-        // subject 
+        // subject
         update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
     }
 
@@ -1298,7 +1308,7 @@ fn update_xmp(
     fs::copy(&file_path, &backup_path)?;
     fs::write(&temp_path, &modified_xmp)?;
     fs::rename(&temp_path, &file_path)?;
-    
+
     Ok(())
 }
 
@@ -1468,6 +1478,6 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
     fs::copy(&file_path, &backup_path)?;
     fs::write(&temp_path, &modified_xmp)?;
     fs::rename(&temp_path, &file_path)?;
-    
+
     Ok(())
 }

@@ -102,7 +102,11 @@ fn main() -> anyhow::Result<()> {
                 tag_type,
             )?;
         }
-        Commands::Capture { csv_path, output ,event } => {
+        Commands::Capture {
+            csv_path,
+            output,
+            event,
+        } => {
             get_temporal_independence(absolute_path(csv_path)?, output, event)?;
         }
         Commands::Extract {

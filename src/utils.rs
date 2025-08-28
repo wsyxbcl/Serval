@@ -46,7 +46,7 @@ impl ResourceType {
             None => return false,
             Some(ext) => ext,
         };
-        
+
         match ext.to_str() {
             None => false,
             Some(ext_str) => {
@@ -382,7 +382,10 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
     let media_path_str = match xmp_path.to_str() {
         Some(path_str) => path_str.trim_end_matches(".xmp"),
         None => {
-            eprintln!("Warning: Skipping XMP file with non-UTF-8 path: {}", xmp_path.display());
+            eprintln!(
+                "Warning: Skipping XMP file with non-UTF-8 path: {}",
+                xmp_path.display()
+            );
             return Ok(());
         }
     };
@@ -645,7 +648,8 @@ pub fn tags_csv_translate(
 
     let output_csv = output_dir.join(format!(
         "{}_translated.csv",
-        source_csv.file_stem()
+        source_csv
+            .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("tags")
     ));
