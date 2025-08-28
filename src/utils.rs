@@ -108,6 +108,7 @@ pub enum ExtractFilterType {
     Path,
     Individual,
     Rating,
+    Event,
     Custom,
 }
 

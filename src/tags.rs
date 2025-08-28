@@ -675,6 +675,7 @@ pub fn extract_resources(
             ExtractFilterType::Path => col("path").is_not_null(),
             ExtractFilterType::Individual => col(TagType::Individual.col_name()).is_not_null(),
             ExtractFilterType::Rating => col("rating").is_not_null(),
+            ExtractFilterType::Event => col("event_id").is_not_null(),
             ExtractFilterType::Custom => col("custom").is_not_null(),
         }
     } else {
@@ -683,6 +684,7 @@ pub fn extract_resources(
             ExtractFilterType::Path => col("path").str().contains_literal(lit(filter_value.clone())),
             ExtractFilterType::Individual => col(TagType::Individual.col_name()).eq(lit(filter_value.clone())),
             ExtractFilterType::Rating => col("rating").eq(lit(filter_value.clone())),
+            ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
             ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
         }
     };
