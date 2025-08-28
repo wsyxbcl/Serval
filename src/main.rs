@@ -102,8 +102,8 @@ fn main() -> anyhow::Result<()> {
                 tag_type,
             )?;
         }
-        Commands::Capture { csv_path, output } => {
-            get_temporal_independence(absolute_path(csv_path)?, output)?;
+        Commands::Capture { csv_path, output ,event } => {
+            get_temporal_independence(absolute_path(csv_path)?, output, event)?;
         }
         Commands::Extract {
             csv_path,
@@ -271,6 +271,9 @@ enum Commands {
     Capture {
         /// Path for tags.csv
         csv_path: PathBuf,
+        /// Create event ID
+        #[arg(long)]
+        event: bool,
         /// Output directory
         #[arg(
             short,

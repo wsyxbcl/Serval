@@ -603,7 +603,7 @@ pub fn get_classifications(
     println!("Saved to {}", species_stats_path.to_string_lossy());
 
     if independent {
-        get_temporal_independence(tags_csv_path, output_dir)?;
+        get_temporal_independence(tags_csv_path, output_dir, false)?;
     }
     Ok(())
 }
@@ -887,7 +887,7 @@ pub fn extract_resources(
     Ok(())
 }
 
-pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf, event: bool) -> anyhow::Result<()> {
     // Temporal independence analysis
 
     let mut df = match CsvReadOptions::default()
@@ -982,7 +982,7 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     let tag_exclude = Series::new("tag_exclude".into(), DEFAULT_EXCLUDE_TAGS);
 
     // Data processing
-    let df_cleaned = df
+    let df_deployment = df
         .clone()
         .lazy()
         .select([
@@ -998,6 +998,11 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
             col("datetime").alias("time"),
             col(target.col_name()),
         ])
+        .collect()?;
+    
+    let df_cleaned = df_deployment
+        .clone()
+        .lazy()
         .drop_nulls(None)
         .filter(
             col(target.col_name())
@@ -1116,6 +1121,40 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
         .finish(&mut df_capture_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+
+    if event {
+        let df_events = df_capture_independent.with_row_index("event_id".into(), Some(1))?;
+        let by_columns = &[target.col_name(), "deployment"];
+        let df_raw_sorted = df_deployment
+            .sort(["time"], SortMultipleOptions::default())?
+            .sort([target.col_name()], SortMultipleOptions::default())?
+            .sort(["deployment"], SortMultipleOptions::default())?;
+        let mut df_with_events = df_raw_sorted.join_asof_by(
+            &df_events,
+            "time",
+            "time",
+            by_columns,
+            by_columns,
+            AsofStrategy::Backward,
+            None,
+            true,
+            false, // Sortedness of columns cannot be checked when 'by' groups provided
+        )?;
+        df_with_events = df_with_events.lazy().select([
+            col("path"),
+            col("deployment"),
+            col("time"),
+            col(target.col_name()),
+            col("event_id"),
+        ]).collect()?;
+        let filename = format!("events{output_suffix}");
+        let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .finish(&mut df_with_events.clone())?;
+        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    }
 
     let mut df_count_independent = df_capture_independent
         .clone()
