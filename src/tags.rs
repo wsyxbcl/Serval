@@ -603,7 +603,7 @@ pub fn get_classifications(
     println!("Saved to {}", species_stats_path.to_string_lossy());
 
     if independent {
-        get_temporal_independence(tags_csv_path, output_dir, false)?;
+        get_temporal_independence(tags_csv_path, output_dir, false, false)?;
     }
     Ok(())
 }
@@ -899,6 +899,7 @@ pub fn get_temporal_independence(
     csv_path: PathBuf,
     output_dir: PathBuf,
     event: bool,
+    no_exclude: bool,
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
 
@@ -1009,24 +1010,40 @@ pub fn get_temporal_independence(
         ])
         .collect()?;
 
-    let df_cleaned = df_deployment
-        .clone()
-        .lazy()
-        .drop_nulls(None)
-        .filter(
-            col(target.col_name())
-                .is_in(lit(tag_exclude).implode(), false)
-                .not(),
-        )
-        .unique(
-            Some(cols(vec![
-                "deployment".to_string(),
-                "time".to_string(),
-                target.col_name().to_string(),
-            ])),
-            UniqueKeepStrategy::Any,
-        )
-        .collect()?;
+    let df_cleaned = if no_exclude {
+        df_deployment
+            .clone()
+            .lazy()
+            .drop_nulls(None)
+            .unique(
+                Some(cols(vec![
+                    "deployment".to_string(),
+                    "time".to_string(),
+                    target.col_name().to_string(),
+                ])),
+                UniqueKeepStrategy::Any,
+            )
+            .collect()?
+    } else {
+        df_deployment
+            .clone()
+            .lazy()
+            .drop_nulls(None)
+            .filter(
+                col(target.col_name())
+                    .is_in(lit(tag_exclude).implode(), false)
+                    .not(),
+            )
+            .unique(
+                Some(cols(vec![
+                    "deployment".to_string(),
+                    "time".to_string(),
+                    target.col_name().to_string(),
+                ])),
+                UniqueKeepStrategy::Any,
+            )
+            .collect()?
+    };
 
     let mut df_sorted = df_cleaned
         .sort(["time"], SortMultipleOptions::default())?

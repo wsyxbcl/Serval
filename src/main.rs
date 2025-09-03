@@ -106,8 +106,9 @@ fn main() -> anyhow::Result<()> {
             csv_path,
             output,
             event,
+            no_exclude,
         } => {
-            get_temporal_independence(absolute_path(csv_path)?, output, event)?;
+            get_temporal_independence(absolute_path(csv_path)?, output, event, no_exclude)?;
         }
         Commands::Extract {
             csv_path,
@@ -278,6 +279,10 @@ enum Commands {
         /// Create event ID
         #[arg(long)]
         event: bool,
+        /// Do not exclude default tags (Blank, Useless data, Unidentified, Human, Unknown, Blur) from temporal independence analysis
+        #[arg(long)]
+        no_exclude: bool,
+        // TODO custom exclude tags
         /// Output directory
         #[arg(
             short,
