@@ -109,7 +109,7 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
     Ok(path_buf)
 }
 
-pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
+pub fn path_enumerate(root_dir: impl AsRef<Path>, resource_type: ResourceType) -> Vec<PathBuf> {
     WalkDir::new(root_dir)
         .into_iter()
         .filter_entry(|e| !is_ignored(e))
@@ -133,9 +133,9 @@ pub fn resources_flatten(
     let deploy_path = deploy_dir.to_str();
 
     let output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(output_dir.clone())?;
+    fs::create_dir_all(&output_dir)?;
 
-    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
+    let resource_paths = path_enumerate(&deploy_dir, resource_type);
     let num_resource = resource_paths.len();
     println!(
         "{} {}(s) found in {}",
@@ -316,7 +316,7 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 
 // copy xmp files to output_dir and keep the directory structure
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(&source_dir, ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
     println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
@@ -369,7 +369,7 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
 }
 
 pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(&source_dir, ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -475,7 +475,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
 
 // Remove all XMP files recursively from a directory
 pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(&source_dir, ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -610,7 +610,7 @@ pub fn tags_csv_translate(
             .and_then(|stem| stem.to_str())
             .unwrap_or("tags")
     ));
-    fs::create_dir_all(output_dir.clone())?;
+    fs::create_dir_all(&output_dir)?;
     let mut file = std::fs::File::create(&output_csv)?;
     CsvWriter::new(&mut file)
         .include_bom(true)

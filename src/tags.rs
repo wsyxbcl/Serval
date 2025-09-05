@@ -186,7 +186,7 @@ pub fn write_taglist(
 }
 
 pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
-    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
+    let media_paths = path_enumerate(&working_dir, ResourceType::Media);
     let media_count = media_paths.len();
     let pb = ProgressBar::new(media_count.try_into()?);
     pb.set_style(serval_pb_style());
@@ -200,7 +200,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     for media in media_paths {
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
-            .open_file(media.clone(), OpenFileOptions::default().repair_file())
+            .open_file(&media, OpenFileOptions::default().repair_file())
             .is_ok()
         {
             let xmp_path = working_dir.join(append_ext("xmp", media.clone())?);
@@ -392,8 +392,8 @@ pub fn get_classifications(
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
 
-    let file_paths = path_enumerate(file_dir.clone(), resource_type);
-    fs::create_dir_all(output_dir.clone())?;
+    let file_paths = path_enumerate(&file_dir, resource_type);
+    fs::create_dir_all(&output_dir)?;
     // Determine output filename based on parameters
     let output_suffix = if volunteer_mode {
         String::new()
@@ -684,7 +684,11 @@ pub fn extract_resources(
         .finish()?;
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
-    let column_names = df.get_column_names_str();
+    let column_names: Vec<String> = df
+        .get_column_names_str()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
     let required_columns = [
         TagType::Species.col_name(),
         TagType::Individual.col_name(),
@@ -692,8 +696,8 @@ pub fn extract_resources(
         "custom",
     ];
 
-    let mut df = required_columns.iter().fold(df.clone(), |acc_df, col| {
-        if !column_names.contains(col) {
+    let mut df = required_columns.iter().fold(df, |acc_df, col| {
+        if !column_names.iter().any(|name| name == col) {
             acc_df
                 .lazy()
                 .with_columns([lit("").alias(*col)])
@@ -726,18 +730,14 @@ pub fn extract_resources(
         }
     } else {
         match filter_type {
-            ExtractFilterType::Species => {
-                col(TagType::Species.col_name()).eq(lit(filter_value.clone()))
-            }
-            ExtractFilterType::Path => col("path")
-                .str()
-                .contains_literal(lit(filter_value.clone())),
+            ExtractFilterType::Species => col(TagType::Species.col_name()).eq(lit(filter_value)),
+            ExtractFilterType::Path => col("path").str().contains_literal(lit(filter_value)),
             ExtractFilterType::Individual => {
-                col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
+                col(TagType::Individual.col_name()).eq(lit(filter_value))
             }
-            ExtractFilterType::Rating => col("rating").eq(lit(filter_value.clone())),
-            ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
-            ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
+            ExtractFilterType::Rating => col("rating").eq(lit(filter_value)),
+            ExtractFilterType::Event => col("event_id").eq(lit(filter_value)),
+            ExtractFilterType::Custom => col("custom").eq(lit(filter_value)),
         }
     };
 
@@ -925,7 +925,7 @@ pub fn extract_resources(
             output_path_xmp = output_path_xmp_renamed.into();
         }
 
-        fs::copy(input_path_media.clone(), output_path_media.clone())?;
+        fs::copy(&input_path_media, &output_path_media)?;
         if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
             if err.kind() == std::io::ErrorKind::NotFound {
                 pb.println("Missing XMP file, tag info for certain video files may be lost.");
@@ -1168,9 +1168,9 @@ pub fn get_temporal_independence(
             "LR"
         },
     );
-    fs::create_dir_all(output_dir.clone())?;
+    fs::create_dir_all(&output_dir)?;
     let filename = format!("temporal-independence{output_suffix}");
-    let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+    let mut file = std::fs::File::create(output_dir.join(&filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
@@ -1206,7 +1206,7 @@ pub fn get_temporal_independence(
             ])
             .collect()?;
         let filename = format!("events{output_suffix}");
-        let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+        let mut file = std::fs::File::create(output_dir.join(&filename))?;
         CsvWriter::new(&mut file)
             .include_bom(true)
             .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
