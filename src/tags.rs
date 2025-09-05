@@ -1,8 +1,9 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, TagType, absolute_path, append_ext, get_path_levels,
-    ignore_timezone, is_temporal_independent, path_enumerate, serval_pb_style, sync_modified_time,
+    ExtractFilterType, ResourceType, absolute_path, append_ext, get_path_levels, ignore_timezone,
+    is_temporal_independent, path_enumerate, serval_pb_style, sync_modified_time,
 };
 use chrono::{DateTime, Local};
+use core::fmt;
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
@@ -40,6 +41,80 @@ const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
     "Unknown",
     "Blur",
 ];
+
+#[derive(Debug, Clone)]
+pub struct ResourceMetadata {
+    pub species_tags: Vec<String>,
+    pub individual_tags: Vec<String>,
+    pub count_tags: Vec<String>,
+    pub sex_tags: Vec<String>,
+    pub bodypart_tags: Vec<String>,
+    pub subjects: Vec<String>,
+    pub datetime: String,
+    pub time_modified: String,
+    pub rating: String,
+}
+
+impl Default for ResourceMetadata {
+    fn default() -> Self {
+        Self {
+            species_tags: Vec::new(),
+            individual_tags: Vec::new(),
+            count_tags: Vec::new(),
+            sex_tags: Vec::new(),
+            bodypart_tags: Vec::new(),
+            subjects: Vec::new(),
+            datetime: String::new(),
+            time_modified: String::new(),
+            rating: String::new(),
+        }
+    }
+}
+
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
+pub enum TagType {
+    Species,
+    Individual,
+    Count,
+    Sex,
+    Bodypart,
+}
+
+impl fmt::Display for TagType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl TagType {
+    pub fn col_name(self) -> &'static str {
+        match self {
+            TagType::Individual => "individual",
+            TagType::Species => "species",
+            TagType::Count => "count",
+            TagType::Sex => "sex",
+            TagType::Bodypart => "bodypart",
+        }
+    }
+    pub fn digikam_tag_prefix(self) -> &'static str {
+        match self {
+            TagType::Individual => "Individual/",
+            TagType::Species => "Species/",
+            TagType::Count => "Count/",
+            TagType::Sex => "Sex/",
+            TagType::Bodypart => "Bodypart/",
+        }
+    }
+    pub fn adobe_tag_prefix(self) -> &'static str {
+        match self {
+            TagType::Individual => "Individual|",
+            TagType::Species => "Species|",
+            TagType::Count => "Count|",
+            TagType::Sex => "Sex|",
+            TagType::Bodypart => "Bodypart|",
+        }
+    }
+}
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -198,24 +273,11 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-type Metadata = (
-    Vec<String>, // species
-    Vec<String>, // individuals
-    Vec<String>, // count
-    Vec<String>, // sex
-    Vec<String>, // bodyparts
-    Vec<String>, // subjects
-    String,      // datetime
-    // String,      // datetime_digitized
-    String, // time_modified
-    String, // rating
-);
-
 fn retrieve_metadata(
     file_path: &Path,
     include_subject: bool,
     include_time_modified: bool,
-) -> anyhow::Result<Metadata> {
+) -> anyhow::Result<ResourceMetadata> {
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime, datetime_digitized, rating and file modified time
@@ -223,11 +285,11 @@ fn retrieve_metadata(
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default())?;
 
-    let mut species: Vec<String> = Vec::new();
-    let mut individuals: Vec<String> = Vec::new();
-    let mut count: Vec<String> = Vec::new();
-    let mut sex: Vec<String> = Vec::new();
-    let mut bodyparts: Vec<String> = Vec::new();
+    let mut species_tags: Vec<String> = Vec::new();
+    let mut individual_tags: Vec<String> = Vec::new();
+    let mut count_tags: Vec<String> = Vec::new();
+    let mut sex_tags: Vec<String> = Vec::new();
+    let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime = String::new();
     // let mut datetime_digitized = String::new();
@@ -272,31 +334,31 @@ fn retrieve_metadata(
         for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
             let tag = property.value;
             if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                species.push(
+                species_tags.push(
                     tag.strip_prefix(TagType::Species.adobe_tag_prefix())
                         .unwrap()
                         .to_string(),
                 );
             } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                individuals.push(
+                individual_tags.push(
                     tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
                         .unwrap()
                         .to_string(),
                 );
             } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                count.push(
+                count_tags.push(
                     tag.strip_prefix(TagType::Count.adobe_tag_prefix())
                         .unwrap()
                         .to_string(),
                 );
             } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                sex.push(
+                sex_tags.push(
                     tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
                         .unwrap()
                         .to_string(),
                 );
             } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                bodyparts.push(
+                bodypart_tags.push(
                     tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
                         .unwrap()
                         .to_string(),
@@ -304,18 +366,17 @@ fn retrieve_metadata(
             }
         }
     }
-    Ok((
-        species,
-        individuals,
-        count,
-        sex,
-        bodyparts,
+    Ok(ResourceMetadata {
+        species_tags,
+        individual_tags,
+        count_tags,
+        sex_tags,
+        bodypart_tags,
         subjects,
         datetime,
-        // datetime_digitized,
         time_modified,
         rating,
-    ))
+    })
 }
 
 pub fn get_classifications(
@@ -374,39 +435,26 @@ pub fn get_classifications(
     let mut sex_tags: Vec<String> = Vec::new();
     let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
-    let mut datetimes: Vec<String> = Vec::new();
-    // let mut datetime_digitizeds: Vec<String> = Vec::new();
-    let mut time_modifieds: Vec<String> = Vec::new();
+    let mut datetime_values: Vec<String> = Vec::new();
+    let mut modification_times: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
-        .map(|i| {
-            match retrieve_metadata(&file_paths[i], include_subject, include_time_modified) {
-                Ok((
-                    species,
-                    individuals,
-                    count,
-                    sex,
-                    bodyparts,
-                    subjects,
-                    datetime,
-                    // datetime_digitized,
-                    time_modified,
-                    rating,
-                )) => {
+        .map(
+            |i| match retrieve_metadata(&file_paths[i], include_subject, include_time_modified) {
+                Ok(metadata) => {
                     pb.inc(1);
                     (
-                        species.join("|"),
-                        individuals.join("|"),
-                        count.join("|"),
-                        sex.join("|"),
-                        bodyparts.join("|"),
-                        subjects.join("|"), // subject just for reviewing
-                        datetime,
-                        // datetime_digitized,
-                        time_modified,
-                        rating,
+                        metadata.species_tags.join("|"),
+                        metadata.individual_tags.join("|"),
+                        metadata.count_tags.join("|"),
+                        metadata.sex_tags.join("|"),
+                        metadata.bodypart_tags.join("|"),
+                        metadata.subjects.join("|"),
+                        metadata.datetime,
+                        metadata.time_modified,
+                        metadata.rating,
                     )
                 }
                 Err(error) => {
@@ -424,8 +472,8 @@ pub fn get_classifications(
                         "".to_string(),
                     )
                 }
-            }
-        })
+            },
+        )
         .collect();
     for tag in result {
         species_tags.push(tag.0);
@@ -434,9 +482,8 @@ pub fn get_classifications(
         sex_tags.push(tag.3);
         bodypart_tags.push(tag.4);
         subjects.push(tag.5);
-        datetimes.push(tag.6);
-        // datetime_digitizeds.push(tag.7);
-        time_modifieds.push(tag.7);
+        datetime_values.push(tag.6);
+        modification_times.push(tag.7);
         ratings.push(tag.8);
     }
     pb.finish();
@@ -447,9 +494,8 @@ pub fn get_classifications(
     let s_sex = Column::new("sex_tags".into(), sex_tags);
     let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
     let s_subjects = Column::new("subjects".into(), subjects);
-    let s_datetime = Column::new("datetime".into(), datetimes);
-    // let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
-    let s_time_modified = Column::new("time_modified".into(), time_modifieds);
+    let s_datetime = Column::new("datetime".into(), datetime_values);
+    let s_time_modified = Column::new("time_modified".into(), modification_times);
     let s_rating = Column::new("rating".into(), ratings);
 
     let mut df_raw = DataFrame::new(vec![

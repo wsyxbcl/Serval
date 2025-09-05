@@ -15,6 +15,8 @@ use std::{
 use walkdir::{DirEntry, WalkDir};
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
 
+use crate::tags::TagType;
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ResourceType {
     Xmp,
@@ -53,51 +55,6 @@ impl ResourceType {
                 let ext_lower = ext_str.to_ascii_lowercase();
                 self.extension().contains(&ext_lower.as_str())
             }
-        }
-    }
-}
-
-#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
-pub enum TagType {
-    Species,
-    Individual,
-    Count,
-    Sex,
-    Bodypart,
-}
-
-impl fmt::Display for TagType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl TagType {
-    pub fn col_name(self) -> &'static str {
-        match self {
-            TagType::Individual => "individual",
-            TagType::Species => "species",
-            TagType::Count => "count",
-            TagType::Sex => "sex",
-            TagType::Bodypart => "bodypart",
-        }
-    }
-    pub fn digikam_tag_prefix(self) -> &'static str {
-        match self {
-            TagType::Individual => "Individual/",
-            TagType::Species => "Species/",
-            TagType::Count => "Count/",
-            TagType::Sex => "Sex/",
-            TagType::Bodypart => "Bodypart/",
-        }
-    }
-    pub fn adobe_tag_prefix(self) -> &'static str {
-        match self {
-            TagType::Individual => "Individual|",
-            TagType::Species => "Species|",
-            TagType::Count => "Count|",
-            TagType::Sex => "Sex|",
-            TagType::Bodypart => "Bodypart|",
         }
     }
 }
