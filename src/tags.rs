@@ -42,7 +42,7 @@ const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
     "Blur",
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResourceMetadata {
     pub species_tags: Vec<String>,
     pub individual_tags: Vec<String>,
@@ -53,22 +53,6 @@ pub struct ResourceMetadata {
     pub datetime: String,
     pub time_modified: String,
     pub rating: String,
-}
-
-impl Default for ResourceMetadata {
-    fn default() -> Self {
-        Self {
-            species_tags: Vec::new(),
-            individual_tags: Vec::new(),
-            count_tags: Vec::new(),
-            sex_tags: Vec::new(),
-            bodypart_tags: Vec::new(),
-            subjects: Vec::new(),
-            datetime: String::new(),
-            time_modified: String::new(),
-            rating: String::new(),
-        }
-    }
 }
 
 #[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
