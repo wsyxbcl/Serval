@@ -175,7 +175,11 @@ pub fn write_taglist(
             DIGIKAM_NS,
             DIGIKAM_TAGSLIST,
             xmp_toolkit::ItemPlacement::InsertBeforeIndex(1),
-            &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag.unwrap())),
+            &XmpValue::new(format!(
+                "{}{}",
+                tag_type.digikam_tag_prefix(),
+                tag.ok_or_else(|| anyhow::anyhow!("Null tag found in taglist"))?
+            )),
         )?;
     }
 
@@ -422,7 +426,10 @@ pub fn get_classifications(
     let image_filenames: Vec<String> = file_paths
         .clone()
         .into_iter()
-        .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
+        .filter_map(|x| {
+            x.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
@@ -750,7 +757,7 @@ pub fn extract_resources(
     println!("0): File Only (no directory)");
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("Sample path has no parent: {}", path_sample))?
         .ancestors()
         .enumerate()
     {
@@ -769,7 +776,12 @@ pub fn extract_resources(
     let path_strip = Path::new(&path_sample)
         .ancestors()
         .nth(deploy_path_index + 1)
-        .unwrap();
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid deploy path index: {} exceeds path depth",
+                deploy_path_index
+            )
+        })?;
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
     pb.set_style(serval_pb_style());
 
@@ -810,19 +822,28 @@ pub fn extract_resources(
         } else {
             ""
         };
+        let path_str = path.ok_or_else(|| anyhow::anyhow!("Null path found in row"))?;
         let input_path_xmp: String;
         let input_path_media: String;
-        if path.unwrap().ends_with(".xmp") {
-            input_path_xmp = path.unwrap().to_string();
-            input_path_media = path.unwrap().strip_suffix(".xmp").unwrap().to_string();
+        if path_str.ends_with(".xmp") {
+            input_path_xmp = path_str.to_string();
+            input_path_media = path_str
+                .strip_suffix(".xmp")
+                .expect("String ends with .xmp, strip_suffix should succeed")
+                .to_string();
         } else {
-            input_path_xmp = path.unwrap().to_string() + ".xmp";
-            input_path_media = path.unwrap().to_string();
+            input_path_xmp = path_str.to_string() + ".xmp";
+            input_path_media = path_str.to_string();
         }
 
         let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
-            let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
-            let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
+            let relative_path_output_xmp = Path::new(&input_path_xmp)
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("XMP path has no filename: {}", input_path_xmp))?;
+            let relative_path_output_media =
+                Path::new(&input_path_media).file_name().ok_or_else(|| {
+                    anyhow::anyhow!("Media path has no filename: {}", input_path_media)
+                })?;
             if rename {
                 let filename_prefix = format!(
                     "{}-{}-",
@@ -860,38 +881,74 @@ pub fn extract_resources(
                 );
                 (
                     output_dir
-                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(relative_path_output_xmp.parent().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "XMP relative path has no parent: {}",
+                                relative_path_output_xmp.display()
+                            )
+                        })?)
                         .join(subdir)
                         .join(format!(
                             "{}{}",
                             filename_prefix,
                             relative_path_output_xmp
                                 .file_name()
-                                .unwrap()
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "XMP relative path has no filename: {}",
+                                    relative_path_output_xmp.display()
+                                ))?
                                 .to_string_lossy()
                         )),
                     output_dir
-                        .join(relative_path_output_media.parent().unwrap())
+                        .join(relative_path_output_media.parent().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Media relative path has no parent: {}",
+                                relative_path_output_media.display()
+                            )
+                        })?)
                         .join(subdir)
                         .join(format!(
                             "{}{}",
                             filename_prefix,
                             relative_path_output_media
                                 .file_name()
-                                .unwrap()
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "Media relative path has no filename: {}",
+                                    relative_path_output_media.display()
+                                ))?
                                 .to_string_lossy()
                         )),
                 )
             } else {
                 (
                     output_dir
-                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(relative_path_output_xmp.parent().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "XMP relative path has no parent: {}",
+                                relative_path_output_xmp.display()
+                            )
+                        })?)
                         .join(subdir)
-                        .join(relative_path_output_xmp.file_name().unwrap()),
+                        .join(relative_path_output_xmp.file_name().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "XMP relative path has no filename: {}",
+                                relative_path_output_xmp.display()
+                            )
+                        })?),
                     output_dir
-                        .join(relative_path_output_media.parent().unwrap())
+                        .join(relative_path_output_media.parent().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Media relative path has no parent: {}",
+                                relative_path_output_media.display()
+                            )
+                        })?)
                         .join(subdir)
-                        .join(relative_path_output_media.file_name().unwrap()),
+                        .join(relative_path_output_media.file_name().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Media relative path has no filename: {}",
+                                relative_path_output_media.display()
+                            )
+                        })?),
                 )
             }
         };
@@ -900,7 +957,12 @@ pub fn extract_resources(
             "Copying to {}",
             output_path_media.to_string_lossy()
         ));
-        fs::create_dir_all(output_path_media.parent().unwrap())?;
+        fs::create_dir_all(output_path_media.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Output media path has no parent: {}",
+                output_path_media.display()
+            )
+        })?)?;
         // check if the file exists, if so, rename it
         if output_path_media.exists() {
             let mut i = 1;
@@ -908,9 +970,21 @@ pub fn extract_resources(
             while output_path_media_renamed.exists() {
                 output_path_media_renamed = output_path_media.with_file_name(format!(
                     "{}_{}.{}",
-                    output_path_media.file_stem().unwrap().to_string_lossy(),
+                    output_path_media
+                        .file_stem()
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Output media path has no file stem: {}",
+                            output_path_media.display()
+                        ))?
+                        .to_string_lossy(),
                     i,
-                    output_path_media.extension().unwrap().to_string_lossy()
+                    output_path_media
+                        .extension()
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Output media path has no extension: {}",
+                            output_path_media.display()
+                        ))?
+                        .to_string_lossy()
                 ));
                 i += 1;
             }

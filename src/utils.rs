@@ -1,3 +1,4 @@
+use anyhow::Context;
 use chrono::NaiveDateTime;
 use core::fmt;
 use indicatif::ProgressStyle;
@@ -155,7 +156,9 @@ pub fn resources_flatten(
     }
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
-        let resource_parent = resource.parent().unwrap();
+        let resource_parent = resource.parent().ok_or_else(|| {
+            anyhow::anyhow!("Resource path has no parent: {}", resource.display())
+        })?;
         // Collect parent directory names by traversing up
         let mut parent_names: Vec<OsString> = Vec::new();
         let mut current_parent = resource.parent();
@@ -224,8 +227,11 @@ pub fn deployments_align(
     let pb = indicatif::ProgressBar::new(num_iter as u64);
     pb.set_style(serval_pb_style());
     for deploy_id in deploy_iter {
-        let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
-        let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
+        let deploy_id_str = deploy_id.ok_or_else(|| anyhow::anyhow!("Null deploy_id found"))?;
+        let (_, collection_name) = deploy_id_str.rsplit_once('_').ok_or_else(|| {
+            anyhow::anyhow!("Deploy ID does not contain underscore: {}", deploy_id_str)
+        })?;
+        let deploy_dir = project_dir.join(collection_name).join(deploy_id_str);
         let collection_output_dir = output_dir.join(collection_name);
         resources_flatten(
             deploy_dir,
@@ -324,9 +330,13 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
 
     for xmp in xmp_paths {
         let mut output_path = output_dir.clone();
-        let relative_path = xmp.strip_prefix(&source_dir).unwrap();
+        let relative_path = xmp.strip_prefix(&source_dir).with_context(|| {
+            format!("XMP path is not under source directory: {}", xmp.display())
+        })?;
         output_path.push(relative_path);
-        fs::create_dir_all(output_path.parent().unwrap())?;
+        fs::create_dir_all(output_path.parent().ok_or_else(|| {
+            anyhow::anyhow!("Output path has no parent: {}", output_path.display())
+        })?)?;
         fs::copy(xmp, output_path)?;
         pb.inc(1);
     }
