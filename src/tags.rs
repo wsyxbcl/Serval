@@ -659,7 +659,6 @@ pub fn extract_resources(
             acc_df
         }
     });
-    println!("{df}");
 
     // Fill null values for columns that will be used for file naming
     if rename {
