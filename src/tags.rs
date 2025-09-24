@@ -620,7 +620,9 @@ pub fn extract_resources(
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
-        output_dir.join(format!("{current_time}_{filter_value}"))
+        // remove dot from output_dir
+        let sanitized_filter_value = filter_value.replace('.', "");
+        output_dir.join(format!("{current_time}_{sanitized_filter_value}"))
     } else {
         output_dir
     };
