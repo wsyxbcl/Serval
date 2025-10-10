@@ -1234,6 +1234,7 @@ fn update_xmp(
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
 
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
 
     fn insert_tag(
         xmp: &mut XmpMeta,
