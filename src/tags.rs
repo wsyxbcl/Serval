@@ -690,7 +690,23 @@ pub fn extract_resources(
             ExtractFilterType::Individual => {
                 col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
             }
-            ExtractFilterType::Rating => col("rating").eq(lit(filter_value.clone())),
+            ExtractFilterType::Rating => {
+                // Support range syntax like "0-5" or "1-5", or exact match
+                if let Some((min_str, max_str)) = filter_value.split_once('-') {
+                    // Range filter
+                    if let (Ok(min), Ok(max)) = (min_str.trim().parse::<i32>(), max_str.trim().parse::<i32>()) {
+                        col("rating")
+                            .cast(DataType::Int32)
+                            .gt_eq(lit(min))
+                            .and(col("rating").cast(DataType::Int32).lt_eq(lit(max)))
+                    } else {
+                        col("rating").eq(lit(filter_value.clone()))
+                    }
+                } else {
+                    // Exact match
+                    col("rating").eq(lit(filter_value.clone()))
+                }
+            }
             ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
             ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
         }
