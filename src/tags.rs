@@ -694,11 +694,12 @@ pub fn extract_resources(
                 // Support range syntax like "0-5" or "1-5", or exact match
                 if let Some((min_str, max_str)) = filter_value.split_once('-') {
                     // Range filter
-                    if let (Ok(min), Ok(max)) = (min_str.trim().parse::<i32>(), max_str.trim().parse::<i32>()) {
-                        col("rating")
-                            .cast(DataType::Int32)
-                            .gt_eq(lit(min))
-                            .and(col("rating").cast(DataType::Int32).lt_eq(lit(max)))
+                    if let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>()) {
+                        // Cast to Float64 to handle decimal ratings
+                        let rating_col = col("rating").cast(DataType::Float64);
+                        rating_col.clone().is_not_null()
+                            .and(rating_col.clone().gt_eq(lit(min)))
+                            .and(rating_col.lt_eq(lit(max)))
                     } else {
                         col("rating").eq(lit(filter_value.clone()))
                     }
@@ -713,6 +714,15 @@ pub fn extract_resources(
     };
 
     let df_filtered = df.lazy().filter(filter_expr).collect()?;
+
+    // Check if any records match the filter
+    if df_filtered.height() == 0 {
+        return Err(anyhow::anyhow!(
+            "No records found matching the filter."
+        ));
+    }
+
+    println!("Found {} matching records", df_filtered.height());
 
     // Get the top level directory (to keep)
     let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
