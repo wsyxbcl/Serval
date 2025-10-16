@@ -102,7 +102,7 @@ impl TagType {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum ExtractFilterType {
     Species,
     Path,
@@ -110,6 +110,299 @@ pub enum ExtractFilterType {
     Rating,
     Event,
     Custom,
+    Advanced,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum SubdirType {
+    Species,
+    Individual,
+    Rating,
+    Custom,
+}
+
+/// Represents a parsed filter condition
+#[derive(Debug, Clone)]
+pub struct FilterCondition {
+    pub filter_type: ExtractFilterType,
+    pub operator: FilterOperator,
+    pub value: String,
+}
+
+/// Supported filter operators
+#[derive(Debug, Clone)]
+pub enum FilterOperator {
+    Equal,           // exact match
+    // Contains,        // TODO: substring match
+    GreaterEqual,    // >=
+    LessEqual,       // <=
+    Greater,         // >
+    Less,            // <
+    Range(f64, f64), // min-max range
+    // Not,             // TODO: negation wrapper
+}
+
+/// Logical operators for combining filters
+#[derive(Debug, Clone)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+/// Complete filter expression tree
+#[derive(Debug, Clone)]
+pub enum FilterExpr {
+    Condition(FilterCondition),
+    Logical {
+        left: Box<FilterExpr>,
+        operator: LogicalOperator,
+        right: Box<FilterExpr>,
+    },
+    // Not(Box<FilterExpr>), // TODO, need to consider the multiple-tag case
+}
+
+impl ExtractFilterType {
+    /// Parse field aliases to filter types
+    pub fn from_alias(alias: &str) -> Option<Self> {
+        match alias.to_lowercase().as_str() {
+            "species" | "sp" | "s" => Some(Self::Species),
+            "individual" | "ind" | "i" => Some(Self::Individual),
+            "rating" | "rate" | "r" => Some(Self::Rating),
+            "path" | "p" => Some(Self::Path),
+            "event" | "e" => Some(Self::Event),
+            "custom" | "c" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+/// Parse advanced filter string into FilterExpr
+pub fn parse_advanced_filter(input: &str) -> anyhow::Result<FilterExpr> {
+    let tokens = tokenize_filter(input)?;
+    let expr = parse_expression(&tokens)?;
+    Ok(expr)
+}
+
+/// Tokenize filter string
+fn tokenize_filter(input: &str) -> anyhow::Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current_token = String::new();
+    let mut in_quotes = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' | '\'' => {
+                in_quotes = !in_quotes;
+                current_token.push(ch);
+            }
+            ' ' | '\t' if !in_quotes => {
+                if !current_token.is_empty() {
+                    tokens.push(current_token.trim().to_string());
+                    current_token.clear();
+                }
+            }
+            '(' | ')' if !in_quotes => {
+                if !current_token.is_empty() {
+                    tokens.push(current_token.trim().to_string());
+                    current_token.clear();
+                }
+                tokens.push(ch.to_string());
+            }
+            _ => {
+                current_token.push(ch);
+            }
+        }
+    }
+
+    if !current_token.is_empty() {
+        tokens.push(current_token.trim().to_string());
+    }
+
+    Ok(tokens)
+}
+
+/// Parse tokens into FilterExpr
+fn parse_expression(tokens: &[String]) -> anyhow::Result<FilterExpr> {
+    if tokens.is_empty() {
+        return Err(anyhow::anyhow!("Empty filter expression"));
+    }
+
+    // For now, handle basic patterns like "field:value" and "field:value and field2:value2"
+
+    if tokens.len() == 1 {
+        // Single condition
+        return parse_single_condition(&tokens[0]);
+    }
+
+    // Look for logical operators
+    let mut i = 1;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        if token.eq_ignore_ascii_case("and") || token.eq_ignore_ascii_case("or") {
+            let left_tokens = &tokens[0..i];
+            let right_tokens = &tokens[i+1..];
+
+            let left = parse_expression(left_tokens)?;
+            let right = parse_expression(right_tokens)?;
+
+            let operator = if token.eq_ignore_ascii_case("and") {
+                LogicalOperator::And
+            } else {
+                LogicalOperator::Or
+            };
+
+            return Ok(FilterExpr::Logical {
+                left: Box::new(left),
+                operator,
+                right: Box::new(right),
+            });
+        }
+        i += 1;
+    }
+
+    // If no logical operators found, treat as single condition
+    let combined = tokens.join(" ");
+    parse_single_condition(&combined)
+}
+
+/// Parse a single condition like "species:fox" or "rating:3-5"
+fn parse_single_condition(condition: &str) -> anyhow::Result<FilterExpr> {
+    if let Some((field, value)) = condition.split_once(':') {
+        let filter_type = ExtractFilterType::from_alias(field.trim())
+            .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {}", field))?;
+
+        let (operator, cleaned_value) = parse_value_and_operator(value.trim())?;
+
+        let condition = FilterCondition {
+            filter_type,
+            operator,
+            value: cleaned_value,
+        };
+
+        Ok(FilterExpr::Condition(condition))
+    } else {
+        Err(anyhow::anyhow!("Invalid condition format: {}. Expected 'field:value'", condition))
+    }
+}
+
+/// Parse value and detect operator (>=, <=, range, etc.)
+fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, String)> {
+    // Handle range syntax first (e.g., "1-5", "0.5-4.5")
+    if let Some((min_str, max_str)) = value.split_once('-') {
+        if let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>()) {
+            return Ok((FilterOperator::Range(min, max), value.to_string()));
+        }
+    }
+
+    // Handle comparison operators
+    if value.starts_with(">=") {
+        return Ok((FilterOperator::GreaterEqual, value[2..].trim().to_string()));
+    }
+    if value.starts_with("<=") {
+        return Ok((FilterOperator::LessEqual, value[2..].trim().to_string()));
+    }
+    if value.starts_with('>') {
+        return Ok((FilterOperator::Greater, value[1..].trim().to_string()));
+    }
+    if value.starts_with('<') {
+        return Ok((FilterOperator::Less, value[1..].trim().to_string()));
+    }
+
+    // Remove quotes if present
+    let cleaned_value = if (value.starts_with('"') && value.ends_with('"')) ||
+                         (value.starts_with('\'') && value.ends_with('\'')) {
+        value[1..value.len()-1].to_string()
+    } else {
+        value.to_string()
+    };
+
+    // Default to exact match for most fields, contains for path
+    Ok((FilterOperator::Equal, cleaned_value))
+}
+
+/// Convert FilterExpr to Polars Expr
+pub fn filter_expr_to_polars(expr: &FilterExpr) -> anyhow::Result<Expr> {
+    use crate::utils::{TagType};
+
+    match expr {
+        FilterExpr::Condition(condition) => {
+            let col_name = match condition.filter_type {
+                ExtractFilterType::Species => TagType::Species.col_name(),
+                ExtractFilterType::Individual => TagType::Individual.col_name(),
+                ExtractFilterType::Rating => "rating",
+                ExtractFilterType::Path => "path",
+                ExtractFilterType::Event => "event_id",
+                ExtractFilterType::Custom => "custom",
+                ExtractFilterType::Advanced => return Err(anyhow::anyhow!("Advanced filter should not appear in conditions")),
+            };
+
+            let base_col = col(col_name);
+
+            match &condition.operator {
+                FilterOperator::Equal => {
+                    if condition.filter_type == ExtractFilterType::Path {
+                        // Path uses contains for substring matching
+                        Ok(base_col.str().contains_literal(lit(condition.value.clone())))
+                    } else {
+                        Ok(base_col.eq(lit(condition.value.clone())))
+                    }
+                }
+                FilterOperator::Range(min, max) => {
+                    // Cast to Float64 for numeric comparisons
+                    let numeric_col = base_col.cast(DataType::Float64);
+                    Ok(numeric_col.clone().is_not_null()
+                        .and(numeric_col.clone().gt_eq(lit(*min)))
+                        .and(numeric_col.lt_eq(lit(*max))))
+                }
+                FilterOperator::GreaterEqual => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col.clone().is_not_null().and(numeric_col.gt_eq(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("GreaterEqual operator requires numeric value"))
+                    }
+                }
+                FilterOperator::LessEqual => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col.clone().is_not_null().and(numeric_col.lt_eq(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("LessEqual operator requires numeric value"))
+                    }
+                }
+                FilterOperator::Greater => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col.clone().is_not_null().and(numeric_col.gt(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("Greater operator requires numeric value"))
+                    }
+                }
+                FilterOperator::Less => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col.clone().is_not_null().and(numeric_col.lt(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("Less operator requires numeric value"))
+                    }
+                }
+            }
+        }
+        FilterExpr::Logical { left, operator, right } => {
+            let left_expr = filter_expr_to_polars(left)?;
+            let right_expr = filter_expr_to_polars(right)?;
+
+            match operator {
+                LogicalOperator::And => Ok(left_expr.and(right_expr)),
+                LogicalOperator::Or => Ok(left_expr.or(right_expr)),
+            }
+        }
+        // FilterExpr::Not(inner) => {
+        //     let inner_expr = filter_expr_to_polars(inner)?;
+        //     Ok(inner_expr.not())
+        // }
+    }
 }
 
 // Serval ignores

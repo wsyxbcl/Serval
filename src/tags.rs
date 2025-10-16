@@ -1,6 +1,7 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, TagType, absolute_path, append_ext, get_path_levels,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext, get_path_levels,
     ignore_timezone, is_temporal_independent, path_enumerate, serval_pb_style, sync_modified_time,
+    parse_advanced_filter, filter_expr_to_polars,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -615,7 +616,7 @@ pub fn extract_resources(
     csv_path: PathBuf,
     output_dir: PathBuf,
     use_subdir: bool,
-    subdir_value: ExtractFilterType,
+    subdir_value: SubdirType,
 ) -> anyhow::Result<()> {
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
@@ -678,6 +679,9 @@ pub fn extract_resources(
             ExtractFilterType::Rating => col("rating").is_not_null(),
             ExtractFilterType::Event => col("event_id").is_not_null(),
             ExtractFilterType::Custom => col("custom").is_not_null(),
+            ExtractFilterType::Advanced => {
+                return Err(anyhow::anyhow!("Advanced filter requires a specific filter expression, not 'ALL_VALUES'"));
+            }
         }
     } else {
         match filter_type {
@@ -710,6 +714,10 @@ pub fn extract_resources(
             }
             ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
             ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
+            ExtractFilterType::Advanced => {
+                let advanced_expr = parse_advanced_filter(&filter_value)?;
+                filter_expr_to_polars(&advanced_expr)?
+            }
         }
     };
 
@@ -782,11 +790,10 @@ pub fn extract_resources(
     ) {
         let subdir = if use_subdir {
             match subdir_value {
-                ExtractFilterType::Species => species_tag.unwrap_or("untagged_species"),
-                ExtractFilterType::Individual => individual_tag.unwrap_or("untagged_individual"),
-                ExtractFilterType::Rating => rating_tag.unwrap_or("unrated"),
-                ExtractFilterType::Custom => custom_tag.unwrap_or("no_custom"),
-                _ => "", // Currently not support path
+                SubdirType::Species => species_tag.unwrap_or("untagged_species"),
+                SubdirType::Individual => individual_tag.unwrap_or("untagged_individual"),
+                SubdirType::Rating => rating_tag.unwrap_or("unrated"),
+                SubdirType::Custom => custom_tag.unwrap_or("no_custom"),
             }
         } else {
             ""

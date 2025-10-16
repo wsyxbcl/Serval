@@ -8,7 +8,7 @@ use tags::{
     update_tags, write_taglist,
 };
 use utils::{
-    ExtractFilterType, ResourceType, TagType, absolute_path, copy_xmp, deployments_align,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, copy_xmp, deployments_align,
     deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory, sync_xmp_from_csv,
     tags_csv_translate,
 };
@@ -300,7 +300,8 @@ enum Commands {
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
+        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values \n
+        /// Example for advanced filtering: \n --filter type --value "species:Snow leopard or species:Common leopard and rating:4-5"
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
         /// Enable rename rename mode (including tags in filenames)
@@ -310,8 +311,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         use_subdir: bool,
         /// Specify the type used when creating subdirectories
-        #[arg(long, default_value_t = ExtractFilterType::Species, value_enum)]
-        subdir_type: ExtractFilterType,
+        #[arg(long, default_value_t = SubdirType::Species, value_enum)]
+        subdir_type: SubdirType,
         /// Set the output directory
         #[arg(
             short,
