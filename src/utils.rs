@@ -137,14 +137,14 @@ pub struct FilterCondition {
 /// Supported filter operators
 #[derive(Debug, Clone)]
 pub enum FilterOperator {
-    Equal,           // exact match
+    Equal, // exact match
     // Contains,        // TODO: substring match
-    GreaterEqual,    // >=
-    LessEqual,       // <=
-    Greater,         // >
-    Less,            // <
+    GreaterEqual, // >=
+    LessEqual,    // <=
+    Greater,      // >
+    Less,         // <
     Range(f64, f64), // min-max range
-    // Not,             // TODO: negation wrapper
+                  // Not,             // TODO: negation wrapper
 }
 
 /// Logical operators for combining filters
@@ -186,7 +186,7 @@ pub fn parse_advanced_filter(input: &str) -> anyhow::Result<FilterExpr> {
     use pest::Parser;
 
     let pairs = FilterParser::parse(Rule::filter, input)
-        .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
 
     // Get the or_expr inside the filter rule
     let or_expr = pairs
@@ -255,7 +255,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
             let value = inner.next().unwrap().as_str().trim(); // Trim whitespace from value
 
             let filter_type = ExtractFilterType::from_alias(field)
-                .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {}", field))?;
+                .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {field}"))?;
 
             let (operator, cleaned_value) = parse_value_and_operator(value)?;
 
@@ -280,23 +280,24 @@ fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, Stri
     }
 
     // Handle comparison operators
-    if value.starts_with(">=") {
-        return Ok((FilterOperator::GreaterEqual, value[2..].trim().to_string()));
+    if let Some(stripped) = value.strip_prefix(">=") {
+        return Ok((FilterOperator::GreaterEqual, stripped.trim().to_string()));
     }
-    if value.starts_with("<=") {
-        return Ok((FilterOperator::LessEqual, value[2..].trim().to_string()));
+    if let Some(stripped) = value.strip_prefix("<=") {
+        return Ok((FilterOperator::LessEqual, stripped.trim().to_string()));
     }
-    if value.starts_with('>') {
-        return Ok((FilterOperator::Greater, value[1..].trim().to_string()));
+    if let Some(stripped) = value.strip_prefix('>') {
+        return Ok((FilterOperator::Greater, stripped.trim().to_string()));
     }
-    if value.starts_with('<') {
-        return Ok((FilterOperator::Less, value[1..].trim().to_string()));
+    if let Some(stripped) = value.strip_prefix('<') {
+        return Ok((FilterOperator::Less, stripped.trim().to_string()));
     }
 
     // Remove quotes if present
-    let cleaned_value = if (value.starts_with('"') && value.ends_with('"')) ||
-                         (value.starts_with('\'') && value.ends_with('\'')) {
-        value[1..value.len()-1].to_string()
+    let cleaned_value = if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        value[1..value.len() - 1].to_string()
     } else {
         value.to_string()
     };
@@ -311,7 +312,11 @@ pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
             FilterExpr::Condition(cond) => {
                 fields.push(cond.filter_type);
             }
-            FilterExpr::Logical { left, operator, right } => {
+            FilterExpr::Logical {
+                left,
+                operator,
+                right,
+            } => {
                 match operator {
                     LogicalOperator::And => {
                         collect_and_fields(left, fields);
@@ -345,7 +350,7 @@ pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
 /// * `expr` - The filter expression to convert
 /// * `use_aggregated` - If true, treats species/individual as list columns (for path-level filtering)
 pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow::Result<Expr> {
-    use crate::utils::{TagType};
+    use crate::utils::TagType;
 
     match expr {
         FilterExpr::Condition(condition) => {
@@ -356,7 +361,11 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                 ExtractFilterType::Path => "path",
                 ExtractFilterType::Event => "event_id",
                 ExtractFilterType::Custom => "custom",
-                ExtractFilterType::Advanced => return Err(anyhow::anyhow!("Advanced filter should not appear in conditions")),
+                ExtractFilterType::Advanced => {
+                    return Err(anyhow::anyhow!(
+                        "Advanced filter should not appear in conditions"
+                    ));
+                }
             };
 
             let base_col = col(col_name);
@@ -365,12 +374,17 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                 FilterOperator::Equal => {
                     if condition.filter_type == ExtractFilterType::Path {
                         // Path uses contains for substring matching
-                        Ok(base_col.str().contains_literal(lit(condition.value.clone())))
+                        Ok(base_col
+                            .str()
+                            .contains_literal(lit(condition.value.clone())))
                     } else if use_aggregated
-                            && (condition.filter_type == ExtractFilterType::Species
-                                || condition.filter_type == ExtractFilterType::Individual) {
+                        && (condition.filter_type == ExtractFilterType::Species
+                            || condition.filter_type == ExtractFilterType::Individual)
+                    {
                         // For aggregated species/individual, check if list contains the value
-                        Ok(base_col.list().contains(lit(condition.value.clone()), false))
+                        Ok(base_col
+                            .list()
+                            .contains(lit(condition.value.clone()), false))
                     } else {
                         Ok(base_col.eq(lit(condition.value.clone())))
                     }
@@ -378,22 +392,32 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                 FilterOperator::Range(min, max) => {
                     // Rating stays as scalar in both modes
                     let numeric_col = base_col.cast(DataType::Float64);
-                    Ok(numeric_col.clone().is_not_null()
+                    Ok(numeric_col
+                        .clone()
+                        .is_not_null()
                         .and(numeric_col.clone().gt_eq(lit(*min)))
                         .and(numeric_col.lt_eq(lit(*max))))
                 }
                 FilterOperator::GreaterEqual => {
                     if let Ok(value) = condition.value.parse::<f64>() {
                         let numeric_col = base_col.cast(DataType::Float64);
-                        Ok(numeric_col.clone().is_not_null().and(numeric_col.gt_eq(lit(value))))
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.gt_eq(lit(value))))
                     } else {
-                        Err(anyhow::anyhow!("GreaterEqual operator requires numeric value"))
+                        Err(anyhow::anyhow!(
+                            "GreaterEqual operator requires numeric value"
+                        ))
                     }
                 }
                 FilterOperator::LessEqual => {
                     if let Ok(value) = condition.value.parse::<f64>() {
                         let numeric_col = base_col.cast(DataType::Float64);
-                        Ok(numeric_col.clone().is_not_null().and(numeric_col.lt_eq(lit(value))))
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.lt_eq(lit(value))))
                     } else {
                         Err(anyhow::anyhow!("LessEqual operator requires numeric value"))
                     }
@@ -401,7 +425,10 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                 FilterOperator::Greater => {
                     if let Ok(value) = condition.value.parse::<f64>() {
                         let numeric_col = base_col.cast(DataType::Float64);
-                        Ok(numeric_col.clone().is_not_null().and(numeric_col.gt(lit(value))))
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.gt(lit(value))))
                     } else {
                         Err(anyhow::anyhow!("Greater operator requires numeric value"))
                     }
@@ -409,14 +436,21 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                 FilterOperator::Less => {
                     if let Ok(value) = condition.value.parse::<f64>() {
                         let numeric_col = base_col.cast(DataType::Float64);
-                        Ok(numeric_col.clone().is_not_null().and(numeric_col.lt(lit(value))))
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.lt(lit(value))))
                     } else {
                         Err(anyhow::anyhow!("Less operator requires numeric value"))
                     }
                 }
             }
         }
-        FilterExpr::Logical { left, operator, right } => {
+        FilterExpr::Logical {
+            left,
+            operator,
+            right,
+        } => {
             let left_expr = filter_expr_to_polars(left, use_aggregated)?;
             let right_expr = filter_expr_to_polars(right, use_aggregated)?;
 
@@ -881,14 +915,14 @@ pub fn is_temporal_independent(
 ) -> anyhow::Result<bool> {
     // TODO Timezone
     let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S")
-        .map_err(|e| anyhow::anyhow!("Failed to parse reference datetime '{}': {}", time_ref, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse reference datetime '{time_ref}': {e}"))?;
     let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S")
-        .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", time, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{time}': {e}"))?;
     let diff = dt - dt_ref;
 
     Ok(diff
         >= chrono::Duration::try_minutes(min_delta_time.into())
-            .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {}", min_delta_time))?)
+            .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {min_delta_time}"))?)
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {

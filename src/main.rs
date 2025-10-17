@@ -8,9 +8,9 @@ use tags::{
     update_tags, write_taglist,
 };
 use utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, copy_xmp, deployments_align,
-    deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory, sync_xmp_from_csv,
-    tags_csv_translate,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, copy_xmp,
+    deployments_align, deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory,
+    sync_xmp_from_csv, tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -294,7 +294,8 @@ enum Commands {
     },
     /// Extract and copy resources by filtering target values (based on tags.csv)
     #[command(arg_required_else_help = true)]
-    #[command(long_about = "Extract and copy resources by filtering target values (based on tags.csv)\n\n\
+    #[command(
+        long_about = "Extract and copy resources by filtering target values (based on tags.csv)\n\n\
     # Basic Filtering\n\
     Use simple filter types for single-field queries:\n\
     serval extract tags.csv -f species -v \"Snow leopard\"\n\
@@ -315,14 +316,15 @@ enum Commands {
     # Operators\n\
     Exact match:     species:Fox\n\
     Range:           rating:3-5\n\
-    Comparisons:     rating:>=4, rating:>4, rating:<5, rating:<=5")]
+    Comparisons:     rating:>=4, rating:>4, rating:<5, rating:<=5"
+    )]
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values 
+        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
         /// Enable rename rename mode (including tags in filenames)

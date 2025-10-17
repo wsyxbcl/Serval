@@ -1,7 +1,8 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext, get_path_levels,
-    ignore_timezone, is_temporal_independent, path_enumerate, serval_pb_style, sync_modified_time,
-    parse_advanced_filter, filter_expr_to_polars, has_same_field_and_conditions,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    is_temporal_independent, parse_advanced_filter, path_enumerate, serval_pb_style,
+    sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -680,7 +681,9 @@ pub fn extract_resources(
             ExtractFilterType::Event => col("event_id").is_not_null(),
             ExtractFilterType::Custom => col("custom").is_not_null(),
             ExtractFilterType::Advanced => {
-                return Err(anyhow::anyhow!("Advanced filter requires a specific filter expression, not 'ALL_VALUES'"));
+                return Err(anyhow::anyhow!(
+                    "Advanced filter requires a specific filter expression, not 'ALL_VALUES'"
+                ));
             }
         }
     } else {
@@ -698,10 +701,14 @@ pub fn extract_resources(
                 // Support range syntax like "0-5" or "1-5", or exact match
                 if let Some((min_str, max_str)) = filter_value.split_once('-') {
                     // Range filter
-                    if let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>()) {
+                    if let (Ok(min), Ok(max)) =
+                        (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
+                    {
                         // Cast to Float64 to handle decimal ratings
                         let rating_col = col("rating").cast(DataType::Float64);
-                        rating_col.clone().is_not_null()
+                        rating_col
+                            .clone()
+                            .is_not_null()
                             .and(rating_col.clone().gt_eq(lit(min)))
                             .and(rating_col.lt_eq(lit(max)))
                     } else {
@@ -730,8 +737,8 @@ pub fn extract_resources(
                         .agg([
                             col(TagType::Species.col_name()).drop_nulls().unique(),
                             col(TagType::Individual.col_name()).drop_nulls().unique(),
-                            col("rating").first(),  // Rating is scalar per path
-                            col("custom").first(),   // Custom is scalar per path
+                            col("rating").first(), // Rating is scalar per path
+                            col("custom").first(), // Custom is scalar per path
                         ])
                         .collect()?;
 
@@ -760,9 +767,7 @@ pub fn extract_resources(
 
     // Check if any records match the filter
     if df_filtered.height() == 0 {
-        return Err(anyhow::anyhow!(
-            "No records found matching the filter."
-        ));
+        return Err(anyhow::anyhow!("No records found matching the filter."));
     }
 
     println!("Found {} matching records", df_filtered.height());
@@ -953,7 +958,7 @@ pub fn extract_resources(
             if err.kind() == std::io::ErrorKind::NotFound {
                 pb.println("Missing XMP file, tag info for certain video files may be lost.");
             } else {
-                return Err(anyhow::anyhow!("Failed to copy XMP file: {}", err));
+                return Err(anyhow::anyhow!("Failed to copy XMP file: {err}"));
             }
         }
         sync_modified_time(input_path_media.into(), output_path_media)?;
@@ -991,7 +996,7 @@ pub fn get_temporal_independence(
             df
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to read or parse CSV file: {}", e));
+            return Err(anyhow::anyhow!("Failed to read or parse CSV file: {e}"));
         }
     };
 
@@ -1299,7 +1304,7 @@ fn update_xmp(
 ) -> anyhow::Result<()> {
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
 
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
@@ -1544,7 +1549,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
 fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::Result<()> {
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
 
     // Update the exif:DateTimeOriginal field
     let exif_ns = "http://ns.adobe.com/exif/1.0/";
