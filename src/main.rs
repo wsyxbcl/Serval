@@ -294,14 +294,35 @@ enum Commands {
     },
     /// Extract and copy resources by filtering target values (based on tags.csv)
     #[command(arg_required_else_help = true)]
+    #[command(long_about = "Extract and copy resources by filtering target values (based on tags.csv)\n\n\
+    # Basic Filtering\n\
+    Use simple filter types for single-field queries:\n\
+    serval extract tags.csv -f species -v \"Snow leopard\"\n\
+    serval extract tags.csv -f rating -v \"4-5\"\n\n\
+    # Advanced Filtering\n\
+    Use `-f advanced` for complex multi-field queries with logical operators:\n\n\
+    Same Species AND (images with BOTH species):\n\
+    -f advanced -v \"species:Blue sheep and species:Snow leopard\"\n\n\
+    AND conditions:\n\
+    -f advanced -v \"species:Serval and rating:4-5\"\n\n\
+    OR conditions:\n\
+    -f advanced -v \"species:Serval or species:White-lipped deer\"\n\n\
+    Complex combinations:\n\
+    -f advanced -v \"(species:Serval and rating:4-5) or (species:Snow leopard and rating:5)\"\n\n\
+    # Field Aliases\n\
+    species: sp, s  |  individual: ind, i  |  rating: rate, r\n\
+    path: p  |  event: e  |  custom: c\n\n\
+    # Operators\n\
+    Exact match:     species:Fox\n\
+    Range:           rating:3-5\n\
+    Comparisons:     rating:>=4, rating:>4, rating:<5, rating:<=5")]
     Extract {
         /// Path for tags.csv
         csv_path: PathBuf,
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values \n
-        /// Example for advanced filtering: \n --filter type --value "species:Snow leopard or species:Common leopard and rating:4-5"
+        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values 
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
         /// Enable rename rename mode (including tags in filenames)
