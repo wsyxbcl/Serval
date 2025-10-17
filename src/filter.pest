@@ -1,0 +1,49 @@
+// Grammar for advanced filter expressions
+// Precedence: OR (lowest) < AND (highest)
+// Supports parentheses for explicit grouping
+
+WHITESPACE = _{ " " | "\t" }
+
+// Entry point
+filter = { SOI ~ or_expr ~ EOI }
+
+// OR expression (lowest precedence)
+or_expr = { and_expr ~ (or_op ~ and_expr)* }
+or_op = { ^"or" }
+
+// AND expression (higher precedence)
+and_expr = { primary ~ (and_op ~ primary)* }
+and_op = { ^"and" }
+
+// Primary: either a parenthesized expression or a condition
+primary = { paren_expr | condition }
+paren_expr = { "(" ~ or_expr ~ ")" }
+
+// Condition: field:value
+condition = { field ~ ":" ~ value }
+
+// Field names and aliases
+field = {
+    ^"species" | ^"sp" | ^"s" |
+    ^"individual" | ^"ind" | ^"i" |
+    ^"rating" | ^"rate" | ^"r" |
+    ^"path" | ^"p" |
+    ^"event" | ^"e" |
+    ^"custom" | ^"c"
+}
+
+// Value: can be quoted or unquoted, supports operators
+value = { quoted_value | unquoted_value }
+
+// Quoted value (preserves spaces and special chars)
+quoted_value = @{ ("\"" ~ quoted_inner ~ "\"") | ("'" ~ quoted_inner_single ~ "'") }
+quoted_inner = { (!("\"") ~ ANY)* }
+quoted_inner_single = { (!("'") ~ ANY)* }
+
+// Unquoted value: continues until we hit a logical operator or closing paren
+// This allows multi-word values like "Tibetan fox" without quotes
+unquoted_value = @{
+    (
+        !(")" | ^" and " | ^" or " | EOI) ~ ANY
+    )+
+}

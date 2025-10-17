@@ -1,6 +1,8 @@
 use chrono::NaiveDateTime;
 use core::fmt;
 use indicatif::ProgressStyle;
+use pest::Parser;
+use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -14,6 +16,10 @@ use std::{
 };
 use walkdir::{DirEntry, WalkDir};
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
+
+#[derive(Parser)]
+#[grammar = "filter.pest"]
+struct FilterParser;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ResourceType {
@@ -176,113 +182,92 @@ impl ExtractFilterType {
     }
 }
 
-/// Parse advanced filter string into FilterExpr
+/// Parse advanced filter string into FilterExpr using pest
 pub fn parse_advanced_filter(input: &str) -> anyhow::Result<FilterExpr> {
-    let tokens = tokenize_filter(input)?;
-    let expr = parse_expression(&tokens)?;
-    Ok(expr)
+    use pest::Parser;
+
+    let pairs = FilterParser::parse(Rule::filter, input)
+        .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+
+    // Get the or_expr inside the filter rule
+    let or_expr = pairs
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty parse result"))?
+        .into_inner()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No expression found"))?;
+
+    build_expr(or_expr)
 }
 
-/// Tokenize filter string
-fn tokenize_filter(input: &str) -> anyhow::Result<Vec<String>> {
-    let mut tokens = Vec::new();
-    let mut current_token = String::new();
-    let mut in_quotes = false;
-    let mut chars = input.chars().peekable();
+/// Build FilterExpr from pest Pair
+fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
+    match pair.as_rule() {
+        Rule::or_expr => {
+            let mut inner = pair.into_inner();
+            let mut expr = build_expr(inner.next().unwrap())?;
 
-    while let Some(ch) = chars.next() {
-        match ch {
-            '"' | '\'' => {
-                in_quotes = !in_quotes;
-                current_token.push(ch);
-            }
-            ' ' | '\t' if !in_quotes => {
-                if !current_token.is_empty() {
-                    tokens.push(current_token.trim().to_string());
-                    current_token.clear();
+            while let Some(next) = inner.next() {
+                if next.as_rule() == Rule::or_op {
+                    let right = build_expr(inner.next().unwrap())?;
+                    expr = FilterExpr::Logical {
+                        left: Box::new(expr),
+                        operator: LogicalOperator::Or,
+                        right: Box::new(right),
+                    };
                 }
             }
-            '(' | ')' if !in_quotes => {
-                if !current_token.is_empty() {
-                    tokens.push(current_token.trim().to_string());
-                    current_token.clear();
-                }
-                tokens.push(ch.to_string());
-            }
-            _ => {
-                current_token.push(ch);
-            }
+
+            Ok(expr)
         }
-    }
 
-    if !current_token.is_empty() {
-        tokens.push(current_token.trim().to_string());
-    }
+        Rule::and_expr => {
+            let mut inner = pair.into_inner();
+            let mut expr = build_expr(inner.next().unwrap())?;
 
-    Ok(tokens)
-}
+            while let Some(next) = inner.next() {
+                if next.as_rule() == Rule::and_op {
+                    let right = build_expr(inner.next().unwrap())?;
+                    expr = FilterExpr::Logical {
+                        left: Box::new(expr),
+                        operator: LogicalOperator::And,
+                        right: Box::new(right),
+                    };
+                }
+            }
 
-/// Parse tokens into FilterExpr
-fn parse_expression(tokens: &[String]) -> anyhow::Result<FilterExpr> {
-    if tokens.is_empty() {
-        return Err(anyhow::anyhow!("Empty filter expression"));
-    }
+            Ok(expr)
+        }
 
-    // For now, handle basic patterns like "field:value" and "field:value and field2:value2"
+        Rule::primary => {
+            let inner = pair.into_inner().next().unwrap();
+            build_expr(inner)
+        }
 
-    if tokens.len() == 1 {
-        // Single condition
-        return parse_single_condition(&tokens[0]);
-    }
+        Rule::paren_expr => {
+            let inner = pair.into_inner().next().unwrap();
+            build_expr(inner)
+        }
 
-    // Look for logical operators
-    let mut i = 1;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        if token.eq_ignore_ascii_case("and") || token.eq_ignore_ascii_case("or") {
-            let left_tokens = &tokens[0..i];
-            let right_tokens = &tokens[i+1..];
+        Rule::condition => {
+            let mut inner = pair.into_inner();
+            let field = inner.next().unwrap().as_str();
+            let value = inner.next().unwrap().as_str().trim(); // Trim whitespace from value
 
-            let left = parse_expression(left_tokens)?;
-            let right = parse_expression(right_tokens)?;
+            let filter_type = ExtractFilterType::from_alias(field)
+                .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {}", field))?;
 
-            let operator = if token.eq_ignore_ascii_case("and") {
-                LogicalOperator::And
-            } else {
-                LogicalOperator::Or
-            };
+            let (operator, cleaned_value) = parse_value_and_operator(value)?;
 
-            return Ok(FilterExpr::Logical {
-                left: Box::new(left),
+            Ok(FilterExpr::Condition(FilterCondition {
+                filter_type,
                 operator,
-                right: Box::new(right),
-            });
+                value: cleaned_value,
+            }))
         }
-        i += 1;
-    }
 
-    // If no logical operators found, treat as single condition
-    let combined = tokens.join(" ");
-    parse_single_condition(&combined)
-}
-
-/// Parse a single condition like "species:fox" or "rating:3-5"
-fn parse_single_condition(condition: &str) -> anyhow::Result<FilterExpr> {
-    if let Some((field, value)) = condition.split_once(':') {
-        let filter_type = ExtractFilterType::from_alias(field.trim())
-            .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {}", field))?;
-
-        let (operator, cleaned_value) = parse_value_and_operator(value.trim())?;
-
-        let condition = FilterCondition {
-            filter_type,
-            operator,
-            value: cleaned_value,
-        };
-
-        Ok(FilterExpr::Condition(condition))
-    } else {
-        Err(anyhow::anyhow!("Invalid condition format: {}. Expected 'field:value'", condition))
+        _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),
     }
 }
 
