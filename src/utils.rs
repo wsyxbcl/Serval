@@ -1,7 +1,6 @@
 use chrono::NaiveDateTime;
 use core::fmt;
 use indicatif::ProgressStyle;
-use pest::Parser;
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
