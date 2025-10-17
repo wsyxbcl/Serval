@@ -321,8 +321,46 @@ fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, Stri
     Ok((FilterOperator::Equal, cleaned_value))
 }
 
+pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
+    fn collect_and_fields(expr: &FilterExpr, fields: &mut Vec<ExtractFilterType>) {
+        match expr {
+            FilterExpr::Condition(cond) => {
+                fields.push(cond.filter_type);
+            }
+            FilterExpr::Logical { left, operator, right } => {
+                match operator {
+                    LogicalOperator::And => {
+                        collect_and_fields(left, fields);
+                        collect_and_fields(right, fields);
+                    }
+                    LogicalOperator::Or => {
+                        // OR branches are separate, don't mix them
+                    }
+                }
+            }
+        }
+    }
+
+    let mut fields = Vec::new();
+    collect_and_fields(expr, &mut fields);
+
+    // Check if any field appears more than once in AND conditions
+    for i in 0..fields.len() {
+        for j in (i + 1)..fields.len() {
+            if fields[i] == fields[j] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Convert FilterExpr to Polars Expr
-pub fn filter_expr_to_polars(expr: &FilterExpr) -> anyhow::Result<Expr> {
+///
+/// # Parameters
+/// * `expr` - The filter expression to convert
+/// * `use_aggregated` - If true, treats species/individual as list columns (for path-level filtering)
+pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow::Result<Expr> {
     use crate::utils::{TagType};
 
     match expr {
@@ -344,12 +382,17 @@ pub fn filter_expr_to_polars(expr: &FilterExpr) -> anyhow::Result<Expr> {
                     if condition.filter_type == ExtractFilterType::Path {
                         // Path uses contains for substring matching
                         Ok(base_col.str().contains_literal(lit(condition.value.clone())))
+                    } else if use_aggregated
+                            && (condition.filter_type == ExtractFilterType::Species
+                                || condition.filter_type == ExtractFilterType::Individual) {
+                        // For aggregated species/individual, check if list contains the value
+                        Ok(base_col.list().contains(lit(condition.value.clone()), false))
                     } else {
                         Ok(base_col.eq(lit(condition.value.clone())))
                     }
                 }
                 FilterOperator::Range(min, max) => {
-                    // Cast to Float64 for numeric comparisons
+                    // Rating stays as scalar in both modes
                     let numeric_col = base_col.cast(DataType::Float64);
                     Ok(numeric_col.clone().is_not_null()
                         .and(numeric_col.clone().gt_eq(lit(*min)))
@@ -390,18 +433,14 @@ pub fn filter_expr_to_polars(expr: &FilterExpr) -> anyhow::Result<Expr> {
             }
         }
         FilterExpr::Logical { left, operator, right } => {
-            let left_expr = filter_expr_to_polars(left)?;
-            let right_expr = filter_expr_to_polars(right)?;
+            let left_expr = filter_expr_to_polars(left, use_aggregated)?;
+            let right_expr = filter_expr_to_polars(right, use_aggregated)?;
 
             match operator {
                 LogicalOperator::And => Ok(left_expr.and(right_expr)),
                 LogicalOperator::Or => Ok(left_expr.or(right_expr)),
             }
         }
-        // FilterExpr::Not(inner) => {
-        //     let inner_expr = filter_expr_to_polars(inner)?;
-        //     Ok(inner_expr.not())
-        // }
     }
 }
 
