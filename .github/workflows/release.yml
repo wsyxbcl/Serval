@@ -62,7 +62,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.RELEASE_PROFILE_NAME }}-
 
