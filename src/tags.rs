@@ -1,8 +1,8 @@
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext,
-    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    is_temporal_independent, parse_advanced_filter, path_enumerate, serval_pb_style,
-    sync_modified_time,
+    configure_progress_bar, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
+    parse_advanced_filter, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -116,7 +116,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
     let pb = ProgressBar::new(media_count.try_into()?);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
     let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
     // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
@@ -368,7 +368,7 @@ pub fn get_classifications(
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
@@ -614,6 +614,7 @@ pub fn extract_resources(
     filter_value: String,
     filter_type: ExtractFilterType,
     rename: bool,
+    skip_existing: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
     use_subdir: bool,
@@ -800,7 +801,7 @@ pub fn extract_resources(
         .nth(deploy_path_index + 1)
         .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
 
     let paths = df_filtered.column("path")?.str()?;
     // Remove dot from tags, as it causes issues when cross-platform
@@ -929,6 +930,14 @@ pub fn extract_resources(
             output_path_media.to_string_lossy()
         ));
         fs::create_dir_all(output_path_media.parent().unwrap())?;
+        if skip_existing && output_path_media.exists() {
+            pb.println(format!(
+                "Skipping existing {}",
+                output_path_media.to_string_lossy()
+            ));
+            pb.inc(1);
+            continue;
+        }
         // check if the file exists, if so, rename it
         if output_path_media.exists() {
             let mut i = 1;
@@ -1420,7 +1429,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     println!("Found {num_updates} rows with updates");
 
     let pb = ProgressBar::new(num_updates as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     pb.set_message("Processing XMP updates...");
 
     let path_col = df_filtered.column("path")?.str()?;
@@ -1504,7 +1513,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     println!("Found {num_updates} rows with valid datetime updates");
 
     let pb = ProgressBar::new(num_updates as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     pb.set_message("Processing XMP datetime updates...");
 
     let path_col = df_filtered.column("path")?.str()?;

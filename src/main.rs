@@ -115,6 +115,7 @@ fn main() -> anyhow::Result<()> {
             value,
             filter_type,
             rename,
+            skip_existing,
             output,
             use_subdir,
             subdir_type,
@@ -123,6 +124,7 @@ fn main() -> anyhow::Result<()> {
                 value,
                 filter_type,
                 rename,
+                skip_existing,
                 csv_path,
                 output,
                 use_subdir,
@@ -330,6 +332,9 @@ enum Commands {
         /// Enable rename rename mode (including tags in filenames)
         #[arg(long)]
         rename: bool,
+        /// Skip the copy when the destination file already exists (no auto-renaming)
+        #[arg(long, default_value_t = false)]
+        skip_existing: bool,
         /// Use subdirectories to organize resources
         #[arg(long, default_value_t = false)]
         use_subdir: bool,

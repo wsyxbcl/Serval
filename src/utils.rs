@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 use core::fmt;
-use indicatif::ProgressStyle;
+use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -479,6 +479,11 @@ pub fn serval_pb_style() -> ProgressStyle {
         .progress_chars("=> ")
 }
 
+pub fn configure_progress_bar(pb: &ProgressBar) {
+    pb.set_style(serval_pb_style());
+    pb.enable_steady_tick(std::time::Duration::from_secs(1));
+}
+
 // workaround for https://github.com/rust-lang/rust/issues/42869
 // ref. https://github.com/sharkdp/fd/pull/72/files
 fn path_to_absolute(path: PathBuf) -> io::Result<PathBuf> {
@@ -544,7 +549,7 @@ pub fn resources_flatten(
         None
     };
     if let Some(pb_ref) = &pb {
-        pb_ref.set_style(serval_pb_style());
+        configure_progress_bar(pb_ref);
     }
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
@@ -615,7 +620,7 @@ pub fn deployments_align(
     let deploy_iter = deploy_array.into_iter();
     let num_iter = deploy_iter.len();
     let pb = indicatif::ProgressBar::new(num_iter as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     for deploy_id in deploy_iter {
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
@@ -713,7 +718,7 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     let num_xmp = xmp_paths.len();
     println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
 
     for xmp in xmp_paths {
         let mut output_path = output_dir.clone();
@@ -777,7 +782,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     );
 
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     pb.set_message("Syncing XMP metadata to media files...");
 
     let results: Vec<anyhow::Result<()>> = xmp_paths
@@ -833,7 +838,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     println!("Found {num_files} XMP files in CSV to sync");
 
     let pb = indicatif::ProgressBar::new(num_files as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     pb.set_message("Syncing XMP files in CSV...");
 
     let path_col = df_filtered.column("path")?.str()?;
@@ -879,7 +884,7 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
     println!("Found {} XMP files in {}", num_xmp, source_dir.display());
 
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    pb.set_style(serval_pb_style());
+    configure_progress_bar(&pb);
     pb.set_message("Removing XMP files...");
 
     let results: Vec<anyhow::Result<()>> = xmp_paths
