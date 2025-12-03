@@ -593,7 +593,7 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
-        .unnest(cols([TagType::Species.col_name()]))
+        .unnest(cols([TagType::Species.col_name()]), None)
         .collect()?;
     println!("{df_count_species:?}");
 
