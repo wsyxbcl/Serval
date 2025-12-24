@@ -1347,9 +1347,8 @@ fn update_xmp(
             let array_item_path = &format!("{array_name}[{i}]");
             if let Some(prop) = xmp.property(ns, array_item_path) {
                 let value = &prop.value;
-                if value.contains(old_tag) {
-                    let new_value = value.replace(old_tag, new_tag);
-                    let new_xmp_value = XmpValue::new(new_value);
+                if value == old_tag {
+                    let new_xmp_value = XmpValue::new(new_tag.to_string());
                     if let Err(e) = xmp.set_property(ns, array_item_path, &new_xmp_value) {
                         println!("Error updating tag {i} in {array_name}: {e:?}");
                     }
