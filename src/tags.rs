@@ -562,7 +562,7 @@ pub fn get_classifications(
     }
     if debug_mode {
         println!("{df_raw}");
-        let debug_csv_path = output_dir.join("raw.csv");
+        let debug_csv_path = output_dir.join(format!("raw{output_suffix}"));
         let mut file = std::fs::File::create(debug_csv_path.clone())?;
         CsvWriter::new(&mut file)
             .include_bom(true)
