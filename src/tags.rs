@@ -994,8 +994,14 @@ pub fn get_temporal_independence(
         .and_then(|reader| reader.finish())
     {
         Ok(df) => {
-            // Check if the datetime column is parsed correctly, i.e. the type is not str
             let datetime_col = df.column("datetime")?;
+            // Check empty/null values first
+            if datetime_col.null_count() > 0 {
+            return Err(anyhow::anyhow!(
+                "Datetime column contains empty values, please fill them before proceeding."
+            ));
+            }
+            // Check if the datetime column is parsed correctly, i.e. the type is not str
             if datetime_col.dtype() == &DataType::String {
                 return Err(anyhow::anyhow!(
                     "Datetime column parsing failed: column contains string data instead of datetime values.\n\
@@ -1490,23 +1496,34 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_has_header(true)
         .with_ignore_errors(false)
-        .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
+        // .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
 
+    let df_filtered = df
+        .lazy()
+        .filter(col("xmp_update_datetime").is_not_null())
+        .with_column(
+            col("xmp_update_datetime")
+                .str()
+                .to_datetime(
+                    None, 
+                    None, 
+                    StrptimeOptions::default(), 
+                    lit("raise") // Tell Polars how to handle errors
+                )
+                .alias("xmp_update_datetime"),
+        )
+        .collect()?;
+
     // Check if the datetime column is parsed correctly
-    let datetime_col = df.column("xmp_update_datetime")?;
+    let datetime_col = df_filtered.column("xmp_update_datetime")?;
     if datetime_col.dtype() == &DataType::String {
         return Err(anyhow::anyhow!(
             "XMP update datetime column parsing failed: column contains string data instead of datetime values.\n\
             Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
         ));
     }
-
-    let df_filtered = df
-        .lazy()
-        .filter(col("xmp_update_datetime").is_not_null())
-        .collect()?;
 
     let num_updates = df_filtered.height();
     println!("Found {num_updates} rows with valid datetime updates");
