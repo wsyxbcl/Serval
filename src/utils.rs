@@ -273,10 +273,11 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
 /// Parse value and detect operator (>=, <=, range, etc.)
 fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, String)> {
     // Handle range syntax first (e.g., "1-5", "0.5-4.5")
-    if let Some((min_str, max_str)) = value.split_once('-') 
-        && let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>()) {
-            return Ok((FilterOperator::Range(min, max), value.to_string()));
-        }
+    if let Some((min_str, max_str)) = value.split_once('-')
+        && let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
+    {
+        return Ok((FilterOperator::Range(min, max), value.to_string()));
+    }
 
     // Handle comparison operators
     if let Some(stripped) = value.strip_prefix(">=") {

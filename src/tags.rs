@@ -1,8 +1,8 @@
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext,
-    configure_progress_bar, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
-    parse_advanced_filter, path_enumerate, sync_modified_time,
+    configure_progress_bar, filter_expr_to_polars, get_path_levels, has_same_field_and_conditions,
+    ignore_timezone, is_temporal_independent, parse_advanced_filter, path_enumerate,
+    sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -997,9 +997,9 @@ pub fn get_temporal_independence(
             let datetime_col = df.column("datetime")?;
             // Check empty/null values first
             if datetime_col.null_count() > 0 {
-            return Err(anyhow::anyhow!(
-                "Datetime column contains empty values, please fill them before proceeding."
-            ));
+                return Err(anyhow::anyhow!(
+                    "Datetime column contains empty values, please fill them before proceeding."
+                ));
             }
             // Check if the datetime column is parsed correctly, i.e. the type is not str
             if datetime_col.dtype() == &DataType::String {
@@ -1507,10 +1507,10 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
             col("xmp_update_datetime")
                 .str()
                 .to_datetime(
-                    None, 
-                    None, 
-                    StrptimeOptions::default(), 
-                    lit("raise") // Tell Polars how to handle errors
+                    None,
+                    None,
+                    StrptimeOptions::default(),
+                    lit("raise"), // Tell Polars how to handle errors
                 )
                 .alias("xmp_update_datetime"),
         )
