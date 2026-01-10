@@ -151,7 +151,10 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
             {
-                if xmp_string.contains("xmp:CreateDate") && !xmp_string.contains("1904-01-01") && !xmp_string.contains("1970-01-01"){
+                if xmp_string.contains("xmp:CreateDate")
+                    && !xmp_string.contains("1904-01-01")
+                    && !xmp_string.contains("1970-01-01")
+                {
                     // Workaround for video files, as some manufacturer only write to xmp:CreateDate
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
@@ -254,7 +257,9 @@ fn retrieve_metadata(
             // And timezone is ignored for they write UTC-8 time but label as UTC
             // i.e. we follow time shown in the picture without considering timezone in metadata
             // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-            if !value.value.to_string().starts_with("1904") && !value.value.to_string().starts_with("1970"){
+            if !value.value.to_string().starts_with("1904")
+                && !value.value.to_string().starts_with("1970")
+            {
                 datetime = ignore_timezone(value.value.to_string())?;
             }
         }
