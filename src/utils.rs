@@ -524,14 +524,15 @@ pub fn resources_flatten(
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
+    prefix_deploy_id_in_name: bool,
+    keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_id = deploy_dir
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
-    let deploy_path = deploy_dir.to_str();
 
-    let output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(output_dir.clone())?;
+    let base_output_dir = working_dir.join(deploy_id);
+    fs::create_dir_all(base_output_dir.clone())?;
 
     let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
     let num_resource = resource_paths.len();
@@ -554,28 +555,28 @@ pub fn resources_flatten(
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
-        // Collect parent directory names by traversing up
-        let mut parent_names: Vec<OsString> = Vec::new();
-        let mut current_parent = resource.parent();
-        while let Some(parent) = current_parent {
-            if parent.to_str() == deploy_path {
-                break;
-            }
-            if let Some(file_name) = parent.file_name() {
-                parent_names.push(file_name.to_os_string());
-            }
-            current_parent = parent.parent();
+        let relative_path = resource.strip_prefix(&deploy_dir).unwrap_or(&resource);
+        let mut relative_parts: Vec<OsString> = relative_path
+            .iter()
+            .map(|part| part.to_os_string())
+            .collect();
+        if relative_parts.is_empty() {
+            relative_parts.push("unnamed_file".into());
         }
 
-        parent_names.reverse();
-        let mut name_parts = Vec::with_capacity(parent_names.len() + 2);
-        name_parts.push(deploy_id.to_os_string());
-        name_parts.extend(parent_names);
-        if let Some(file_name) = resource.file_name() {
-            name_parts.push(file_name.to_os_string());
-        } else {
-            name_parts.push("unnamed_file".into());
+        let mut output_dir = base_output_dir.clone();
+        if keep_first_subdir && relative_parts.len() > 1 {
+            output_dir = output_dir.join(&relative_parts[0]);
+            if !dry_run {
+                fs::create_dir_all(output_dir.clone())?;
+            }
         }
+
+        let mut name_parts: Vec<OsString> = Vec::new();
+        if prefix_deploy_id_in_name {
+            name_parts.push(deploy_id.to_os_string());
+        }
+        name_parts.extend(relative_parts.into_iter());
         let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
 
         output_path.push(output_dir.join(resource_name));
@@ -611,6 +612,7 @@ pub fn deployments_align(
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
+    keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
         .try_into_reader_with_file_path(Some(deploy_table))?
@@ -631,6 +633,8 @@ pub fn deployments_align(
             resource_type,
             dry_run,
             move_mode,
+            true,
+            keep_first_subdir,
         )?;
         pb.inc(1);
     }

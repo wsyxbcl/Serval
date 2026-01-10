@@ -24,6 +24,7 @@ fn main() -> anyhow::Result<()> {
             type_resource,
             dryrun,
             move_mode,
+            keep_first_subdir,
         } => {
             if let Some(deploy_table) = deploy_table {
                 println!("Aligning deployments in {}", path.display());
@@ -34,6 +35,7 @@ fn main() -> anyhow::Result<()> {
                     type_resource,
                     dryrun,
                     move_mode,
+                    keep_first_subdir,
                 )?;
             } else {
                 println!("Flatten resources in {}", path.display());
@@ -43,6 +45,8 @@ fn main() -> anyhow::Result<()> {
                     type_resource,
                     dryrun,
                     move_mode,
+                    false,
+                    keep_first_subdir,
                 )?;
             }
         }
@@ -219,6 +223,9 @@ enum Commands {
         /// Move mode (instead of copy)
         #[arg(short, long)]
         move_mode: bool,
+        /// Keep the first subdirectory as an output folder (flatten mode)
+        #[arg(long)]
+        keep_first_subdir: bool,
     },
     /// Retrieve tags from media metadata
     #[command(arg_required_else_help = true)]
