@@ -38,7 +38,6 @@ const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
     "Blank",
     "Useless data",
     "Unidentified",
-    "Human",
     "Unknown",
     "Blur",
 ];
