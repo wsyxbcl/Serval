@@ -183,7 +183,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
         <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
-    </rdf:Description>              
+    </rdf:Description>
 </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"#
@@ -610,7 +610,7 @@ pub fn get_classifications(
     println!("Saved to {}", species_stats_path.to_string_lossy());
 
     if independent {
-        get_temporal_independence(tags_csv_path, output_dir, false, false)?;
+        get_temporal_independence(tags_csv_path, output_dir, false, false, false)?;
     }
     Ok(())
 }
@@ -988,30 +988,46 @@ pub fn get_temporal_independence(
     output_dir: PathBuf,
     event: bool,
     no_exclude: bool,
+    camtrap_dp: bool,
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let mut df = match CsvReadOptions::default()
+    let mut read_opts = CsvReadOptions::default()
         .with_has_header(true)
-        .with_ignore_errors(false)
-        .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
+        .with_ignore_errors(false);
+    if camtrap_dp {
+        read_opts = read_opts.with_parse_options(CsvParseOptions::default());
+    } else {
+        read_opts =
+            read_opts.with_parse_options(CsvParseOptions::default().with_try_parse_dates(true));
+    }
+    let mut df = match read_opts
         .try_into_reader_with_file_path(Some(csv_path))
         .and_then(|reader| reader.finish())
     {
         Ok(df) => {
-            let datetime_col = df.column("datetime")?;
-            // Check empty/null values first
-            if datetime_col.null_count() > 0 {
-                return Err(anyhow::anyhow!(
-                    "Datetime column contains empty values, please fill them before proceeding."
-                ));
-            }
-            // Check if the datetime column is parsed correctly, i.e. the type is not str
-            if datetime_col.dtype() == &DataType::String {
-                return Err(anyhow::anyhow!(
-                    "Datetime column parsing failed: column contains string data instead of datetime values.\n\
-                    Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
-                ));
+            if camtrap_dp {
+                let event_col = df.column("eventStart")?;
+                if event_col.null_count() > 0 {
+                    return Err(anyhow::anyhow!(
+                        "eventStart column contains empty values, please check."
+                    ));
+                }
+            } else {
+                let datetime_col = df.column("datetime")?;
+                // Check empty/null values first
+                if datetime_col.null_count() > 0 {
+                    return Err(anyhow::anyhow!(
+                        "Datetime column contains empty values, please fill them before proceeding."
+                    ));
+                }
+                // Check if the datetime column is parsed correctly, i.e. the type is not str
+                if datetime_col.dtype() == &DataType::String {
+                    return Err(anyhow::anyhow!(
+                        "Datetime column parsing failed: column contains string data instead of datetime values.\n\
+                        Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+                    ));
+                }
             }
             df
         }
@@ -1021,9 +1037,13 @@ pub fn get_temporal_independence(
     };
 
     // Rename datetime_original to datetime, adapts to old tags.csv
-    let df = match df.rename("datetime_original", "datetime".into()) {
-        Ok(renamed_df) => renamed_df,
-        Err(_) => &mut df,
+    let df = if camtrap_dp {
+        &mut df
+    } else {
+        match df.rename("datetime_original", "datetime".into()) {
+            Ok(renamed_df) => renamed_df,
+            Err(_) => &mut df,
+        }
     };
 
     // Readlines for parameter setup
@@ -1069,40 +1089,94 @@ pub fn get_temporal_independence(
         _ => TagType::Species,
     };
     // Find deployment
-    let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
-    println!("\nHere is a sample of the file path ({path_sample})");
-    let path_levels = get_path_levels(path_sample);
-    for (i, entry) in path_levels.iter().enumerate() {
-        println!("{}): {}", i + 1, entry);
-    }
-    let h = NumericSelectValidator {
-        min: 1,
-        max: path_levels.len().try_into()?,
+    let deploy_path_index = if camtrap_dp {
+        None
+    } else {
+        let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
+        println!("\nHere is a sample of the file path ({path_sample})");
+        let path_levels = get_path_levels(path_sample);
+        for (i, entry) in path_levels.iter().enumerate() {
+            println!("{}): {}", i + 1, entry);
+        }
+        let h = NumericSelectValidator {
+            min: 1,
+            max: path_levels.len().try_into()?,
+        };
+        rl.set_helper(Some(h));
+        let readline = rl.readline("Select the number corresponding to the deployment: ");
+        Some(readline?.trim().parse::<i32>()?)
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline("Select the number corresponding to the deployment: ");
-    let deploy_path_index = readline?.trim().parse::<i32>()?;
 
     let tag_exclude = Series::new("tag_exclude".into(), DEFAULT_EXCLUDE_TAGS);
 
     // Data processing
-    let df_deployment = df
-        .clone()
-        .lazy()
-        .select([
-            col("path"),
-            col("path")
-                .str()
-                .replace_all(lit("\\"), lit("/"), true)
-                .str()
-                .split(lit("/"))
-                .list()
-                .get(lit(deploy_path_index), false)
-                .alias("deployment"),
-            col("datetime").alias("time"),
-            col(target.col_name()),
-        ])
-        .collect()?;
+    let id_col_name = if camtrap_dp { "observationID" } else { "path" };
+    let df_deployment = if camtrap_dp {
+        let path_col = "observationID";
+        if df.column(path_col).is_err() {
+            return Err(anyhow::anyhow!(
+                "Missing observationID column in camtrap-dp input."
+            ));
+        }
+        let target_col = match target {
+            TagType::Species => "scientificName",
+            TagType::Individual => "individualID",
+            _ => unreachable!("capture prompt only allows species or individual"),
+        };
+        let time_expr = col("eventStart")
+            .cast(DataType::String)
+            .str()
+            .replace_all(lit("T"), lit(" "), true)
+            .str()
+            .replace_all(lit(r"([+-]\d{2}:?\d{2}|Z)$"), lit(""), false)
+            .str()
+            .strptime(
+                DataType::Datetime(TimeUnit::Milliseconds, None),
+                StrptimeOptions {
+                    format: Some("%Y-%m-%d %H:%M:%S".into()),
+                    strict: false,
+                    exact: true,
+                    cache: true,
+                },
+                lit("raise"),
+            )
+            .alias("time");
+        let df_deployment = df
+            .clone()
+            .lazy()
+            .select([
+                col(path_col).alias(id_col_name),
+                col("deploymentID").alias("deployment"),
+                time_expr,
+                col(target_col).alias(target.col_name()),
+            ])
+            .collect()?;
+        if df_deployment.column("time")?.dtype() == &DataType::String {
+            return Err(anyhow::anyhow!(
+                "eventStart column parsing failed: expected ISO-8601 like 2023-12-08T10:47:39+0800."
+            ));
+        }
+        df_deployment
+    } else {
+        let deploy_path_index = deploy_path_index
+            .ok_or_else(|| anyhow::anyhow!("Missing deployment path index selection"))?;
+        df.clone()
+            .lazy()
+            .select([
+                col("path").alias(id_col_name),
+                col("path")
+                    .str()
+                    .replace_all(lit("\\"), lit("/"), true)
+                    .str()
+                    .split(lit("/"))
+                    .list()
+                    .get(lit(deploy_path_index), false)
+                    .alias("deployment"),
+                col("datetime").alias("time"),
+                col(target.col_name()),
+            ])
+            .collect()?
+    };
 
     let df_cleaned = if no_exclude {
         df_deployment
@@ -1161,12 +1235,12 @@ pub fn get_temporal_independence(
             )
             .agg([
                 col(target.col_name()).count().alias("count"),
-                col("path").last(),
+                col(id_col_name).last(),
             ])
             .filter(col("count").eq(lit(1)))
             .select([
                 col("deployment"),
-                col("path"),
+                col(id_col_name),
                 col("time"),
                 col(target.col_name()),
             ])
@@ -1263,7 +1337,7 @@ pub fn get_temporal_independence(
         df_with_events = df_with_events
             .lazy()
             .select([
-                col("path"),
+                col(id_col_name),
                 col("deployment"),
                 col("time"),
                 col(target.col_name()),

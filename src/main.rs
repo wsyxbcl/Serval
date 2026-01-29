@@ -111,8 +111,15 @@ fn main() -> anyhow::Result<()> {
             output,
             event,
             no_exclude,
+            camtrap_dp,
         } => {
-            get_temporal_independence(absolute_path(csv_path)?, output, event, no_exclude)?;
+            get_temporal_independence(
+                absolute_path(csv_path)?,
+                output,
+                event,
+                no_exclude,
+                camtrap_dp,
+            )?;
         }
         Commands::Extract {
             csv_path,
@@ -291,6 +298,9 @@ enum Commands {
         /// Do not exclude default tags (Blank, Useless data, Unidentified, Human, Unknown, Blur) from temporal independence analysis
         #[arg(long)]
         no_exclude: bool,
+        /// Use observation table from camtrap-dp data package
+        #[arg(long)]
+        camtrap_dp: bool,
         // TODO custom exclude tags
         /// Output directory
         #[arg(
