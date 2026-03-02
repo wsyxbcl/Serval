@@ -991,15 +991,39 @@ pub fn tags_csv_translate(
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
 
-    let mut result = source_df
+    let joined = source_df.clone().lazy().join(
+        taglist_df.clone().lazy(),
+        [col(TagType::Species.col_name())],
+        [col(from)],
+        JoinArgs::new(JoinType::Left),
+    );
+
+    let unknown = joined
         .clone()
-        .lazy()
-        .join(
-            taglist_df.clone().lazy(),
-            [col(TagType::Species.col_name())],
-            [col(from)],
-            JoinArgs::new(JoinType::Left),
+        .filter(
+            col(to)
+                .is_null()
+                .and(col(TagType::Species.col_name()).is_not_null()),
         )
+        .select([col(TagType::Species.col_name())])
+        .unique(None, UniqueKeepStrategy::Any)
+        .collect()?;
+    if unknown.height() > 0 {
+        let mut sample = Vec::new();
+        if let Ok(col) = unknown.column(TagType::Species.col_name()) {
+            if let Ok(ca) = col.str() {
+                for v in ca.into_iter().flatten().take(20) {
+                    sample.push(v.to_string());
+                }
+            }
+        }
+        return Err(anyhow::anyhow!(
+            "Unknown tag(s) not found in taglist: {}",
+            sample.join(", ")
+        ));
+    }
+
+    let mut result = joined
         .drop(cols([TagType::Species.col_name()]))
         .rename(vec![to], vec![TagType::Species.col_name()], true)
         // .with_column(col(to).alias("species"))
