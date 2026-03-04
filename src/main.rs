@@ -403,13 +403,15 @@ enum XmpCommands {
     },
     /// Initialize XMP files for media files
     Init { source_dir: PathBuf },
-    /// Update XMP files from CSV
+    /// Update XMP files from CSV.
+    /// Tag mode uses: `xmp_update`, plus `species` or `individual` according to `--tag-type`.
+    /// Datetime mode (`--datetime`) uses: `xmp_update_datetime` (format: yyyy-MM-dd HH:mm:ss).
     Update {
         csv_path: PathBuf,
-        /// Tag type (required when not using --datetime)
+        /// Tag type for tag mode (`species` or `individual`).
         #[arg(short, long, value_name = "TYPE", required_unless_present = "datetime")]
         tag_type: Option<TagType>,
-        /// Update datetime instead of tags
+        /// Use datetime mode (reads `xmp_update_datetime` instead of xmp_update).
         #[arg(long)]
         datetime: bool,
     },
