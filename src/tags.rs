@@ -1,5 +1,5 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, append_ext,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path,
     configure_progress_bar, filter_expr_to_polars, get_path_levels, has_same_field_and_conditions,
     ignore_timezone, is_temporal_independent, parse_advanced_filter, path_enumerate,
     sync_modified_time,
@@ -129,7 +129,7 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             .open_file(media.clone(), OpenFileOptions::default().repair_file())
             .is_ok()
         {
-            let xmp_path = working_dir.join(append_ext("xmp", media.clone())?);
+            let xmp_path = working_dir.join(media.with_added_extension("xmp"));
             // Check existence of xmp file
             if xmp_path.exists() {
                 pb.inc(1);

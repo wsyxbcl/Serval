@@ -5,7 +5,7 @@ use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::{File, FileTimes};
 use std::io;
 use std::str::FromStr;
@@ -958,13 +958,6 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     let time_remove_designator = time.replace('Z', "");
     let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
     Ok(time_ignore_zone.to_string())
-}
-
-pub fn append_ext(ext: impl AsRef<OsStr>, path: PathBuf) -> anyhow::Result<PathBuf> {
-    let mut os_string: OsString = path.into();
-    os_string.push(".");
-    os_string.push(ext.as_ref());
-    Ok(os_string.into())
 }
 
 pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
