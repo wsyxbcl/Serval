@@ -1106,7 +1106,15 @@ pub fn get_temporal_independence(
         Some(readline?.trim().parse::<i32>()?)
     };
 
-    let tag_exclude = Series::new("tag_exclude".into(), DEFAULT_EXCLUDE_TAGS);
+    let mut exclude_expr = lit(false);
+    for tag in DEFAULT_EXCLUDE_TAGS {
+        let tag_expr = if tag.is_empty() {
+            col(target.col_name()).eq(lit(""))
+        } else {
+            col(target.col_name()).str().starts_with(lit(*tag))
+        };
+        exclude_expr = exclude_expr.or(tag_expr);
+    }
 
     // Data processing
     let id_col_name = if camtrap_dp { "observationID" } else { "path" };
@@ -1196,11 +1204,7 @@ pub fn get_temporal_independence(
             .clone()
             .lazy()
             .drop_nulls(None)
-            .filter(
-                col(target.col_name())
-                    .is_in(lit(tag_exclude).implode(), false)
-                    .not(),
-            )
+            .filter(exclude_expr.not())
             .unique(
                 Some(cols(vec![
                     "deployment".to_string(),

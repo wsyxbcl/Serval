@@ -295,7 +295,7 @@ enum Commands {
         /// Create event ID
         #[arg(long)]
         event: bool,
-        /// Do not exclude default tags (Blank, Useless data, Unidentified, Human, Unknown, Blur) from temporal independence analysis
+        /// Do not exclude default tags (Blank, Useless data, Unidentified, Unknown, Blur) from temporal independence analysis
         #[arg(long)]
         no_exclude: bool,
         /// Use observation table from camtrap-dp data package
