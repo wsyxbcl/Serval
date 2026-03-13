@@ -1005,11 +1005,12 @@ pub fn tags_csv_translate(
     if unknown.height() > 0 {
         let mut sample = Vec::new();
         if let Ok(col) = unknown.column(TagType::Species.col_name())
-            && let Ok(ca) = col.str() {
-                for v in ca.into_iter().flatten().take(20) {
-                    sample.push(v.to_string());
-                }
+            && let Ok(ca) = col.str()
+        {
+            for v in ca.into_iter().flatten().take(20) {
+                sample.push(v.to_string());
             }
+        }
         return Err(anyhow::anyhow!(
             "Unknown tag(s) not found in taglist: {}",
             sample.join(", ")

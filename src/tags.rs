@@ -1,8 +1,7 @@
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path,
-    configure_progress_bar, filter_expr_to_polars, get_path_levels, has_same_field_and_conditions,
-    ignore_timezone, is_temporal_independent, parse_advanced_filter, path_enumerate,
-    sync_modified_time,
+    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    is_temporal_independent, parse_advanced_filter, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
