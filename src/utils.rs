@@ -996,7 +996,8 @@ pub fn tags_csv_translate(
         .filter(
             col(to)
                 .is_null()
-                .and(col(TagType::Species.col_name()).is_not_null()),
+                .and(col(TagType::Species.col_name()).is_not_null())
+                .and(col(TagType::Species.col_name()).neq(lit(""))),
         )
         .select([col(TagType::Species.col_name())])
         .unique(None, UniqueKeepStrategy::Any)
