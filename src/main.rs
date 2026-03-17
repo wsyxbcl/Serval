@@ -149,8 +149,8 @@ fn main() -> anyhow::Result<()> {
             } => {
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
-            XmpCommands::Init { source_dir } => {
-                init_xmp(absolute_path(source_dir)?)?;
+            XmpCommands::Init { source_dir, info } => {
+                init_xmp(absolute_path(source_dir)?, info)?;
             }
             XmpCommands::Update {
                 csv_path,
@@ -402,7 +402,12 @@ enum XmpCommands {
         output_dir: PathBuf,
     },
     /// Initialize XMP files for media files
-    Init { source_dir: PathBuf },
+    Init {
+        source_dir: PathBuf,
+        /// Enable info mode and write an XMP init datetime CSV
+        #[arg(short, long)]
+        info: bool,
+    },
     /// Update XMP files from CSV.
     /// Tag mode uses: `xmp_update`, plus `species` or `individual` according to `--tag-type`.
     /// Datetime mode (`--datetime`) uses: `xmp_update_datetime` (format: yyyy-MM-dd HH:mm:ss).

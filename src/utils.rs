@@ -960,6 +960,10 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     Ok(time_ignore_zone.to_string())
 }
 
+pub fn iso_datetime_to_csv_format(time: &str) -> String {
+    time.replace('T', " ")
+}
+
 pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
     let src = fs::metadata(source)?;
     let dest = File::options().write(true).open(target)?;

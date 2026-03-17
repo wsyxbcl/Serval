@@ -1,7 +1,8 @@
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
     filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    is_temporal_independent, parse_advanced_filter, path_enumerate, sync_modified_time,
+    is_temporal_independent, iso_datetime_to_csv_format,
+    parse_advanced_filter, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -110,7 +111,73 @@ pub fn write_taglist(
     Ok(())
 }
 
-pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
+struct XmpInitDebugRow {
+    path: String,
+    embedded_datetime_original_raw: String,
+    embedded_create_date_raw: String,
+    file_modified_time: String,
+    datetime: String,
+}
+
+impl XmpInitDebugRow {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_string_lossy().into_owned(),
+            embedded_datetime_original_raw: String::new(),
+            embedded_create_date_raw: String::new(),
+            file_modified_time: String::new(),
+            datetime: String::new(),
+        }
+    }
+}
+
+fn write_xmp_init_debug_csv(
+    output_dir: &Path,
+    debug_rows: Vec<XmpInitDebugRow>,
+) -> anyhow::Result<()> {
+    let timestamp = Local::now().format("%Y%m%d%H%M%S");
+    let debug_csv_path = output_dir.join(format!("xmp_init_debug_{timestamp}.csv"));
+    let mut df = DataFrame::new(vec![
+        Column::new(
+            "path".into(),
+            debug_rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "embedded_datetime_original_raw".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.embedded_datetime_original_raw.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "embedded_create_date_raw".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.embedded_create_date_raw.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "file_modified_time".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.file_modified_time.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "datetime".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.datetime.as_str())
+                .collect::<Vec<_>>(),
+        ),
+    ])?;
+    let mut file = std::fs::File::create(debug_csv_path.clone())?;
+    CsvWriter::new(&mut file).include_bom(true).finish(&mut df)?;
+    println!("Saved debug CSV to {}", debug_csv_path.to_string_lossy());
+    Ok(())
+}
+
+pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
     let pb = ProgressBar::new(media_count.try_into()?);
@@ -122,15 +189,30 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
         r"(?s)<exif:DeviceSettingDescription[^>]*>.*?</exif:DeviceSettingDescription>\s*",
     )?;
 
+    let mut debug_rows = if info {
+        Vec::with_capacity(media_count)
+    } else {
+        Vec::new()
+    };
+
     for media in media_paths {
+        let xmp_path = working_dir.join(media.with_added_extension("xmp"));
+        let mut debug_row = info.then(|| XmpInitDebugRow::new(&media));
+        if let Some(row) = debug_row.as_mut()
+            && let Ok(metadata) = fs::metadata(&media)
+            && let Ok(modified_time) = metadata.modified()
+        {
+            let datetime: DateTime<Local> = DateTime::from(modified_time);
+            row.file_modified_time =
+                iso_datetime_to_csv_format(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
+        }
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
             .open_file(media.clone(), OpenFileOptions::default().repair_file())
             .is_ok()
         {
-            let xmp_path = working_dir.join(media.with_added_extension("xmp"));
             // Check existence of xmp file
-            if xmp_path.exists() {
+            if xmp_path.exists() && !info {
                 pb.inc(1);
                 pb.println(format!("XMP file already exists: {}", xmp_path.display()));
                 continue;
@@ -138,6 +220,17 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
             fs::File::create(xmp_path.clone())?;
             let mut xmp_string = "".to_string();
             if let Some(xmp) = media_xmp.xmp() {
+                if let Some(row) = debug_row.as_mut() {
+                    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                        row.embedded_datetime_original_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                        row.datetime = row.embedded_datetime_original_raw.clone();
+                    }
+                    if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                        row.embedded_create_date_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                    }
+                }
                 xmp_string = xmp.to_string_with_options(
                     ToStringOptions::default().set_newline("\n".to_string()),
                 )?;
@@ -157,6 +250,9 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
                     // and skip the 0 timestamp if manufacturer write it
+                    if let Some(row) = debug_row.as_mut() {
+                        row.datetime = row.embedded_create_date_raw.clone();
+                    }
                     xmp_string = re.replace_all(&xmp_string, "$1").to_string();
                 } else {
                     // Get the modified time of the file
@@ -165,6 +261,9 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     {
                         let datetime: DateTime<Local> = DateTime::from(modified_time);
                         let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        if let Some(row) = debug_row.as_mut() {
+                            row.datetime = iso_datetime_to_csv_format(&datetime_str);
+                        }
                         if xmp_string.contains("rdf") {
                             let rdf_exif_datetime = format!(
                                 r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
@@ -190,14 +289,20 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
                     }
                 }
             }
-            fs::write(xmp_path, xmp_string)?;
+            fs::write(&xmp_path, xmp_string)?;
             pb.inc(1);
         } else {
             pb.println(format!("Failed to open file: {}", media.display()));
             pb.inc(1);
         }
+        if let Some(row) = debug_row {
+            debug_rows.push(row);
+        }
     }
     pb.finish();
+    if info {
+        write_xmp_init_debug_csv(&working_dir, debug_rows)?;
+    }
     Ok(())
 }
 
