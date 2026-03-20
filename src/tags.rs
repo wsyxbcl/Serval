@@ -904,10 +904,6 @@ pub fn extract_resources(
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
     let deploy_path_index = readline?.trim().parse::<usize>()?;
-    let path_strip = Path::new(&path_sample)
-        .ancestors()
-        .nth(deploy_path_index + 1)
-        .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
     configure_progress_bar(&pb);
 
@@ -985,10 +981,18 @@ pub fn extract_resources(
                 )
             }
         } else {
-            let relative_path_output_xmp = Path::new(&input_path_xmp)
-                .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
-            let relative_path_output_media = Path::new(&input_path_media)
-                .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            let path_strip = Path::new(&input_path_media)
+                .ancestors()
+                .nth(deploy_path_index + 1)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Failed to determine the preserved directory prefix for {}",
+                        input_path_media
+                    )
+                })?;
+            let relative_path_output_xmp = Path::new(&input_path_xmp).strip_prefix(path_strip)?;
+            let relative_path_output_media =
+                Path::new(&input_path_media).strip_prefix(path_strip)?;
             if rename {
                 let filename_prefix = format!(
                     "{}-{}-",
