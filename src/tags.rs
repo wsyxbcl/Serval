@@ -882,7 +882,12 @@ pub fn extract_resources(
     println!("Found {} matching records", df_filtered.height());
 
     // Get the top level directory (to keep)
-    let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
+    let path_sample = df_filtered
+        .column("path")?
+        .str()?
+        .get(0)
+        .ok_or_else(|| anyhow::anyhow!("Missing path value in the first filtered record"))?
+        .to_string();
     println!("Here is a sample of the file path ({path_sample}): ");
     let mut num_option = 0;
     println!("0): File Only (no directory)");
@@ -1199,7 +1204,12 @@ pub fn get_temporal_independence(
     let deploy_path_index = if camtrap_dp {
         None
     } else {
-        let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
+        let path_sample = df
+            .column("path")?
+            .str()?
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing path value in the first record"))?
+            .to_string();
         println!("\nHere is a sample of the file path ({path_sample})");
         let path_levels = get_path_levels(path_sample);
         for (i, entry) in path_levels.iter().enumerate() {
