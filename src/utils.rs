@@ -615,7 +615,6 @@ pub fn deployments_align(
     keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
-        .with_has_header(true)
         .try_into_reader_with_file_path(Some(deploy_table))?
         .finish()?
         .lazy()
@@ -822,7 +821,6 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
 
 pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;

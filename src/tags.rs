@@ -89,7 +89,6 @@ pub fn write_taglist(
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
@@ -740,7 +739,6 @@ pub fn extract_resources(
     };
 
     let df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_infer_schema_length(Some(0)) // parse all columns as string
         .with_ignore_errors(true)
         .with_parse_options(
@@ -765,19 +763,19 @@ pub fn extract_resources(
         .filter(|col| !column_names.contains(col))
         .map(|col| lit("").alias(*col))
         .collect::<Vec<_>>();
-    let mut lf = df.lazy();
+    let mut df_lazy = df.lazy();
     if !missing_columns.is_empty() {
-        lf = lf.with_columns(missing_columns);
+        df_lazy = df_lazy.with_columns(missing_columns);
     }
 
     // Fill null values for columns that will be used for file naming
     if rename {
-        lf = lf.with_columns([
+        df_lazy = df_lazy.with_columns([
             col(TagType::Species.col_name()).fill_null(lit("")),
             col(TagType::Individual.col_name()).fill_null(lit("")),
         ]);
     }
-    let df = lf.collect()?;
+    let df = df_lazy.collect()?;
 
     let filter_expr = if filter_value == "ALL_VALUES" {
         match filter_type {
@@ -1102,9 +1100,7 @@ pub fn get_temporal_independence(
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let mut read_opts = CsvReadOptions::default()
-        .with_has_header(true)
-        .with_ignore_errors(false);
+    let mut read_opts = CsvReadOptions::default().with_ignore_errors(false);
     if camtrap_dp {
         read_opts = read_opts.with_parse_options(CsvParseOptions::default());
     } else {
@@ -1627,7 +1623,6 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         }
     };
     let df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
@@ -1696,7 +1691,6 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
 pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
