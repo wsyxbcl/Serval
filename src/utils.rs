@@ -615,8 +615,12 @@ pub fn deployments_align(
     keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
+        .with_has_header(true)
         .try_into_reader_with_file_path(Some(deploy_table))?
-        .finish()?;
+        .finish()?
+        .lazy()
+        .select([col("deploymentID")])
+        .collect()?;
     let deploy_array = deploy_df["deploymentID"].str()?;
 
     let deploy_iter = deploy_array.into_iter();
@@ -827,6 +831,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .lazy()
         .filter(col("path").is_not_null())
         .filter(col("path").str().ends_with(lit(".xmp")))
+        .select([col("path")])
         .unique(
             Some(cols(vec!["path".to_string()])),
             UniqueKeepStrategy::First,

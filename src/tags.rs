@@ -89,6 +89,7 @@ pub fn write_taglist(
     // Write taglist to the dummy image metadata (digiKam.TagsList)
     let mut f = XmpFile::new()?;
     let tag_df = CsvReadOptions::default()
+        .with_has_header(true)
         .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
@@ -759,27 +760,24 @@ pub fn extract_resources(
         "custom",
     ];
 
-    let mut df = required_columns.iter().fold(df.clone(), |acc_df, col| {
-        if !column_names.contains(col) {
-            acc_df
-                .lazy()
-                .with_columns([lit("").alias(*col)])
-                .collect()
-                .unwrap()
-        } else {
-            acc_df
-        }
-    });
+    let missing_columns = required_columns
+        .iter()
+        .filter(|col| !column_names.contains(col))
+        .map(|col| lit("").alias(*col))
+        .collect::<Vec<_>>();
+    let mut lf = df.lazy();
+    if !missing_columns.is_empty() {
+        lf = lf.with_columns(missing_columns);
+    }
 
     // Fill null values for columns that will be used for file naming
     if rename {
-        df = df
-            .clone()
-            .lazy()
-            .with_column(col(TagType::Species.col_name()).fill_null(lit("")))
-            .with_column(col(TagType::Individual.col_name()).fill_null(lit("")))
-            .collect()?;
+        lf = lf.with_columns([
+            col(TagType::Species.col_name()).fill_null(lit("")),
+            col(TagType::Individual.col_name()).fill_null(lit("")),
+        ]);
     }
+    let df = lf.collect()?;
 
     let filter_expr = if filter_value == "ALL_VALUES" {
         match filter_type {
@@ -1334,10 +1332,12 @@ pub fn get_temporal_independence(
             .collect()?
     };
 
-    let mut df_sorted = df_cleaned
-        .sort(["time"], SortMultipleOptions::default())?
-        .sort([target.col_name()], SortMultipleOptions::default())?
-        .sort(["deployment"], SortMultipleOptions::default())?;
+    // The temporal pass relies on contiguous [deployment, target] groups and ascending time.
+    // Keep the sort stable so exact duplicate keys preserve input order deterministically.
+    let mut df_sorted = df_cleaned.sort(
+        ["deployment", target.col_name(), "time"],
+        SortMultipleOptions::default().with_maintain_order(true),
+    )?;
 
     let mut df_capture_independent;
     if delta_time_compared_to == "LastRecord" {
@@ -1440,10 +1440,10 @@ pub fn get_temporal_independence(
     if event {
         let df_events = df_capture_independent.with_row_index("event_id".into(), Some(1))?;
         let by_columns = &[target.col_name(), "deployment"];
-        let df_raw_sorted = df_deployment
-            .sort(["time"], SortMultipleOptions::default())?
-            .sort([target.col_name()], SortMultipleOptions::default())?
-            .sort(["deployment"], SortMultipleOptions::default())?;
+        let df_raw_sorted = df_deployment.sort(
+            ["deployment", target.col_name(), "time"],
+            SortMultipleOptions::default().with_maintain_order(true),
+        )?;
         let mut df_with_events = df_raw_sorted.join_asof_by(
             &df_events,
             "time",
@@ -1619,6 +1619,13 @@ fn update_xmp(
 }
 
 pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
+    let tag_column_name = match tag_type {
+        TagType::Species => "species",
+        TagType::Individual => "individual",
+        _ => {
+            return Err(anyhow::anyhow!("Invalid tag type"));
+        }
+    };
     let df = CsvReadOptions::default()
         .with_has_header(true)
         .with_ignore_errors(false)
@@ -1628,6 +1635,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     let df_filtered = df
         .lazy()
         .filter(col("xmp_update").is_not_null())
+        .select([col("path"), col("xmp_update"), col(tag_column_name)])
         .collect()?;
 
     let num_updates = df_filtered.height();
@@ -1639,13 +1647,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
     let path_col = df_filtered.column("path")?.str()?;
     let xmp_update_col = df_filtered.column("xmp_update")?.str()?;
-    let tag_original_col = match tag_type {
-        TagType::Species => df_filtered.column("species")?.str()?,
-        TagType::Individual => df_filtered.column("individual")?.str()?,
-        _ => {
-            return Err(anyhow::anyhow!("Invalid tag type"));
-        }
-    };
+    let tag_original_col = df_filtered.column(tag_column_name)?.str()?;
 
     let iter = path_col
         .iter()
@@ -1696,14 +1698,14 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_has_header(true)
         .with_ignore_errors(false)
-        // .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
 
     let df_filtered = df
         .lazy()
         .filter(col("xmp_update_datetime").is_not_null())
-        .with_column(
+        .select([
+            col("path"),
             col("xmp_update_datetime")
                 .str()
                 .to_datetime(
@@ -1713,7 +1715,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
                     lit("raise"), // Tell Polars how to handle errors
                 )
                 .alias("xmp_update_datetime"),
-        )
+        ])
         .collect()?;
 
     // Check if the datetime column is parsed correctly
