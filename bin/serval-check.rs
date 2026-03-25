@@ -10,9 +10,6 @@ fn main() -> Result<()> {
         source_dir,
         ResourceType::Xmp,
         false,
-        false,
-        false,
-        false,
         true,
     );
     Ok(())

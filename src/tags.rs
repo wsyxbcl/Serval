@@ -322,8 +322,7 @@ type Metadata = (
 
 fn retrieve_metadata(
     file_path: &Path,
-    include_subject: bool,
-    include_time_modified: bool,
+    debug_mode: bool,
 ) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
@@ -343,7 +342,7 @@ fn retrieve_metadata(
     let mut time_modified = String::new();
     let mut rating = String::new();
 
-    if include_time_modified {
+    if debug_mode {
         let file_metadata = fs::metadata(file_path)?;
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -373,7 +372,7 @@ fn retrieve_metadata(
         if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
             rating = value.value.to_string();
         }
-        if include_subject {
+        if debug_mode {
             for property in xmp.property_array(xmp_ns::DC, "subject") {
                 subjects.push(property.value.to_string());
             }
@@ -433,9 +432,6 @@ pub fn get_classifications(
     file_dir: PathBuf,
     output_dir: PathBuf,
     resource_type: ResourceType,
-    independent: bool,
-    include_subject: bool,
-    include_time_modified: bool,
     debug_mode: bool,
     volunteer_mode: bool, //TODO: make a mode argument
 ) -> anyhow::Result<()> {
@@ -454,11 +450,9 @@ pub fn get_classifications(
             .unwrap_or_else(|| std::borrow::Cow::Borrowed("unk")); // For root dir
 
         let suffix = format!(
-            "_{}_{}{}{}_{}.csv",
+            "_{}_{}_{}.csv",
             file_name,
             resource_type.to_string().to_lowercase(),
-            if include_subject { "-s" } else { "" },
-            if include_time_modified { "-m" } else { "" },
             Local::now().format("%Y%m%d%H%M%S"),
         );
         suffix
@@ -493,7 +487,7 @@ pub fn get_classifications(
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(|i| {
-            match retrieve_metadata(&file_paths[i], include_subject, include_time_modified) {
+            match retrieve_metadata(&file_paths[i], debug_mode) {
                 Ok((
                     species,
                     individuals,
@@ -707,10 +701,6 @@ pub fn get_classifications(
         .include_bom(true)
         .finish(&mut df_count_species)?;
     println!("Saved to {}", species_stats_path.to_string_lossy());
-
-    if independent {
-        get_temporal_independence(tags_csv_path, output_dir, false, false, false)?;
-    }
     Ok(())
 }
 

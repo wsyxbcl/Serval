@@ -55,11 +55,8 @@ fn main() -> anyhow::Result<()> {
             media_dir,
             output,
             xmp,
-            mut subject,
-            mut modified_time,
             video,
             image,
-            independent,
             debug,
         } => {
             let resource_type = if xmp {
@@ -75,17 +72,10 @@ fn main() -> anyhow::Result<()> {
             } else {
                 utils::ResourceType::Media
             };
-            if debug {
-                subject = true;
-                modified_time = true;
-            }
             get_classifications(
                 absolute_path(media_dir)?,
                 output,
                 resource_type,
-                independent,
-                subject,
-                modified_time,
                 debug,
                 false,
             )?;
@@ -250,12 +240,6 @@ enum Commands {
         /// Read from XMP files
         #[arg(short, long)]
         xmp: bool,
-        #[arg(short, long)]
-        /// Include Subject metadata
-        subject: bool,
-        #[arg(short, long)]
-        /// Include file modified time
-        modified_time: bool,
         /// Video only
         #[arg(long)]
         video: bool,
@@ -265,9 +249,6 @@ enum Commands {
         /// Debug mode
         #[arg(short, long)]
         debug: bool,
-        /// Temporal independence analysis after retrieving
-        #[arg(short, long)]
-        independent: bool,
     },
     /// Rename a deployment directory from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
