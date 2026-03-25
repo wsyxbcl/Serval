@@ -1,14 +1,14 @@
+use crate::schema::{
+    ALL_RESOURCE_EXTENSIONS, CUSTOM_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN,
+    IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
+    resource_extension,
+};
 use chrono::NaiveDateTime;
 use core::fmt;
 use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
-use crate::schema::{
-    ALL_RESOURCE_EXTENSIONS, CUSTOM_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN,
-    IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
-    resource_extension,
-};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{File, FileTimes};
@@ -52,8 +52,7 @@ impl ResourceType {
     }
 
     fn is_resource(self, path: &Path) -> bool {
-        resource_extension(path)
-            .is_some_and(|ext| self.extension().contains(&ext.as_str()))
+        resource_extension(path).is_some_and(|ext| self.extension().contains(&ext.as_str()))
     }
 }
 

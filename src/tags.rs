@@ -1,14 +1,13 @@
+use crate::schema::{
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LEGACY_DATETIME_COLUMN,
+    MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN, SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN,
+    XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN, canonicalize_observe_tags_df, infer_media_type,
+};
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
     filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    is_temporal_independent, iso_datetime_to_csv_format,
-    parse_advanced_filter, path_enumerate, sync_modified_time,
-};
-use crate::schema::{
-    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LEGACY_DATETIME_COLUMN,
-    MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN, SUBJECTS_COLUMN,
-    TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
-    canonicalize_observe_tags_df, infer_media_type,
+    is_temporal_independent, iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
+    sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -146,7 +145,10 @@ fn write_xmp_init_debug_csv(
     let mut df = DataFrame::new(vec![
         Column::new(
             PATH_COLUMN.into(),
-            debug_rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+            debug_rows
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
         ),
         Column::new(
             MEDIA_TYPE_COLUMN.into(),
@@ -192,7 +194,9 @@ fn write_xmp_init_debug_csv(
         ),
     ])?;
     let mut file = std::fs::File::create(debug_csv_path.clone())?;
-    CsvWriter::new(&mut file).include_bom(true).finish(&mut df)?;
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut df)?;
     println!("Saved debug CSV to {}", debug_csv_path.to_string_lossy());
     Ok(())
 }
@@ -342,10 +346,7 @@ type Metadata = (
     String, // rating
 );
 
-fn retrieve_metadata(
-    file_path: &Path,
-    debug_mode: bool,
-) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime, datetime_digitized, rating and file modified time
@@ -1644,7 +1645,11 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     let df_filtered = df
         .lazy()
         .filter(col(XMP_UPDATE_COLUMN).is_not_null())
-        .select([col(PATH_COLUMN), col(XMP_UPDATE_COLUMN), col(tag_column_name)])
+        .select([
+            col(PATH_COLUMN),
+            col(XMP_UPDATE_COLUMN),
+            col(tag_column_name),
+        ])
         .collect()?;
 
     let num_updates = df_filtered.height();
