@@ -119,6 +119,7 @@ pub fn write_taglist(
 
 struct XmpInitDebugRow {
     path: String,
+    media_type: String,
     embedded_datetime_original_raw: String,
     embedded_create_date_raw: String,
     file_modified_time: String,
@@ -130,6 +131,7 @@ impl XmpInitDebugRow {
     fn new(path: &Path) -> Self {
         Self {
             path: path.to_string_lossy().into_owned(),
+            media_type: String::new(),
             embedded_datetime_original_raw: String::new(),
             embedded_create_date_raw: String::new(),
             file_modified_time: String::new(),
@@ -149,6 +151,13 @@ fn write_xmp_init_debug_csv(
         Column::new(
             PATH_COLUMN.into(),
             debug_rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            MEDIA_TYPE_COLUMN.into(),
+            debug_rows
+                .iter()
+                .map(|row| row.media_type.as_str())
+                .collect::<Vec<_>>(),
         ),
         Column::new(
             "embedded_datetime_original_raw".into(),
@@ -213,6 +222,9 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     for media in media_paths {
         let xmp_path = working_dir.join(media.with_added_extension("xmp"));
         let mut debug_row = info.then(|| XmpInitDebugRow::new(&media));
+        if let Some(row) = debug_row.as_mut() {
+            row.media_type = infer_media_type(&media)?.to_string();
+        }
         if let Some(row) = debug_row.as_mut()
             && let Ok(metadata) = fs::metadata(&media)
             && let Ok(modified_time) = metadata.modified()
