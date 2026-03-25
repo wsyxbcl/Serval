@@ -4,6 +4,7 @@ use crate::utils::{
     is_temporal_independent, iso_datetime_to_csv_format,
     parse_advanced_filter, path_enumerate, sync_modified_time,
 };
+use crate::schema::{LEGACY_DATETIME_COLUMN, canonicalize_observe_tags_df};
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -619,7 +620,7 @@ pub fn get_classifications(
         strict: false,
         ..Default::default()
     };
-    let mut df_split = df_raw
+    let df_split = df_raw
         .clone()
         .lazy()
         .select([
@@ -662,12 +663,6 @@ pub fn get_classifications(
         .collect()?;
     println!("{df_split:?}");
 
-    if !include_subject {
-        let _ = df_split.drop_in_place("subjects")?;
-    }
-    if !include_time_modified {
-        let _ = df_split.drop_in_place("time_modified")?;
-    }
     if debug_mode {
         println!("{df_raw}");
         let debug_csv_path = output_dir.join(format!("raw{output_suffix}"));
@@ -679,7 +674,7 @@ pub fn get_classifications(
         println!("Saved to {}", debug_csv_path.to_string_lossy());
     }
     // For multiple tags in a single image (individual only for two species that won't be in the same image)
-    let mut df_flatten = df_split
+    let df_flatten = df_split
         .clone()
         .lazy()
         .select([col("*")])
@@ -687,6 +682,7 @@ pub fn get_classifications(
         .explode(cols([TagType::Species.col_name()]))
         .sort(["path"], SortMultipleOptions::default())
         .collect()?;
+    let mut df_flatten = canonicalize_observe_tags_df(df_flatten)?;
     println!("{df_flatten}");
 
     let tags_csv_path = output_dir.join(format!("tags{output_suffix}"));
@@ -1146,7 +1142,7 @@ pub fn get_temporal_independence(
     let df = if camtrap_dp {
         &mut df
     } else {
-        match df.rename("datetime_original", "datetime".into()) {
+        match df.rename(LEGACY_DATETIME_COLUMN, "datetime".into()) {
             Ok(renamed_df) => renamed_df,
             Err(_) => &mut df,
         }
