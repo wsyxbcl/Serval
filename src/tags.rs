@@ -118,6 +118,7 @@ struct XmpInitDebugRow {
     embedded_create_date_raw: String,
     file_modified_time: String,
     datetime: String,
+    xmp_update_datetime: String,
 }
 
 impl XmpInitDebugRow {
@@ -128,6 +129,7 @@ impl XmpInitDebugRow {
             embedded_create_date_raw: String::new(),
             file_modified_time: String::new(),
             datetime: String::new(),
+            xmp_update_datetime: String::new(),
         }
     }
 }
@@ -169,6 +171,13 @@ fn write_xmp_init_debug_csv(
             debug_rows
                 .iter()
                 .map(|row| row.datetime.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "xmp_update_datetime".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.xmp_update_datetime.as_str())
                 .collect::<Vec<_>>(),
         ),
     ])?;
