@@ -4,7 +4,7 @@ use crate::utils::{
     is_temporal_independent, iso_datetime_to_csv_format,
     parse_advanced_filter, path_enumerate, sync_modified_time,
 };
-use crate::schema::{LEGACY_DATETIME_COLUMN, canonicalize_observe_tags_df};
+use crate::schema::{LEGACY_DATETIME_COLUMN, canonicalize_observe_tags_df, infer_media_type};
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -477,6 +477,10 @@ pub fn get_classifications(
         .into_iter()
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
+    let media_types: Vec<String> = file_paths
+        .iter()
+        .map(|path| infer_media_type(path).map(str::to_string))
+        .collect::<anyhow::Result<_>>()?;
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
@@ -569,6 +573,7 @@ pub fn get_classifications(
     let mut df_raw = DataFrame::new(vec![
         Column::new("path".into(), image_paths),
         Column::new("filename".into(), image_filenames),
+        Column::new("media_type".into(), media_types),
         s_species,
         s_individuals,
         s_count,
@@ -629,6 +634,7 @@ pub fn get_classifications(
         .select([
             col("path"),
             col("filename"),
+            col("media_type"),
             col("datetime").str().strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),

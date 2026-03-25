@@ -5,7 +5,7 @@
 ## Canonical Header
 
 ```text
-path,filename,datetime,species,individual,count,sex,bodypart,rating,custom,xmp_update,xmp_update_datetime
+path,filename,media_type,datetime,species,individual,count,sex,bodypart,rating,custom,xmp_update,xmp_update_datetime
 ```
 
 ## Rules
@@ -23,6 +23,7 @@ path,filename,datetime,species,individual,count,sex,bodypart,rating,custom,xmp_u
 | --- | --- |
 | `path` | Path to the media or XMP resource represented by the row. |
 | `filename` | File name for review and manual editing. |
+| `media_type` | Media type inferred from the underlying media path. For `*.xmp` sidecars, Serval strips the trailing `.xmp` before inferring the type. JPEG, PNG, MP4, and MOV use IANA-registered values. AVI currently uses the compatibility fallback `video/x-msvideo`. |
 | `datetime` | Observation datetime used by capture-related workflows. |
 | `species` | Species annotation for the row. |
 | `individual` | Individual annotation for the row. |
