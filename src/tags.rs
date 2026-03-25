@@ -117,6 +117,7 @@ pub fn write_taglist(
     Ok(())
 }
 
+#[derive(Default)]
 struct XmpInitDebugRow {
     path: String,
     media_type: String,
@@ -131,12 +132,7 @@ impl XmpInitDebugRow {
     fn new(path: &Path) -> Self {
         Self {
             path: path.to_string_lossy().into_owned(),
-            media_type: String::new(),
-            embedded_datetime_original_raw: String::new(),
-            embedded_create_date_raw: String::new(),
-            file_modified_time: String::new(),
-            datetime: String::new(),
-            xmp_update_datetime: String::new(),
+            ..Default::default()
         }
     }
 }
