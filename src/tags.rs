@@ -4,7 +4,12 @@ use crate::utils::{
     is_temporal_independent, iso_datetime_to_csv_format,
     parse_advanced_filter, path_enumerate, sync_modified_time,
 };
-use crate::schema::{LEGACY_DATETIME_COLUMN, canonicalize_observe_tags_df, infer_media_type};
+use crate::schema::{
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LEGACY_DATETIME_COLUMN,
+    MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN, SUBJECTS_COLUMN,
+    TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
+    canonicalize_observe_tags_df, infer_media_type,
+};
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -142,7 +147,7 @@ fn write_xmp_init_debug_csv(
     let debug_csv_path = output_dir.join(format!("xmp_init_debug_{timestamp}.csv"));
     let mut df = DataFrame::new(vec![
         Column::new(
-            "path".into(),
+            PATH_COLUMN.into(),
             debug_rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
         ),
         Column::new(
@@ -167,14 +172,14 @@ fn write_xmp_init_debug_csv(
                 .collect::<Vec<_>>(),
         ),
         Column::new(
-            "datetime".into(),
+            DATETIME_COLUMN.into(),
             debug_rows
                 .iter()
                 .map(|row| row.datetime.as_str())
                 .collect::<Vec<_>>(),
         ),
         Column::new(
-            "xmp_update_datetime".into(),
+            XMP_UPDATE_DATETIME_COLUMN.into(),
             debug_rows
                 .iter()
                 .map(|row| row.xmp_update_datetime.as_str())
@@ -564,16 +569,16 @@ pub fn get_classifications(
     let s_count = Column::new("count_tags".into(), count_tags);
     let s_sex = Column::new("sex_tags".into(), sex_tags);
     let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
-    let s_subjects = Column::new("subjects".into(), subjects);
-    let s_datetime = Column::new("datetime".into(), datetimes);
+    let s_subjects = Column::new(SUBJECTS_COLUMN.into(), subjects);
+    let s_datetime = Column::new(DATETIME_COLUMN.into(), datetimes);
     // let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
-    let s_time_modified = Column::new("time_modified".into(), time_modifieds);
-    let s_rating = Column::new("rating".into(), ratings);
+    let s_time_modified = Column::new(TIME_MODIFIED_COLUMN.into(), time_modifieds);
+    let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
     let mut df_raw = DataFrame::new(vec![
-        Column::new("path".into(), image_paths),
-        Column::new("filename".into(), image_filenames),
-        Column::new("media_type".into(), media_types),
+        Column::new(PATH_COLUMN.into(), image_paths),
+        Column::new(FILENAME_COLUMN.into(), image_filenames),
+        Column::new(MEDIA_TYPE_COLUMN.into(), media_types),
         s_species,
         s_individuals,
         s_count,
@@ -632,10 +637,10 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([
-            col("path"),
-            col("filename"),
-            col("media_type"),
-            col("datetime").str().strptime(
+            col(PATH_COLUMN),
+            col(FILENAME_COLUMN),
+            col(MEDIA_TYPE_COLUMN),
+            col(DATETIME_COLUMN).str().strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),
                 lit("raise"),
@@ -645,7 +650,7 @@ pub fn get_classifications(
             //     datetime_options.clone(),
             //     lit("raise"),
             // ),
-            col("time_modified")
+            col(TIME_MODIFIED_COLUMN)
                 .str()
                 .to_datetime(
                     Some(TimeUnit::Milliseconds),
@@ -666,8 +671,8 @@ pub fn get_classifications(
             col("count_tags").alias(TagType::Count.col_name()),
             col("sex_tags").alias(TagType::Sex.col_name()),
             col("bodypart_tags").alias(TagType::Bodypart.col_name()),
-            col("subjects"),
-            col("rating"),
+            col(SUBJECTS_COLUMN),
+            col(RATING_COLUMN),
         ])
         .collect()?;
     println!("{df_split:?}");
@@ -689,7 +694,7 @@ pub fn get_classifications(
         .select([col("*")])
         .explode(cols([TagType::Individual.col_name()]))
         .explode(cols([TagType::Species.col_name()]))
-        .sort(["path"], SortMultipleOptions::default())
+        .sort([PATH_COLUMN], SortMultipleOptions::default())
         .collect()?;
     let mut df_flatten = canonicalize_observe_tags_df(df_flatten)?;
     println!("{df_flatten}");
@@ -1121,7 +1126,7 @@ pub fn get_temporal_independence(
                     ));
                 }
             } else {
-                let datetime_col = df.column("datetime")?;
+                let datetime_col = df.column(DATETIME_COLUMN)?;
                 // Check empty/null values first
                 if datetime_col.null_count() > 0 {
                     return Err(anyhow::anyhow!(
@@ -1147,7 +1152,7 @@ pub fn get_temporal_independence(
     let df = if camtrap_dp {
         &mut df
     } else {
-        match df.rename(LEGACY_DATETIME_COLUMN, "datetime".into()) {
+        match df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into()) {
             Ok(renamed_df) => renamed_df,
             Err(_) => &mut df,
         }
@@ -1266,7 +1271,7 @@ pub fn get_temporal_independence(
             .lazy()
             .select([
                 col(path_col).alias(id_col_name),
-                col("deploymentID").alias("deployment"),
+                col(DEPLOYMENT_ID_COLUMN).alias("deployment"),
                 time_expr,
                 col(target_col).alias(target.col_name()),
             ])
@@ -1630,8 +1635,8 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
     let df_filtered = df
         .lazy()
-        .filter(col("xmp_update").is_not_null())
-        .select([col("path"), col("xmp_update"), col(tag_column_name)])
+        .filter(col(XMP_UPDATE_COLUMN).is_not_null())
+        .select([col(PATH_COLUMN), col(XMP_UPDATE_COLUMN), col(tag_column_name)])
         .collect()?;
 
     let num_updates = df_filtered.height();
@@ -1641,8 +1646,8 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Processing XMP updates...");
 
-    let path_col = df_filtered.column("path")?.str()?;
-    let xmp_update_col = df_filtered.column("xmp_update")?.str()?;
+    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
+    let xmp_update_col = df_filtered.column(XMP_UPDATE_COLUMN)?.str()?;
     let tag_original_col = df_filtered.column(tag_column_name)?.str()?;
 
     let iter = path_col
@@ -1698,10 +1703,10 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
 
     let df_filtered = df
         .lazy()
-        .filter(col("xmp_update_datetime").is_not_null())
+        .filter(col(XMP_UPDATE_DATETIME_COLUMN).is_not_null())
         .select([
-            col("path"),
-            col("xmp_update_datetime")
+            col(PATH_COLUMN),
+            col(XMP_UPDATE_DATETIME_COLUMN)
                 .str()
                 .to_datetime(
                     None,
@@ -1709,12 +1714,12 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
                     StrptimeOptions::default(),
                     lit("raise"), // Tell Polars how to handle errors
                 )
-                .alias("xmp_update_datetime"),
+                .alias(XMP_UPDATE_DATETIME_COLUMN),
         ])
         .collect()?;
 
     // Check if the datetime column is parsed correctly
-    let datetime_col = df_filtered.column("xmp_update_datetime")?;
+    let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?;
     if datetime_col.dtype() == &DataType::String {
         return Err(anyhow::anyhow!(
             "XMP update datetime column parsing failed: column contains string data instead of datetime values.\n\
@@ -1729,8 +1734,8 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Processing XMP datetime updates...");
 
-    let path_col = df_filtered.column("path")?.str()?;
-    let datetime_col = df_filtered.column("xmp_update_datetime")?.datetime()?;
+    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
+    let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?.datetime()?;
     let datetime_strings = datetime_col.to_string("%Y-%m-%dT%H:%M:%S")?;
 
     let iter = path_col.iter().zip(datetime_strings.iter());

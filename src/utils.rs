@@ -4,6 +4,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
+use crate::schema::{
+    ALL_RESOURCE_EXTENSIONS, CUSTOM_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN,
+    IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
+    resource_extension,
+};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{File, FileTimes};
@@ -36,29 +41,19 @@ impl fmt::Display for ResourceType {
 }
 
 impl ResourceType {
-    fn extension(self) -> Vec<&'static str> {
+    fn extension(self) -> &'static [&'static str] {
         match self {
-            ResourceType::Image => vec!["jpg", "jpeg", "png"],
-            ResourceType::Video => vec!["avi", "mp4", "mov"],
-            ResourceType::Xmp => vec!["xmp"],
-            ResourceType::Media => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov"],
-            ResourceType::All => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov", "xmp"],
+            ResourceType::Image => IMAGE_EXTENSIONS,
+            ResourceType::Video => VIDEO_EXTENSIONS,
+            ResourceType::Xmp => XMP_EXTENSIONS,
+            ResourceType::Media => crate::schema::MEDIA_EXTENSIONS,
+            ResourceType::All => ALL_RESOURCE_EXTENSIONS,
         }
     }
 
     fn is_resource(self, path: &Path) -> bool {
-        let ext = match path.extension() {
-            None => return false,
-            Some(ext) => ext,
-        };
-
-        match ext.to_str() {
-            None => false,
-            Some(ext_str) => {
-                let ext_lower = ext_str.to_ascii_lowercase();
-                self.extension().contains(&ext_lower.as_str())
-            }
-        }
+        resource_extension(path)
+            .is_some_and(|ext| self.extension().contains(&ext.as_str()))
     }
 }
 
@@ -357,10 +352,10 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
             let col_name = match condition.filter_type {
                 ExtractFilterType::Species => TagType::Species.col_name(),
                 ExtractFilterType::Individual => TagType::Individual.col_name(),
-                ExtractFilterType::Rating => "rating",
-                ExtractFilterType::Path => "path",
-                ExtractFilterType::Event => "event_id",
-                ExtractFilterType::Custom => "custom",
+                ExtractFilterType::Rating => RATING_COLUMN,
+                ExtractFilterType::Path => PATH_COLUMN,
+                ExtractFilterType::Event => EVENT_ID_COLUMN,
+                ExtractFilterType::Custom => CUSTOM_COLUMN,
                 ExtractFilterType::Advanced => {
                     return Err(anyhow::anyhow!(
                         "Advanced filter should not appear in conditions"
@@ -618,9 +613,9 @@ pub fn deployments_align(
         .try_into_reader_with_file_path(Some(deploy_table))?
         .finish()?
         .lazy()
-        .select([col("deploymentID")])
+        .select([col(DEPLOYMENT_ID_COLUMN)])
         .collect()?;
-    let deploy_array = deploy_df["deploymentID"].str()?;
+    let deploy_array = deploy_df[DEPLOYMENT_ID_COLUMN].str()?;
 
     let deploy_iter = deploy_array.into_iter();
     let num_iter = deploy_iter.len();
