@@ -6,8 +6,8 @@ use crate::schema::{
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
     deployment_from_path, deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, is_temporal_independent, iso_datetime_to_csv_format,
-    parse_advanced_filter, path_enumerate, sync_modified_time,
+    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
+    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
