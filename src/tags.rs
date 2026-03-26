@@ -86,6 +86,44 @@ impl Validator for NumericSelectValidator {
     }
 }
 
+fn prompt_deployment_path_index(
+    rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
+    path_sample: String,
+) -> anyhow::Result<i32> {
+    println!("\nHere is a sample of the file path ({path_sample})");
+    let path_levels = get_path_levels(path_sample);
+    if path_levels.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Cannot infer deployment from path: expected at least one directory level before the file name."
+        ));
+    }
+    for (i, entry) in path_levels.iter().enumerate() {
+        println!("{}): {}", i + 1, entry);
+    }
+    let h = NumericSelectValidator {
+        min: 1,
+        max: path_levels.len().try_into()?,
+    };
+    rl.set_helper(Some(h));
+    let readline = rl.readline("Select the number corresponding to the deployment: ");
+    Ok(readline?.trim().parse::<i32>()?)
+}
+
+fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
+    let normalized_path = path.to_string_lossy().replace('\\', "/");
+    normalized_path
+        .split('/')
+        .nth(deploy_path_index.try_into()?)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot extract deployment from path '{}' with index {}.",
+                path.display(),
+                deploy_path_index
+            )
+        })
+}
+
 pub fn write_taglist(
     taglist_path: PathBuf,
     image_path: PathBuf,
@@ -116,9 +154,10 @@ pub fn write_taglist(
     Ok(())
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct XmpInitDebugRow {
     path: String,
+    deployment: String,
     media_type: String,
     embedded_datetime_original_raw: String,
     embedded_create_date_raw: String,
@@ -148,6 +187,13 @@ fn write_xmp_init_debug_csv(
             debug_rows
                 .iter()
                 .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "deployment".into(),
+            debug_rows
+                .iter()
+                .map(|row| row.deployment.as_str())
                 .collect::<Vec<_>>(),
         ),
         Column::new(
@@ -204,8 +250,6 @@ fn write_xmp_init_debug_csv(
 pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
-    let pb = ProgressBar::new(media_count.try_into()?);
-    configure_progress_bar(&pb);
     let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
     let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
     // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
@@ -218,13 +262,44 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     } else {
         Vec::new()
     };
+    let debug_row_init = if info {
+        let deploy_path_index = if media_count > 0 {
+            let mut rl = Editor::new()?;
+            rl.bind_sequence(
+                Event::Any,
+                EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+            );
+            Some(prompt_deployment_path_index(
+                &mut rl,
+                media_paths[0].to_string_lossy().into_owned(),
+            )?)
+        } else {
+            None
+        };
+        Some(
+            media_paths
+                .iter()
+                .map(|media| {
+                    let mut row = XmpInitDebugRow::new(media);
+                    if let Some(deploy_path_index) = deploy_path_index {
+                        row.deployment = deployment_from_path(media, deploy_path_index)?;
+                    }
+                    row.media_type = infer_media_type(media)?.to_string();
+                    Ok(row)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
+    let pb = ProgressBar::new(media_count.try_into()?);
+    configure_progress_bar(&pb);
 
-    for media in media_paths {
+    for (index, media) in media_paths.into_iter().enumerate() {
         let xmp_path = working_dir.join(media.with_added_extension("xmp"));
-        let mut debug_row = info.then(|| XmpInitDebugRow::new(&media));
-        if let Some(row) = debug_row.as_mut() {
-            row.media_type = infer_media_type(&media)?.to_string();
-        }
+        let mut debug_row = debug_row_init
+            .as_ref()
+            .and_then(|rows| rows.get(index).cloned());
         if let Some(row) = debug_row.as_mut()
             && let Ok(metadata) = fs::metadata(&media)
             && let Ok(modified_time) = metadata.modified()
@@ -1219,18 +1294,7 @@ pub fn get_temporal_independence(
             .get(0)
             .ok_or_else(|| anyhow::anyhow!("Missing path value in the first record"))?
             .to_string();
-        println!("\nHere is a sample of the file path ({path_sample})");
-        let path_levels = get_path_levels(path_sample);
-        for (i, entry) in path_levels.iter().enumerate() {
-            println!("{}): {}", i + 1, entry);
-        }
-        let h = NumericSelectValidator {
-            min: 1,
-            max: path_levels.len().try_into()?,
-        };
-        rl.set_helper(Some(h));
-        let readline = rl.readline("Select the number corresponding to the deployment: ");
-        Some(readline?.trim().parse::<i32>()?)
+        Some(prompt_deployment_path_index(&mut rl, path_sample)?)
     };
 
     let mut exclude_expr = lit(false);
