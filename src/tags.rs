@@ -5,9 +5,9 @@ use crate::schema::{
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
-    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    is_temporal_independent, iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
-    sync_modified_time,
+    deployment_from_path, deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, is_temporal_independent, iso_datetime_to_csv_format,
+    parse_advanced_filter, path_enumerate, sync_modified_time,
 };
 use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
@@ -107,21 +107,6 @@ fn prompt_deployment_path_index(
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the number corresponding to the deployment: ");
     Ok(readline?.trim().parse::<i32>()?)
-}
-
-fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
-    let normalized_path = path.to_string_lossy().replace('\\', "/");
-    normalized_path
-        .split('/')
-        .nth(deploy_path_index.try_into()?)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Cannot extract deployment from path '{}' with index {}.",
-                path.display(),
-                deploy_path_index
-            )
-        })
 }
 
 pub fn write_taglist(
@@ -1361,16 +1346,9 @@ pub fn get_temporal_independence(
         df.clone()
             .lazy()
             .select([
-                col("path").alias(id_col_name),
-                col("path")
-                    .str()
-                    .replace_all(lit("\\"), lit("/"), true)
-                    .str()
-                    .split(lit("/"))
-                    .list()
-                    .get(lit(deploy_path_index), false)
-                    .alias("deployment"),
-                col("datetime").alias("time"),
+                col(PATH_COLUMN).alias(id_col_name),
+                deployment_from_path_expr(col(PATH_COLUMN), deploy_path_index).alias("deployment"),
+                col(DATETIME_COLUMN).alias("time"),
                 col(target.col_name()),
             ])
             .collect()?

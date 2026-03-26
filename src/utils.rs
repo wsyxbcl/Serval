@@ -943,12 +943,41 @@ pub fn get_path_levels(path: String) -> Vec<String> {
     //     })
     //     .collect();
 
-    let normalized_path = path.replace('\\', "/");
+    let normalized_path = normalize_path_separators(&path);
     let levels: Vec<String> = normalized_path
         .split('/')
         .map(|comp| comp.to_string())
         .collect();
     levels[1..levels.len() - 1].to_vec()
+}
+
+fn normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+pub fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
+    let normalized_path = normalize_path_separators(&path.to_string_lossy());
+    normalized_path
+        .split('/')
+        .nth(deploy_path_index.try_into()?)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot extract deployment from path '{}' with index {}.",
+                path.display(),
+                deploy_path_index
+            )
+        })
+}
+
+pub fn deployment_from_path_expr(path_expr: Expr, deploy_path_index: i32) -> Expr {
+    path_expr
+        .str()
+        .replace_all(lit("\\"), lit("/"), true)
+        .str()
+        .split(lit("/"))
+        .list()
+        .get(lit(deploy_path_index), false)
 }
 
 pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
