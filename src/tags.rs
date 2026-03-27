@@ -265,7 +265,8 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
             media_paths
                 .iter()
                 .map(|media| {
-                    let mut row = XmpInitDebugRow::new(media);
+                    let xmp_path = working_dir.join(media.with_added_extension("xmp"));
+                    let mut row = XmpInitDebugRow::new(&xmp_path);
                     if let Some(deploy_path_index) = deploy_path_index {
                         row.deployment = deployment_from_path(media, deploy_path_index)?;
                     }
