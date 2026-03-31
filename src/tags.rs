@@ -224,6 +224,7 @@ fn write_xmp_init_debug_csv(
                 .collect::<Vec<_>>(),
         ),
     ])?;
+    df = df.sort([PATH_COLUMN], SortMultipleOptions::default())?;
     let mut file = std::fs::File::create(debug_csv_path.clone())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
