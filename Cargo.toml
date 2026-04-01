@@ -24,7 +24,7 @@ polars = { version = "0.52.0", default-features = false, features = ["lazy", "fm
 polars-io = { version = "0.52.0", default-features = false, features = ["csv"] }
 rayon = "1.11.0"
 regex = "1.12.3"
-rustyline = { version = "17.0.2", features = ["derive"] }
+rustyline = { version = "18.0.0", features = ["derive"] }
 walkdir = "2.5.0"
 xmp_toolkit = "1.12.0"
 
