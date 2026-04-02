@@ -86,6 +86,19 @@ impl Validator for NumericSelectValidator {
     }
 }
 
+fn finalize_xmp_file<T>(
+    file: &mut XmpFile,
+    operation_result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match file.try_close().map_err(anyhow::Error::from) {
+        Ok(()) => operation_result,
+        Err(close_err) => match operation_result {
+            Ok(_) => Err(close_err.context("Failed to close XMP file")),
+            Err(err) => Err(err.context(format!("Failed to close XMP file: {close_err}"))),
+        },
+    }
+}
+
 fn prompt_deployment_path_index(
     rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
     path_sample: String,
@@ -134,8 +147,8 @@ pub fn write_taglist(
     }
 
     f.open_file(image_path, OpenFileOptions::default().for_update())?;
-    f.put_xmp(&meta)?;
-    f.close();
+    let put_result = f.put_xmp(&meta).map_err(anyhow::Error::from);
+    finalize_xmp_file(&mut f, put_result)?;
     Ok(())
 }
 
@@ -302,32 +315,39 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
         {
             // Check existence of xmp file
             if xmp_path.exists() && !info {
+                finalize_xmp_file(&mut media_xmp, Ok(()))?;
                 pb.inc(1);
                 pb.println(format!("XMP file already exists: {}", xmp_path.display()));
                 continue;
             }
             fs::File::create(xmp_path.clone())?;
-            let mut xmp_string = "".to_string();
-            if let Some(xmp) = media_xmp.xmp() {
-                if let Some(row) = debug_row.as_mut() {
-                    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                        row.embedded_datetime_original_raw =
-                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
-                        row.datetime = row.embedded_datetime_original_raw.clone();
+            let xmp_result = (|| -> anyhow::Result<String> {
+                let mut xmp_string = String::new();
+                if let Some(xmp) = media_xmp.xmp() {
+                    if let Some(row) = debug_row.as_mut() {
+                        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                            row.embedded_datetime_original_raw = iso_datetime_to_csv_format(
+                                &ignore_timezone(value.value.to_string())?,
+                            );
+                            row.datetime = row.embedded_datetime_original_raw.clone();
+                        }
+                        if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                            row.embedded_create_date_raw = iso_datetime_to_csv_format(
+                                &ignore_timezone(value.value.to_string())?,
+                            );
+                        }
                     }
-                    if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                        row.embedded_create_date_raw =
-                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                    xmp_string = xmp.to_string_with_options(
+                        ToStringOptions::default().set_newline("\n".to_string()),
+                    )?;
+                    if re_device_setting.is_match(&xmp_string) {
+                        // Workaround: knock off
+                        xmp_string = re_device_setting.replace_all(&xmp_string, "").into_owned();
                     }
                 }
-                xmp_string = xmp.to_string_with_options(
-                    ToStringOptions::default().set_newline("\n".to_string()),
-                )?;
-                if re_device_setting.is_match(&xmp_string) {
-                    // Workaround: knock off
-                    xmp_string = re_device_setting.replace_all(&xmp_string, "").into_owned();
-                }
-            }
+                Ok(xmp_string)
+            })();
+            let mut xmp_string = finalize_xmp_file(&mut media_xmp, xmp_result)?;
             if !xmp_string.contains("exif:DateTimeOriginal")
                 && !xmp_string.contains("xmp:MetadataDate")
             {
@@ -432,85 +452,83 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
-    // Retrieve digikam taglist and datetime from file
-    let mut f = XmpFile::new()?;
-
-    if f.open_file(file_path, OpenFileOptions::default()).is_ok()
-        && let Some(xmp) = f.xmp()
-    {
-        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            datetime = ignore_timezone(value.value.to_string())?;
-        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-            // And timezone is ignored for they write UTC-8 time but label as UTC
-            // i.e. we follow time shown in the picture without considering timezone in metadata
-            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-            if !value.value.to_string().starts_with("1904")
-                && !value.value.to_string().starts_with("1970")
-            {
+    let metadata_result = (|| -> anyhow::Result<Metadata> {
+        if let Some(xmp) = f.xmp() {
+            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
                 datetime = ignore_timezone(value.value.to_string())?;
+            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+                // And timezone is ignored for they write UTC-8 time but label as UTC
+                // i.e. we follow time shown in the picture without considering timezone in metadata
+                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
+                if !value.value.to_string().starts_with("1904")
+                    && !value.value.to_string().starts_with("1970")
+                {
+                    datetime = ignore_timezone(value.value.to_string())?;
+                }
             }
-        }
-        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-        // }
-        if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
-            rating = value.value.to_string();
-        }
-        if debug_mode {
-            for property in xmp.property_array(xmp_ns::DC, "subject") {
-                subjects.push(property.value.to_string());
+            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+            // }
+            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+                rating = value.value.to_string();
             }
-        }
+            if debug_mode {
+                for property in xmp.property_array(xmp_ns::DC, "subject") {
+                    subjects.push(property.value.to_string());
+                }
+            }
 
-        // use adobe hierarchicalSubject if available (digikam also writes to this field)
-        for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
-            let tag = property.value;
-            if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                species.push(
-                    tag.strip_prefix(TagType::Species.adobe_tag_prefix())
-                        .unwrap()
-                        .to_string(),
-                );
-            } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                individuals.push(
-                    tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
-                        .unwrap()
-                        .to_string(),
-                );
-            } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                count.push(
-                    tag.strip_prefix(TagType::Count.adobe_tag_prefix())
-                        .unwrap()
-                        .to_string(),
-                );
-            } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                sex.push(
-                    tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
-                        .unwrap()
-                        .to_string(),
-                );
-            } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                bodyparts.push(
-                    tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
-                        .unwrap()
-                        .to_string(),
-                );
+            // use adobe hierarchicalSubject if available (digikam also writes to this field)
+            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
+                let tag = property.value;
+                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
+                    species.push(
+                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
+                    individuals.push(
+                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                    count.push(
+                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                    sex.push(
+                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                    bodyparts.push(
+                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
             }
         }
-    }
-    Ok((
-        species,
-        individuals,
-        count,
-        sex,
-        bodyparts,
-        subjects,
-        datetime,
-        // datetime_digitized,
-        time_modified,
-        rating,
-    ))
+        Ok((
+            species,
+            individuals,
+            count,
+            sex,
+            bodyparts,
+            subjects,
+            datetime,
+            // datetime_digitized,
+            time_modified,
+            rating,
+        ))
+    })();
+    finalize_xmp_file(&mut f, metadata_result)
 }
 
 pub fn get_classifications(
