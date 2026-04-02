@@ -1613,26 +1613,28 @@ fn update_xmp(
         array_name: &str,
         old_tag: &str,
         new_tag: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<usize> {
         if xmp.property(ns, array_name).is_none() {
-            println!("No {array_name} property found in namespace {ns}");
-            return Ok(());
+            return Ok(0);
         }
 
         let array_len = xmp.array_len(ns, array_name);
+        let mut match_count = 0;
         for i in 1..=array_len {
             let array_item_path = &format!("{array_name}[{i}]");
             if let Some(prop) = xmp.property(ns, array_item_path) {
                 let value = &prop.value;
                 if value == old_tag {
+                    match_count += 1;
                     let new_xmp_value = XmpValue::new(new_tag.to_string());
-                    if let Err(e) = xmp.set_property(ns, array_item_path, &new_xmp_value) {
-                        println!("Error updating tag {i} in {array_name}: {e:?}");
-                    }
+                    xmp.set_property(ns, array_item_path, &new_xmp_value)
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to update tag {i} in {array_name}: {e:?}")
+                        })?;
                 }
             }
         }
-        Ok(())
+        Ok(match_count)
     }
 
     if old_value.is_empty() {
@@ -1654,13 +1656,21 @@ fn update_xmp(
             "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
         ));
         // adobe hierarchical subject
-        update_tag_array(
+        let adobe_matches = update_tag_array(
             &mut xmp,
             LIGHTROOM_NS,
             LR_HIERARCHICAL_SUBJECT,
             &format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
             &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
         )?;
+        if adobe_matches == 0 {
+            return Err(anyhow::anyhow!(
+                "Tag mismatch in {}: expected '{}' in {}",
+                file_path.display(),
+                format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
+                LR_HIERARCHICAL_SUBJECT,
+            ));
+        }
 
         // digiKam taglist
         update_tag_array(
