@@ -308,18 +308,16 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
             row.file_modified_time =
                 iso_datetime_to_csv_format(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
         }
+        if xmp_path.exists() && !info {
+            pb.inc(1);
+            pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+            continue;
+        }
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
             .open_file(media.clone(), OpenFileOptions::default().repair_file())
             .is_ok()
         {
-            // Check existence of xmp file
-            if xmp_path.exists() && !info {
-                finalize_xmp_file(&mut media_xmp, Ok(()))?;
-                pb.inc(1);
-                pb.println(format!("XMP file already exists: {}", xmp_path.display()));
-                continue;
-            }
             fs::File::create(xmp_path.clone())?;
             let xmp_result = (|| -> anyhow::Result<String> {
                 let mut xmp_string = String::new();
