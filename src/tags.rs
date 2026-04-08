@@ -1689,10 +1689,11 @@ fn update_xmp(
             &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
         )?;
         if adobe_matches == 0 {
+            let expected_tag = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
             return Err(anyhow::anyhow!(
                 "Tag mismatch in {}: expected '{}' in {}",
                 file_path.display(),
-                format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
+                expected_tag,
                 LR_HIERARCHICAL_SUBJECT,
             ));
         }
