@@ -9,12 +9,11 @@ use crate::utils::{
     has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
     iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, sync_modified_time,
 };
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
-use regex::Regex;
 use rustyline::{
     Cmd, Completer, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, Helper,
     Highlighter, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount, Result,
@@ -26,7 +25,8 @@ use std::{
     str::FromStr,
 };
 use xmp_toolkit::{
-    FromStrOptions, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue, xmp_ns,
+    FromStrOptions, OpenFileOptions, ToStringOptions, XmpDate, XmpDateTime, XmpFile, XmpMeta,
+    XmpTime, XmpValue, xmp_ns,
 };
 
 // Namesapce for "taglists"
@@ -97,6 +97,51 @@ fn finalize_xmp_file<T>(
             Err(err) => Err(err.context(format!("Failed to close XMP file: {close_err}"))),
         },
     }
+}
+
+fn naive_datetime_to_xmp(datetime: &str) -> anyhow::Result<XmpDateTime> {
+    let datetime = NaiveDateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%S")?;
+    Ok(XmpDateTime {
+        date: Some(XmpDate {
+            year: datetime.year(),
+            month: datetime.month() as i32,
+            day: datetime.day() as i32,
+        }),
+        time: Some(XmpTime {
+            hour: datetime.hour() as i32,
+            minute: datetime.minute() as i32,
+            second: datetime.second() as i32,
+            nanosecond: datetime.nanosecond() as i32,
+            time_zone: None,
+        }),
+    })
+}
+
+fn set_xmp_datetime_without_timezone(
+    xmp: &mut XmpMeta,
+    namespace: &str,
+    path: &str,
+    datetime: &str,
+) -> anyhow::Result<()> {
+    let value = XmpValue::new(naive_datetime_to_xmp(datetime)?);
+    xmp.set_property_date(namespace, path, &value)
+        .map_err(anyhow::Error::from)
+}
+
+fn strip_xmp_datetime_timezone(
+    xmp: &mut XmpMeta,
+    namespace: &str,
+    path: &str,
+) -> anyhow::Result<()> {
+    if let Some(mut value) = xmp.property_date(namespace, path)
+        && let Some(time) = value.value.time.as_mut()
+        && time.time_zone.is_some()
+    {
+        time.time_zone = None;
+        xmp.set_property_date(namespace, path, &value)
+            .map_err(anyhow::Error::from)?;
+    }
+    Ok(())
 }
 
 fn prompt_deployment_path_index(
@@ -249,12 +294,6 @@ fn write_xmp_init_debug_csv(
 pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
-    let re: Regex = Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z").unwrap();
-    let re_rdf = Regex::new(r"(?s)(<rdf:RDF[^>]*>)")?;
-    // Unrecognized field by Exiv2, https://bugs.kde.org/show_bug.cgi?id=504135
-    let re_device_setting = Regex::new(
-        r"(?s)<exif:DeviceSettingDescription[^>]*>.*?</exif:DeviceSettingDescription>\s*",
-    )?;
 
     let mut debug_rows = if info {
         Vec::with_capacity(media_count)
@@ -315,52 +354,52 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
         }
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
-            .open_file(media.clone(), OpenFileOptions::default().repair_file())
+            .open_file(media.clone(), OpenFileOptions::default())
             .is_ok()
         {
-            fs::File::create(xmp_path.clone())?;
-            let xmp_result = (|| -> anyhow::Result<String> {
-                let mut xmp_string = String::new();
-                if let Some(xmp) = media_xmp.xmp() {
-                    if let Some(row) = debug_row.as_mut() {
-                        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                            row.embedded_datetime_original_raw = iso_datetime_to_csv_format(
-                                &ignore_timezone(value.value.to_string())?,
-                            );
-                            row.datetime = row.embedded_datetime_original_raw.clone();
-                        }
-                        if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                            row.embedded_create_date_raw = iso_datetime_to_csv_format(
-                                &ignore_timezone(value.value.to_string())?,
-                            );
-                        }
+            let xmp_result = (|| -> anyhow::Result<XmpMeta> {
+                let mut xmp = media_xmp.xmp().unwrap_or_default();
+                if let Some(row) = debug_row.as_mut() {
+                    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                        row.embedded_datetime_original_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                        row.datetime = row.embedded_datetime_original_raw.clone();
                     }
-                    xmp_string = xmp.to_string_with_options(
-                        ToStringOptions::default().set_newline("\n".to_string()),
-                    )?;
-                    if re_device_setting.is_match(&xmp_string) {
-                        // Workaround: knock off
-                        xmp_string = re_device_setting.replace_all(&xmp_string, "").into_owned();
+                    if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                        row.embedded_create_date_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
                     }
                 }
-                Ok(xmp_string)
+                // Workaround for Exiv2 not recognizing this EXIF field in sidecars.
+                xmp.delete_property(xmp_ns::EXIF, "DeviceSettingDescription")
+                    .map_err(anyhow::Error::from)?;
+                Ok(xmp)
             })();
-            let mut xmp_string = finalize_xmp_file(&mut media_xmp, xmp_result)?;
-            if !xmp_string.contains("exif:DateTimeOriginal")
-                && !xmp_string.contains("xmp:MetadataDate")
-            {
-                if xmp_string.contains("xmp:CreateDate")
-                    && !xmp_string.contains("1904-01-01")
-                    && !xmp_string.contains("1970-01-01")
-                {
+            let mut xmp = finalize_xmp_file(&mut media_xmp, xmp_result)?;
+
+            let has_datetime_original = xmp.property(xmp_ns::EXIF, "DateTimeOriginal").is_some();
+            let has_metadata_date = xmp.property(xmp_ns::XMP, "MetadataDate").is_some();
+            if !has_datetime_original && !has_metadata_date {
+                let create_date = xmp.property(xmp_ns::XMP, "CreateDate");
+                let use_create_date = create_date.as_ref().is_some_and(|value| {
+                    !value.value.starts_with("1904-01-01") && !value.value.starts_with("1970-01-01")
+                });
+                if use_create_date {
+                    if let Some(row) = debug_row.as_mut() {
+                        row.datetime = if !row.embedded_create_date_raw.is_empty() {
+                            row.embedded_create_date_raw.clone()
+                        } else if let Some(value) = create_date.as_ref() {
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
+                        } else {
+                            String::new()
+                        }
+                    }
                     // Workaround for video files, as some manufacturer only write to xmp:CreateDate
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
                     // and skip the 0 timestamp if manufacturer write it
-                    if let Some(row) = debug_row.as_mut() {
-                        row.datetime = row.embedded_create_date_raw.clone();
-                    }
-                    xmp_string = re.replace_all(&xmp_string, "$1").to_string();
+                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
+                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
                 } else {
                     // Get the modified time of the file
                     if let Ok(metadata) = fs::metadata(media)
@@ -371,31 +410,17 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                         if let Some(row) = debug_row.as_mut() {
                             row.datetime = iso_datetime_to_csv_format(&datetime_str);
                         }
-                        if xmp_string.contains("rdf") {
-                            let rdf_exif_datetime = format!(
-                                r#"        <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
-            <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
-        </rdf:Description>"#
-                            );
-                            xmp_string = re_rdf
-                                .replace(&xmp_string, format!("$1\n{rdf_exif_datetime}"))
-                                .to_string();
-                        } else {
-                            xmp_string = format!(
-                                r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
-<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
-        <exif:DateTimeOriginal>{datetime_str}</exif:DateTimeOriginal>
-    </rdf:Description>
-</rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>"#
-                            );
-                        }
+                        set_xmp_datetime_without_timezone(
+                            &mut xmp,
+                            xmp_ns::EXIF,
+                            "DateTimeOriginal",
+                            &datetime_str,
+                        )?;
                     }
                 }
             }
+            let xmp_string = xmp
+                .to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
             fs::write(&xmp_path, xmp_string)?;
             pb.inc(1);
         } else {
