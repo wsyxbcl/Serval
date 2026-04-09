@@ -128,6 +128,13 @@ fn set_xmp_datetime_without_timezone(
         .map_err(anyhow::Error::from)
 }
 
+fn set_xmp_datetime_fields(xmp: &mut XmpMeta, datetime: &str) -> anyhow::Result<()> {
+    // following the convertion table by Exiv2: https://exiv2.org/conversion.html
+    set_xmp_datetime_without_timezone(xmp, xmp_ns::EXIF, "DateTimeOriginal", datetime)?;
+    set_xmp_datetime_without_timezone(xmp, xmp_ns::PHOTOSHOP, "DateCreated", datetime)?;
+    Ok(())
+}
+
 fn strip_xmp_datetime_timezone(
     xmp: &mut XmpMeta,
     namespace: &str,
@@ -385,19 +392,27 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                     !value.value.starts_with("1904-01-01") && !value.value.starts_with("1970-01-01")
                 });
                 if use_create_date {
-                    if let Some(row) = debug_row.as_mut() {
-                        row.datetime = if !row.embedded_create_date_raw.is_empty() {
+                    let chosen_datetime = if let Some(row) = debug_row.as_ref() {
+                        if !row.embedded_create_date_raw.is_empty() {
                             row.embedded_create_date_raw.clone()
                         } else if let Some(value) = create_date.as_ref() {
                             iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
                         } else {
                             String::new()
                         }
+                    } else if let Some(value) = create_date.as_ref() {
+                        iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
+                    } else {
+                        String::new()
+                    };
+                    if let Some(row) = debug_row.as_mut() {
+                        row.datetime = chosen_datetime.clone();
                     }
                     // Workaround for video files, as some manufacturer only write to xmp:CreateDate
                     // And timezone is ignored for they write UTC-8 time but label as UTC
                     // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
                     // and skip the 0 timestamp if manufacturer write it
+                    set_xmp_datetime_fields(&mut xmp, &chosen_datetime.replace(' ', "T"))?;
                     strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
                     strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
                 } else {
@@ -410,12 +425,7 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                         if let Some(row) = debug_row.as_mut() {
                             row.datetime = iso_datetime_to_csv_format(&datetime_str);
                         }
-                        set_xmp_datetime_without_timezone(
-                            &mut xmp,
-                            xmp_ns::EXIF,
-                            "DateTimeOriginal",
-                            &datetime_str,
-                        )?;
+                        set_xmp_datetime_fields(&mut xmp, &datetime_str)?;
                     }
                 }
             }
@@ -1887,14 +1897,7 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
 
-    // Update the exif:DateTimeOriginal field
-    let exif_ns = "http://ns.adobe.com/exif/1.0/";
-    XmpMeta::register_namespace(exif_ns, "exif")?;
-
-    let datetime_property = "exif:DateTimeOriginal";
-    let new_datetime_value = XmpValue::new(iso8601_datetime);
-
-    xmp.set_property(exif_ns, datetime_property, &new_datetime_value)?;
+    set_xmp_datetime_fields(&mut xmp, &iso8601_datetime)?;
 
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
