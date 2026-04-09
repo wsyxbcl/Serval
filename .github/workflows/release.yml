@@ -92,5 +92,5 @@ jobs:
         with:
           name: ${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
           path: staging/${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
-          compression-level: 0
+          compression-level: 9
           if-no-files-found: error 
