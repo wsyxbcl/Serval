@@ -87,20 +87,10 @@ jobs:
           
           ls -R "${STAGING_DIR}"
 
-          ARCHIVE_BASENAME="${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}"
-          if [ "${{ matrix.os }}" == "windows-latest" ]; then
-            7z a "${ARCHIVE_BASENAME}.zip" "./${STAGING_DIR}/*" 
-            echo "ARCHIVE_NAME=${ARCHIVE_BASENAME}.zip" >> $GITHUB_ENV
-          else
-            tar czvf "${ARCHIVE_BASENAME}.tar.gz" -C "./staging" "${ARCHIVE_BASENAME}"
-            echo "ARCHIVE_NAME=${ARCHIVE_BASENAME}.tar.gz" >> $GITHUB_ENV
-          fi
-          
-          echo "Archive created: ${{ env.ARCHIVE_NAME }}"
-
       - name: Upload artifact for ${{ matrix.os }} (${{ matrix.artifact_suffix }})
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
-          path: ${{ env.ARCHIVE_NAME }} 
+          path: staging/${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
+          compression-level: 0
           if-no-files-found: error 

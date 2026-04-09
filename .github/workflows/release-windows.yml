@@ -71,18 +71,10 @@ jobs:
           echo "Contents of the staging directory (${FULL_STAGING_PATH}):"
           ls -R "${FULL_STAGING_PATH}"
 
-          ARCHIVE_FILE_NAME="${ARCHIVE_BASENAME}.zip"
-          
-          echo "Creating archive ${ARCHIVE_FILE_NAME} from contents of ${FULL_STAGING_PATH}"
-          (cd "${FULL_STAGING_PATH}" && 7z a "../../${ARCHIVE_FILE_NAME}" *)
-          
-          echo "ARCHIVE_NAME=${ARCHIVE_FILE_NAME}" >> $GITHUB_ENV
-          
-          echo "Archive created: ${ARCHIVE_FILE_NAME}"
-
       - name: Upload artifact for Windows (${{ matrix.artifact_suffix }})
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
-          path: ${{ env.ARCHIVE_NAME }}
+          path: staging/${{ env.MAIN_BINARY_NAME }}-${{ github.event.inputs.release_tag }}-${{ matrix.artifact_suffix }}
+          compression-level: 0
           if-no-files-found: error
