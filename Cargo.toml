@@ -19,7 +19,7 @@ clap = { version = "4.5.60", features = ["derive"] }
 indicatif = "0.18.3"
 itertools = "0.14.0"
 pest = "2.8.6"
-pest_derive = "2.8.4"
+pest_derive = "2.8.6"
 polars = { version = "0.52.0", default-features = false, features = ["lazy", "fmt", "strings", "dtype-struct", "is_in", "dynamic_group_by", "temporal", "timezones", "dtype-datetime", "asof_join"] }
 polars-io = { version = "0.52.0", default-features = false, features = ["csv"] }
 rayon = "1.11.0"
