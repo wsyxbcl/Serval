@@ -1,7 +1,8 @@
 use crate::schema::{
-    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LEGACY_DATETIME_COLUMN,
-    MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN, SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN,
-    XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN, canonicalize_observe_tags_df, infer_media_type,
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
+    LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
+    SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
+    canonicalize_observe_tags_df, infer_media_type,
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
@@ -26,7 +27,7 @@ use std::{
 };
 use xmp_toolkit::{
     FromStrOptions, OpenFileOptions, ToStringOptions, XmpDate, XmpDateTime, XmpFile, XmpMeta,
-    XmpTime, XmpValue, xmp_ns,
+    XmpTime, XmpValue, xmp_gps, xmp_ns,
 };
 
 // Namesapce for "taglists"
@@ -151,6 +152,36 @@ fn strip_xmp_datetime_timezone(
     Ok(())
 }
 
+fn parse_xmp_gps_coordinate(raw: &str, property: &str) -> Option<f64> {
+    match property {
+        "GPSLatitude" => xmp_gps::exif_latitude_to_decimal(raw).or_else(|| raw.parse().ok()),
+        "GPSLongitude" => xmp_gps::exif_longitude_to_decimal(raw).or_else(|| raw.parse().ok()),
+        _ => None,
+    }
+}
+
+fn format_coordinate(coordinate: f64) -> String {
+    format!("{coordinate:.6}")
+}
+
+fn extract_xmp_gps_coordinates(xmp: &XmpMeta) -> (Option<String>, Option<String>) {
+    let latitude_raw = xmp
+        .property(xmp_ns::EXIF, "GPSLatitude")
+        .map(|value| value.value);
+    let longitude_raw = xmp
+        .property(xmp_ns::EXIF, "GPSLongitude")
+        .map(|value| value.value);
+    let latitude = latitude_raw
+        .as_deref()
+        .and_then(|raw| parse_xmp_gps_coordinate(raw, "GPSLatitude"))
+        .map(format_coordinate);
+    let longitude = longitude_raw
+        .as_deref()
+        .and_then(|raw| parse_xmp_gps_coordinate(raw, "GPSLongitude"))
+        .map(format_coordinate);
+    (latitude, longitude)
+}
+
 fn prompt_deployment_path_index(
     rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
     path_sample: String,
@@ -213,6 +244,8 @@ struct XmpInitDebugRow {
     embedded_create_date_raw: String,
     file_modified_time: String,
     datetime: String,
+    latitude: String,
+    longitude: String,
     xmp_update_datetime: String,
 }
 
@@ -272,6 +305,20 @@ fn write_xmp_init_debug_csv(
             debug_rows
                 .iter()
                 .map(|row| row.file_modified_time.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            LATITUDE_COLUMN.into(),
+            debug_rows
+                .iter()
+                .map(|row| row.latitude.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            LONGITUDE_COLUMN.into(),
+            debug_rows
+                .iter()
+                .map(|row| row.longitude.as_str())
                 .collect::<Vec<_>>(),
         ),
         Column::new(
@@ -376,6 +423,9 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                         row.embedded_create_date_raw =
                             iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
                     }
+                    let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
+                    row.latitude = latitude.unwrap_or_default();
+                    row.longitude = longitude.unwrap_or_default();
                 }
                 // Workaround for Exiv2 not recognizing this EXIF field in sidecars.
                 xmp.delete_property(xmp_ns::EXIF, "DeviceSettingDescription")
@@ -456,6 +506,8 @@ type Metadata = (
     Vec<String>, // bodyparts
     Vec<String>, // subjects
     String,      // datetime
+    String,      // latitude
+    String,      // longitude
     // String,      // datetime_digitized
     String, // time_modified
     String, // rating
@@ -476,6 +528,8 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
     let mut bodyparts: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
     let mut datetime = String::new();
+    let mut latitude = String::new();
+    let mut longitude = String::new();
     // let mut datetime_digitized = String::new();
     let mut time_modified = String::new();
     let mut rating = String::new();
@@ -506,6 +560,9 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
             }
+            let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
+            latitude = gps_latitude.unwrap_or_default();
+            longitude = gps_longitude.unwrap_or_default();
             if debug_mode {
                 for property in xmp.property_array(xmp_ns::DC, "subject") {
                     subjects.push(property.value.to_string());
@@ -556,6 +613,8 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
             bodyparts,
             subjects,
             datetime,
+            latitude,
+            longitude,
             // datetime_digitized,
             time_modified,
             rating,
@@ -620,6 +679,8 @@ pub fn get_classifications(
     let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
     let mut datetimes: Vec<String> = Vec::new();
+    let mut latitudes: Vec<String> = Vec::new();
+    let mut longitudes: Vec<String> = Vec::new();
     // let mut datetime_digitizeds: Vec<String> = Vec::new();
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
@@ -636,6 +697,8 @@ pub fn get_classifications(
                     bodyparts,
                     subjects,
                     datetime,
+                    latitude,
+                    longitude,
                     // datetime_digitized,
                     time_modified,
                     rating,
@@ -649,6 +712,8 @@ pub fn get_classifications(
                         bodyparts.join("|"),
                         subjects.join("|"), // subject just for reviewing
                         datetime,
+                        latitude,
+                        longitude,
                         // datetime_digitized,
                         time_modified,
                         rating,
@@ -658,6 +723,8 @@ pub fn get_classifications(
                     pb.println(format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     (
+                        "".to_string(),
+                        "".to_string(),
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -680,9 +747,11 @@ pub fn get_classifications(
         bodypart_tags.push(tag.4);
         subjects.push(tag.5);
         datetimes.push(tag.6);
+        latitudes.push(tag.7);
+        longitudes.push(tag.8);
         // datetime_digitizeds.push(tag.7);
-        time_modifieds.push(tag.7);
-        ratings.push(tag.8);
+        time_modifieds.push(tag.9);
+        ratings.push(tag.10);
     }
     pb.finish();
     // Analysis
@@ -693,6 +762,8 @@ pub fn get_classifications(
     let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
     let s_subjects = Column::new(SUBJECTS_COLUMN.into(), subjects);
     let s_datetime = Column::new(DATETIME_COLUMN.into(), datetimes);
+    let s_latitude = Column::new(LATITUDE_COLUMN.into(), latitudes);
+    let s_longitude = Column::new(LONGITUDE_COLUMN.into(), longitudes);
     // let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
     let s_time_modified = Column::new(TIME_MODIFIED_COLUMN.into(), time_modifieds);
     let s_rating = Column::new(RATING_COLUMN.into(), ratings);
@@ -708,6 +779,8 @@ pub fn get_classifications(
         s_bodyparts,
         s_subjects,
         s_datetime,
+        s_latitude,
+        s_longitude,
         // s_datetime_digitized,
         s_time_modified,
         s_rating,
@@ -767,6 +840,8 @@ pub fn get_classifications(
                 datetime_options.clone(),
                 lit("raise"),
             ),
+            col(LATITUDE_COLUMN),
+            col(LONGITUDE_COLUMN),
             // col("datetime_digitized").str().strptime(
             //     DataType::Datetime(TimeUnit::Milliseconds, None),
             //     datetime_options.clone(),

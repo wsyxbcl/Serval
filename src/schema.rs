@@ -6,6 +6,8 @@ pub const PATH_COLUMN: &str = "path";
 pub const FILENAME_COLUMN: &str = "filename";
 pub const MEDIA_TYPE_COLUMN: &str = "media_type";
 pub const DATETIME_COLUMN: &str = "datetime";
+pub const LATITUDE_COLUMN: &str = "latitude";
+pub const LONGITUDE_COLUMN: &str = "longitude";
 pub const SPECIES_COLUMN: &str = "species";
 pub const INDIVIDUAL_COLUMN: &str = "individual";
 pub const COUNT_COLUMN: &str = "count";
@@ -24,6 +26,8 @@ pub const CANONICAL_TAGS_HEADER: &[&str] = &[
     FILENAME_COLUMN,
     MEDIA_TYPE_COLUMN,
     DATETIME_COLUMN,
+    LATITUDE_COLUMN,
+    LONGITUDE_COLUMN,
     SPECIES_COLUMN,
     INDIVIDUAL_COLUMN,
     COUNT_COLUMN,
