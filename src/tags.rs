@@ -6,9 +6,10 @@ use crate::schema::{
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
-    deployment_from_path, deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
-    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, sync_modified_time,
+    csv_projection_columns, deployment_from_path, deployment_from_path_expr,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    is_temporal_independent, iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
+    sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -1305,7 +1306,15 @@ pub fn get_temporal_independence(
 
     let mut read_opts = CsvReadOptions::default().with_ignore_errors(false);
     if camtrap_dp {
-        read_opts = read_opts.with_parse_options(CsvParseOptions::default());
+        read_opts = read_opts
+            .with_columns(csv_projection_columns(&[
+                "observationID",
+                DEPLOYMENT_ID_COLUMN,
+                "eventStart",
+                "scientificName",
+                "individualID",
+            ]))
+            .with_parse_options(CsvParseOptions::default());
     } else {
         read_opts =
             read_opts.with_parse_options(CsvParseOptions::default().with_try_parse_dates(true));
@@ -1819,6 +1828,11 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         }
     };
     let df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[
+            PATH_COLUMN,
+            XMP_UPDATE_COLUMN,
+            tag_column_name,
+        ]))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
@@ -1891,6 +1905,10 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
 
 pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[
+            PATH_COLUMN,
+            XMP_UPDATE_DATETIME_COLUMN,
+        ]))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;

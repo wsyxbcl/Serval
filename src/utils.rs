@@ -17,9 +17,20 @@ use std::str::FromStr;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use walkdir::{DirEntry, WalkDir};
 use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
+
+pub fn csv_projection_columns(names: &[&str]) -> Option<Arc<[PlSmallStr]>> {
+    Some(Arc::from(
+        names
+            .iter()
+            .map(|name| PlSmallStr::from(*name))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    ))
+}
 
 #[derive(Parser)]
 #[grammar = "filter.pest"]
@@ -609,6 +620,7 @@ pub fn deployments_align(
     keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[DEPLOYMENT_ID_COLUMN]))
         .try_into_reader_with_file_path(Some(deploy_table))?
         .finish()?
         .lazy()
@@ -815,6 +827,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
 
 pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[PATH_COLUMN]))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
@@ -1008,9 +1021,11 @@ pub fn tags_csv_translate(
     to: &str,
 ) -> anyhow::Result<()> {
     let source_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(source_csv.clone()))?
         .finish()?;
     let taglist_df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[from, to]))
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
 
