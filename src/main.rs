@@ -9,7 +9,7 @@ use tags::{
     update_tags, write_taglist,
 };
 use utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, copy_xmp,
+    ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path, copy_xmp,
     deployments_align, deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory,
     sync_xmp_from_csv, tags_csv_translate,
 };
@@ -391,13 +391,13 @@ enum XmpCommands {
         info: bool,
     },
     /// Update XMP files from CSV.
-    /// Tag mode uses: `xmp_update`, plus `species` or `individual` according to `--tag-type`.
+    /// Tag mode uses: `xmp_update`, plus `species`, `individual`, or `rating` according to `--tag-type`.
     /// Datetime mode (`--datetime`) uses: `xmp_update_datetime` (format: yyyy-MM-dd HH:mm:ss).
     Update {
         csv_path: PathBuf,
-        /// Tag type for tag mode (`species` or `individual`).
+        /// Tag type for tag mode (`species`, `individual`, or `rating`).
         #[arg(short, long, value_name = "TYPE", required_unless_present = "datetime")]
-        tag_type: Option<TagType>,
+        tag_type: Option<XmpUpdateType>,
         /// Use datetime mode (reads `xmp_update_datetime` instead of xmp_update).
         #[arg(long)]
         datetime: bool,

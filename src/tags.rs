@@ -5,9 +5,10 @@ use crate::schema::{
     canonicalize_observe_tags_df, infer_media_type,
 };
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
-    csv_projection_columns, deployment_from_path, deployment_from_path_expr, filter_expr_to_polars,
-    get_path_levels, has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
+    ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
+    configure_progress_bar, csv_projection_columns, deployment_from_path,
+    deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
     iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
     reject_duplicate_csv_columns, sync_modified_time,
 };
@@ -1707,12 +1708,21 @@ fn update_xmp(
     file_path: PathBuf,
     old_value: String,
     new_value: String,
-    tag_type: TagType,
+    update_type: XmpUpdateType,
     pb: &ProgressBar,
 ) -> anyhow::Result<()> {
     let xmp_content = fs::read_to_string(&file_path)?;
     let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
+
+    if update_type == XmpUpdateType::Rating {
+        update_xmp_rating(&file_path, &mut xmp, &old_value, &new_value, pb)?;
+        return finalize_xmp_update(file_path, xmp);
+    }
+
+    let tag_type = update_type
+        .tag_type()
+        .ok_or_else(|| anyhow::anyhow!("Invalid hierarchical tag update type: {update_type}"))?;
 
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
@@ -1808,6 +1818,43 @@ fn update_xmp(
         update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
     }
 
+    finalize_xmp_update(file_path, xmp)
+}
+
+fn update_xmp_rating(
+    file_path: &Path,
+    xmp: &mut XmpMeta,
+    old_value: &str,
+    new_value: &str,
+    pb: &ProgressBar,
+) -> anyhow::Result<()> {
+    let current_rating = xmp
+        .property(xmp_ns::XMP, "Rating")
+        .map(|value| value.value.to_string())
+        .unwrap_or_default();
+
+    if !old_value.is_empty() && current_rating != old_value {
+        return Err(anyhow::anyhow!(
+            "Rating mismatch in {}: expected '{}', found '{}'",
+            file_path.display(),
+            old_value,
+            current_rating
+        ));
+    }
+
+    if old_value.is_empty() {
+        pb.println(format!("Setting Rating to '{new_value}'"));
+    } else {
+        pb.println(format!(
+            "Updating Rating from '{old_value}' to '{new_value}'"
+        ));
+    }
+
+    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.to_string()))?;
+    Ok(())
+}
+
+fn finalize_xmp_update(file_path: PathBuf, xmp: XmpMeta) -> anyhow::Result<()> {
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
 
@@ -1822,14 +1869,8 @@ fn update_xmp(
     Ok(())
 }
 
-pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
-    let tag_column_name = match tag_type {
-        TagType::Species => "species",
-        TagType::Individual => "individual",
-        _ => {
-            return Err(anyhow::anyhow!("Invalid tag type"));
-        }
-    };
+pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
+    let tag_column_name = update_type.col_name();
     let df = CsvReadOptions::default()
         .with_columns(csv_projection_columns(&[
             PATH_COLUMN,
@@ -1841,15 +1882,24 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_filtered = df
+    let mut df_filtered_lazy = df
         .lazy()
         .filter(col(XMP_UPDATE_COLUMN).is_not_null())
         .select([
             col(PATH_COLUMN),
             col(XMP_UPDATE_COLUMN),
             col(tag_column_name),
-        ])
-        .collect()?;
+        ]);
+    if update_type == XmpUpdateType::Rating {
+        df_filtered_lazy = df_filtered_lazy.unique(
+            Some(cols(vec![
+                PATH_COLUMN.to_string(),
+                tag_column_name.to_string(),
+            ])),
+            UniqueKeepStrategy::First,
+        );
+    }
+    let df_filtered = df_filtered_lazy.collect()?;
 
     let num_updates = df_filtered.height();
     println!("Found {num_updates} rows with updates");
@@ -1893,7 +1943,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
                     current_path.clone(),
                     tag_original.to_string(),
                     xmp_update.to_string(),
-                    tag_type,
+                    update_type,
                     &pb,
                 )?;
             }

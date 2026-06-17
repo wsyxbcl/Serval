@@ -126,6 +126,37 @@ impl TagType {
     }
 }
 
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
+pub enum XmpUpdateType {
+    Species,
+    Individual,
+    Rating,
+}
+
+impl fmt::Display for XmpUpdateType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl XmpUpdateType {
+    pub fn col_name(self) -> &'static str {
+        match self {
+            Self::Species => TagType::Species.col_name(),
+            Self::Individual => TagType::Individual.col_name(),
+            Self::Rating => RATING_COLUMN,
+        }
+    }
+
+    pub fn tag_type(self) -> Option<TagType> {
+        match self {
+            Self::Species => Some(TagType::Species),
+            Self::Individual => Some(TagType::Individual),
+            Self::Rating => None,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum ExtractFilterType {
     Species,
