@@ -32,6 +32,20 @@ pub fn csv_projection_columns(names: &[&str]) -> Option<Arc<[PlSmallStr]>> {
     ))
 }
 
+pub fn reject_duplicate_csv_columns(df: &DataFrame) -> anyhow::Result<()> {
+    if df
+        .get_column_names_str()
+        .into_iter()
+        .any(|name| name.contains("_duplicated_"))
+    {
+        return Err(anyhow::anyhow!(
+            "Duplicated CSV columns detected. Please check the input CSV header."
+        ));
+    }
+
+    Ok(())
+}
+
 #[derive(Parser)]
 #[grammar = "filter.pest"]
 struct FilterParser;
@@ -622,7 +636,9 @@ pub fn deployments_align(
     let deploy_df = CsvReadOptions::default()
         .with_columns(csv_projection_columns(&[DEPLOYMENT_ID_COLUMN]))
         .try_into_reader_with_file_path(Some(deploy_table))?
-        .finish()?
+        .finish()?;
+    reject_duplicate_csv_columns(&deploy_df)?;
+    let deploy_df = deploy_df
         .lazy()
         .select([col(DEPLOYMENT_ID_COLUMN)])
         .collect()?;
@@ -831,6 +847,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&df)?;
 
     let df_filtered = df
         .lazy()
@@ -1024,10 +1041,12 @@ pub fn tags_csv_translate(
         .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(source_csv.clone()))?
         .finish()?;
+    reject_duplicate_csv_columns(&source_df)?;
     let taglist_df = CsvReadOptions::default()
         .with_columns(csv_projection_columns(&[from, to]))
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
+    reject_duplicate_csv_columns(&taglist_df)?;
 
     let joined = source_df.clone().lazy().join(
         taglist_df.clone().lazy(),

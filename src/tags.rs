@@ -8,7 +8,8 @@ use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, absolute_path, configure_progress_bar,
     csv_projection_columns, deployment_from_path, deployment_from_path_expr, filter_expr_to_polars,
     get_path_levels, has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
-    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, sync_modified_time,
+    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
+    reject_duplicate_csv_columns, sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -216,6 +217,7 @@ pub fn write_taglist(
         .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&tag_df)?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
@@ -951,6 +953,7 @@ pub fn extract_resources(
         )
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&df)?;
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
     let column_names = df.get_column_names_str();
@@ -1323,6 +1326,7 @@ pub fn get_temporal_independence(
         .and_then(|reader| reader.finish())
     {
         Ok(df) => {
+            reject_duplicate_csv_columns(&df)?;
             if camtrap_dp {
                 let event_col = df.column("eventStart")?;
                 if event_col.null_count() > 0 {
@@ -1835,6 +1839,7 @@ pub fn update_tags(csv_path: PathBuf, tag_type: TagType) -> anyhow::Result<()> {
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&df)?;
 
     let df_filtered = df
         .lazy()
@@ -1911,6 +1916,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&df)?;
 
     let df_filtered = df
         .lazy()
