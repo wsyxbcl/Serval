@@ -1872,6 +1872,7 @@ fn finalize_xmp_update(file_path: PathBuf, xmp: XmpMeta) -> anyhow::Result<()> {
 pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
     let tag_column_name = update_type.col_name();
     let df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .with_columns(csv_projection_columns(&[
             PATH_COLUMN,
             XMP_UPDATE_COLUMN,
