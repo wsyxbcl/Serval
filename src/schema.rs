@@ -88,10 +88,13 @@ pub fn infer_media_type(path: &Path) -> anyhow::Result<&'static str> {
 }
 
 pub fn canonicalize_observe_tags_df(df: DataFrame) -> PolarsResult<DataFrame> {
-    let column_names = df.get_column_names_str();
     let missing_columns = CANONICAL_TAGS_HEADER
         .iter()
-        .filter(|col| !column_names.contains(col))
+        .filter(|col| {
+            !df.get_column_names()
+                .iter()
+                .any(|name| name.as_str() == **col)
+        })
         .map(|col| lit("").alias(*col))
         .collect::<Vec<_>>();
 

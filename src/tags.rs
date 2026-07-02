@@ -223,7 +223,7 @@ pub fn write_taglist(
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
     let mut meta = XmpMeta::from_str(dummy_xmp)?;
-    for tag in tags.str()? {
+    for tag in tags.str()?.iter() {
         meta.set_array_item(
             DIGIKAM_NS,
             DIGIKAM_TAGSLIST,
@@ -267,78 +267,81 @@ fn write_xmp_init_debug_csv(
 ) -> anyhow::Result<()> {
     let timestamp = Local::now().format("%Y%m%d%H%M%S");
     let debug_csv_path = output_dir.join(format!("xmp_init_debug_{timestamp}.csv"));
-    let mut df = DataFrame::new(vec![
-        Column::new(
-            PATH_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.path.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            "deployment".into(),
-            debug_rows
-                .iter()
-                .map(|row| row.deployment.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            MEDIA_TYPE_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.media_type.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            "embedded_datetime_original_raw".into(),
-            debug_rows
-                .iter()
-                .map(|row| row.embedded_datetime_original_raw.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            "embedded_create_date_raw".into(),
-            debug_rows
-                .iter()
-                .map(|row| row.embedded_create_date_raw.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            "file_modified_time".into(),
-            debug_rows
-                .iter()
-                .map(|row| row.file_modified_time.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            LATITUDE_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.latitude.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            LONGITUDE_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.longitude.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            DATETIME_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.datetime.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        Column::new(
-            XMP_UPDATE_DATETIME_COLUMN.into(),
-            debug_rows
-                .iter()
-                .map(|row| row.xmp_update_datetime.as_str())
-                .collect::<Vec<_>>(),
-        ),
-    ])?;
+    let mut df = DataFrame::new(
+        debug_rows.len(),
+        vec![
+            Column::new(
+                PATH_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "deployment".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.deployment.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                MEDIA_TYPE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.media_type.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "embedded_datetime_original_raw".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.embedded_datetime_original_raw.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "embedded_create_date_raw".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.embedded_create_date_raw.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "file_modified_time".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.file_modified_time.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                LATITUDE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.latitude.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                LONGITUDE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.longitude.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                DATETIME_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.datetime.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                XMP_UPDATE_DATETIME_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.xmp_update_datetime.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        ],
+    )?;
     df = df.sort([PATH_COLUMN], SortMultipleOptions::default())?;
     let mut file = std::fs::File::create(debug_csv_path.clone())?;
     CsvWriter::new(&mut file)
@@ -771,23 +774,27 @@ pub fn get_classifications(
     let s_time_modified = Column::new(TIME_MODIFIED_COLUMN.into(), time_modifieds);
     let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
-    let mut df_raw = DataFrame::new(vec![
-        Column::new(PATH_COLUMN.into(), image_paths),
-        Column::new(FILENAME_COLUMN.into(), image_filenames),
-        Column::new(MEDIA_TYPE_COLUMN.into(), media_types),
-        s_species,
-        s_individuals,
-        s_count,
-        s_sex,
-        s_bodyparts,
-        s_subjects,
-        s_datetime,
-        s_latitude,
-        s_longitude,
-        // s_datetime_digitized,
-        s_time_modified,
-        s_rating,
-    ])?;
+    let df_raw_height = image_paths.len();
+    let mut df_raw = DataFrame::new(
+        df_raw_height,
+        vec![
+            Column::new(PATH_COLUMN.into(), image_paths),
+            Column::new(FILENAME_COLUMN.into(), image_filenames),
+            Column::new(MEDIA_TYPE_COLUMN.into(), media_types),
+            s_species,
+            s_individuals,
+            s_count,
+            s_sex,
+            s_bodyparts,
+            s_subjects,
+            s_datetime,
+            s_latitude,
+            s_longitude,
+            // s_datetime_digitized,
+            s_time_modified,
+            s_rating,
+        ],
+    )?;
     if volunteer_mode {
         // println!("{:?}", df_raw);
         let mut df_empty_species = df_raw
@@ -883,7 +890,7 @@ pub fn get_classifications(
         let mut file = std::fs::File::create(debug_csv_path.clone())?;
         CsvWriter::new(&mut file)
             .include_bom(true)
-            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_raw)?;
         println!("Saved to {}", debug_csv_path.to_string_lossy());
     }
@@ -892,8 +899,20 @@ pub fn get_classifications(
         .clone()
         .lazy()
         .select([col("*")])
-        .explode(cols([TagType::Individual.col_name()]))
-        .explode(cols([TagType::Species.col_name()]))
+        .explode(
+            cols([TagType::Individual.col_name()]),
+            ExplodeOptions {
+                empty_as_null: false,
+                keep_nulls: true,
+            },
+        )
+        .explode(
+            cols([TagType::Species.col_name()]),
+            ExplodeOptions {
+                empty_as_null: false,
+                keep_nulls: true,
+            },
+        )
         .sort([PATH_COLUMN], SortMultipleOptions::default())
         .collect()?;
     let mut df_flatten = canonicalize_observe_tags_df(df_flatten)?;
@@ -902,7 +921,7 @@ pub fn get_classifications(
     let tags_csv_path = output_dir.join(format!("tags{output_suffix}"));
     let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .include_bom(true)
         .finish(&mut df_flatten)?;
     println!("Saved to {}", tags_csv_path.to_string_lossy());
@@ -957,7 +976,6 @@ pub fn extract_resources(
     reject_duplicate_csv_columns(&df)?;
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
-    let column_names = df.get_column_names_str();
     let required_columns = [
         TagType::Species.col_name(),
         TagType::Individual.col_name(),
@@ -967,7 +985,11 @@ pub fn extract_resources(
 
     let missing_columns = required_columns
         .iter()
-        .filter(|col| !column_names.contains(col))
+        .filter(|col| {
+            !df.get_column_names()
+                .iter()
+                .any(|name| name.as_str() == **col)
+        })
         .map(|col| lit("").alias(*col))
         .collect::<Vec<_>>();
     let mut df_lazy = df.lazy();
@@ -1135,11 +1157,11 @@ pub fn extract_resources(
         .replace_all(r"\.", "")?;
 
     for (path, species_tag, individual_tag, rating_tag, custom_tag) in izip!(
-        paths,
-        &species_tags,
-        &individual_tags,
-        &rating_tags,
-        &custom_tags
+        paths.iter(),
+        species_tags.iter(),
+        individual_tags.iter(),
+        rating_tags.iter(),
+        custom_tags.iter()
     ) {
         let subdir = if use_subdir {
             match subdir_value {
@@ -1562,9 +1584,18 @@ pub fn get_temporal_independence(
             .collect()?;
         println!("{df_capture_independent}");
     } else {
-        df_sorted.as_single_chunk_par();
-        let mut iters = df_sorted
-            .columns(["time", target.col_name(), "deployment"])?
+        if df_sorted.height() == 0 {
+            return Err(anyhow::anyhow!(
+                "No records remain after filtering empty/default tags."
+            ));
+        }
+        df_sorted.align_chunks_par();
+        let columns = [
+            df_sorted.column("time")?,
+            df_sorted.column(target.col_name())?,
+            df_sorted.column("deployment")?,
+        ];
+        let mut iters = columns
             .iter()
             .map(|s| s.as_materialized_series().iter())
             .collect::<Vec<_>>();
@@ -1627,7 +1658,7 @@ pub fn get_temporal_independence(
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_capture_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
 
@@ -1663,7 +1694,7 @@ pub fn get_temporal_independence(
         let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
         CsvWriter::new(&mut file)
             .include_bom(true)
-            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_with_events.clone())?;
         println!("Saved to {}", output_dir.join(filename).to_string_lossy());
     }
@@ -1680,7 +1711,7 @@ pub fn get_temporal_independence(
     let mut file = std::fs::File::create(output_dir.join(filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_count_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
 
@@ -1697,7 +1728,7 @@ pub fn get_temporal_independence(
         let mut file = std::fs::File::create(output_dir.join(filename))?;
         CsvWriter::new(&mut file)
             .include_bom(true)
-            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_count_independent_species)?;
         println!("Saved to {}", output_dir.join(filename).to_string_lossy());
     }

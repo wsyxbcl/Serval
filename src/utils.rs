@@ -34,9 +34,9 @@ pub fn csv_projection_columns(names: &[&str]) -> Option<Arc<[PlSmallStr]>> {
 
 pub fn reject_duplicate_csv_columns(df: &DataFrame) -> anyhow::Result<()> {
     if df
-        .get_column_names_str()
-        .into_iter()
-        .any(|name| name.contains("_duplicated_"))
+        .get_column_names()
+        .iter()
+        .any(|name| name.as_str().contains("_duplicated_"))
     {
         return Err(anyhow::anyhow!(
             "Duplicated CSV columns detected. Please check the input CSV header."
@@ -675,7 +675,7 @@ pub fn deployments_align(
         .collect()?;
     let deploy_array = deploy_df[DEPLOYMENT_ID_COLUMN].str()?;
 
-    let deploy_iter = deploy_array.into_iter();
+    let deploy_iter = deploy_array.iter();
     let num_iter = deploy_iter.len();
     let pb = indicatif::ProgressBar::new(num_iter as u64);
     configure_progress_bar(&pb);
@@ -1102,7 +1102,7 @@ pub fn tags_csv_translate(
         if let Ok(col) = unknown.column(TagType::Species.col_name())
             && let Ok(ca) = col.str()
         {
-            for v in ca.into_iter().flatten().take(20) {
+            for v in ca.iter().flatten().take(20) {
                 sample.push(v.to_string());
             }
         }
