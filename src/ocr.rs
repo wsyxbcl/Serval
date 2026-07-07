@@ -1,7 +1,11 @@
+use crate::schema::{FILENAME_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, infer_media_type};
+use crate::utils::{ResourceType, configure_progress_bar, path_enumerate};
 use anyhow::{Context, anyhow};
 use chrono::NaiveDateTime;
 use image::{DynamicImage, ImageBuffer, Rgb};
+use indicatif::ProgressBar;
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
+use polars::prelude::*;
 use regex::Regex;
 use rten::Model;
 use std::fs;
@@ -246,6 +250,185 @@ impl ServalOcrEngine {
 }
 
 #[derive(Debug, Clone)]
+struct OcrRow {
+    path: String,
+    filename: String,
+    media_type: String,
+    datetime_ocr: String,
+    datetime_raw: String,
+    ocr_text: String,
+    datetime_format: String,
+    status: String,
+    error: String,
+}
+
+impl OcrRow {
+    fn failed(path: &Path, datetime_format: &str, status: &str, error: anyhow::Error) -> Self {
+        Self {
+            path: path.to_string_lossy().into_owned(),
+            filename: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            media_type: infer_media_type(path).unwrap_or("").to_string(),
+            datetime_ocr: String::new(),
+            datetime_raw: String::new(),
+            ocr_text: String::new(),
+            datetime_format: datetime_format.to_string(),
+            status: status.to_string(),
+            error: error.to_string(),
+        }
+    }
+}
+
+fn write_ocr_csv(output_dir: &Path, rows: &[OcrRow]) -> anyhow::Result<()> {
+    fs::create_dir_all(output_dir)?;
+    let mut df = DataFrame::new(
+        rows.len(),
+        vec![
+            Column::new(
+                PATH_COLUMN.into(),
+                rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+            ),
+            Column::new(
+                FILENAME_COLUMN.into(),
+                rows.iter()
+                    .map(|row| row.filename.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                MEDIA_TYPE_COLUMN.into(),
+                rows.iter()
+                    .map(|row| row.media_type.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "datetime_ocr".into(),
+                rows.iter()
+                    .map(|row| row.datetime_ocr.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "datetime_raw".into(),
+                rows.iter()
+                    .map(|row| row.datetime_raw.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "ocr_text".into(),
+                rows.iter()
+                    .map(|row| row.ocr_text.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "datetime_format".into(),
+                rows.iter()
+                    .map(|row| row.datetime_format.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "status".into(),
+                rows.iter().map(|row| row.status.as_str()).collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "error".into(),
+                rows.iter().map(|row| row.error.as_str()).collect::<Vec<_>>(),
+            ),
+        ],
+    )?;
+
+    let mut file = fs::File::create(output_dir.join("ocr.csv"))?;
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut df)?;
+    Ok(())
+}
+
+fn collect_media_paths(input_path: PathBuf, sample: Option<usize>) -> anyhow::Result<Vec<PathBuf>> {
+    let paths = if input_path.is_file() {
+        if ResourceType::Media.is_resource(&input_path) {
+            vec![input_path]
+        } else {
+            return Err(anyhow!("unsupported media path: {}", input_path.display()));
+        }
+    } else if input_path.is_dir() {
+        path_enumerate(input_path, ResourceType::Media)
+    } else {
+        return Err(anyhow!("input path does not exist: {}", input_path.display()));
+    };
+
+    Ok(apply_sample_limit(paths, sample))
+}
+
+fn process_media(
+    engine: &ServalOcrEngine,
+    path: &Path,
+    output_dir: &Path,
+    crop: Option<CropBox>,
+    debug_crops: bool,
+    datetime_format: &str,
+) -> OcrRow {
+    match process_media_inner(engine, path, output_dir, crop, debug_crops, datetime_format) {
+        Ok(row) => row,
+        Err(err) => OcrRow::failed(path, datetime_format, "ocr_failed", err),
+    }
+}
+
+fn process_media_inner(
+    engine: &ServalOcrEngine,
+    path: &Path,
+    output_dir: &Path,
+    crop: Option<CropBox>,
+    debug_crops: bool,
+    datetime_format: &str,
+) -> anyhow::Result<OcrRow> {
+    let media_type = infer_media_type(path)?.to_string();
+    let image = if media_type.starts_with("image/") {
+        load_image_input(path, crop)?
+    } else if media_type.starts_with("video/") {
+        load_video_input(path, crop)?
+    } else {
+        return Err(anyhow!("unsupported media type {media_type}"));
+    };
+
+    if debug_crops {
+        save_debug_crop(output_dir, path, &image)?;
+    }
+
+    let ocr_text = engine.get_text(&image)?;
+    let parsed = extract_datetime(&ocr_text, datetime_format);
+    let (datetime_ocr, datetime_raw, status, error) = match parsed {
+        Ok(parsed) => (
+            parsed.normalized,
+            parsed.raw,
+            "ok".to_string(),
+            String::new(),
+        ),
+        Err(err) => (
+            String::new(),
+            String::new(),
+            "parse_failed".to_string(),
+            err.to_string(),
+        ),
+    };
+
+    Ok(OcrRow {
+        path: path.to_string_lossy().into_owned(),
+        filename: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        media_type,
+        datetime_ocr,
+        datetime_raw,
+        ocr_text,
+        datetime_format: datetime_format.to_string(),
+        status,
+        error,
+    })
+}
+
+#[derive(Debug, Clone)]
 pub struct OcrOptions {
     pub input_path: PathBuf,
     pub output_dir: PathBuf,
@@ -256,8 +439,35 @@ pub struct OcrOptions {
     pub allowed_chars: Option<String>,
 }
 
-pub fn run_ocr(_options: OcrOptions) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("serval ocr is not implemented yet"))
+pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
+    let crop = options
+        .crop_box
+        .as_deref()
+        .map(CropBox::parse)
+        .transpose()?;
+    let media_paths = collect_media_paths(options.input_path, options.sample)?;
+    fs::create_dir_all(&options.output_dir)?;
+
+    let engine = ServalOcrEngine::load(options.allowed_chars)?;
+    let pb = ProgressBar::new(media_paths.len() as u64);
+    configure_progress_bar(&pb);
+
+    let mut rows = Vec::with_capacity(media_paths.len());
+    for path in media_paths {
+        let row = process_media(
+            &engine,
+            &path,
+            &options.output_dir,
+            crop,
+            options.debug_crops,
+            &options.datetime_format,
+        );
+        rows.push(row);
+        pb.inc(1);
+    }
+    pb.finish();
+
+    write_ocr_csv(&options.output_dir, &rows)
 }
 
 #[cfg(test)]
