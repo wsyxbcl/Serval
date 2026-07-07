@@ -1,11 +1,16 @@
 use anyhow::{Context, anyhow};
 use chrono::NaiveDateTime;
 use image::{DynamicImage, ImageBuffer, Rgb};
+use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use regex::Regex;
+use rten::Model;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+const DETECTION_MODEL_PATH: &str = "assets/text-detection.rten";
+const RECOGNITION_MODEL_PATH: &str = "assets/text-recognition.rten";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CropBox {
@@ -209,6 +214,35 @@ fn save_debug_crop(
     debug_path.set_extension("png");
     image.save(&debug_path)?;
     Ok(())
+}
+
+struct ServalOcrEngine {
+    engine: OcrEngine,
+}
+
+impl ServalOcrEngine {
+    fn load(allowed_chars: Option<String>) -> anyhow::Result<Self> {
+        let detection_model = Model::load_file(DETECTION_MODEL_PATH)
+            .with_context(|| format!("failed to load OCR detection model from {DETECTION_MODEL_PATH}"))?;
+        let recognition_model = Model::load_file(RECOGNITION_MODEL_PATH).with_context(|| {
+            format!("failed to load OCR recognition model from {RECOGNITION_MODEL_PATH}")
+        })?;
+
+        let engine = OcrEngine::new(OcrEngineParams {
+            detection_model: Some(detection_model),
+            recognition_model: Some(recognition_model),
+            allowed_chars,
+            ..Default::default()
+        })?;
+
+        Ok(Self { engine })
+    }
+
+    fn get_text(&self, image: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> anyhow::Result<String> {
+        let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
+        let input = self.engine.prepare_input(source)?;
+        Ok(self.engine.get_text(&input)?)
+    }
 }
 
 #[derive(Debug, Clone)]
