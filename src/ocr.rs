@@ -1,7 +1,11 @@
 use anyhow::{Context, anyhow};
 use chrono::NaiveDateTime;
+use image::{DynamicImage, ImageBuffer, Rgb};
 use regex::Regex;
-use std::path::PathBuf;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CropBox {
@@ -44,6 +48,14 @@ impl CropBox {
         }
 
         Ok(crop)
+    }
+
+    pub fn to_pixel_rect(self, image_width: u32, image_height: u32) -> (u32, u32, u32, u32) {
+        let x = (image_width as f32 * self.x).round() as u32;
+        let y = (image_height as f32 * self.y).round() as u32;
+        let width = (image_width as f32 * self.width).round().max(1.0) as u32;
+        let height = (image_height as f32 * self.height).round().max(1.0) as u32;
+        (x, y, width, height)
     }
 }
 
@@ -114,6 +126,91 @@ pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedD
     Err(anyhow!("no datetime matched the supplied format"))
 }
 
+pub fn apply_sample_limit(mut paths: Vec<PathBuf>, sample: Option<usize>) -> Vec<PathBuf> {
+    if let Some(limit) = sample {
+        paths.truncate(limit);
+    }
+    paths
+}
+
+fn crop_image(image: DynamicImage, crop: Option<CropBox>) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let mut rgb = image.into_rgb8();
+    if let Some(crop) = crop {
+        let (x, y, width, height) = crop.to_pixel_rect(rgb.width(), rgb.height());
+        image::imageops::crop(&mut rgb, x, y, width, height).to_image()
+    } else {
+        rgb
+    }
+}
+
+fn load_image_input(
+    path: &Path,
+    crop: Option<CropBox>,
+) -> anyhow::Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
+    let image = image::open(path).with_context(|| format!("failed to read image {}", path.display()))?;
+    Ok(crop_image(image, crop))
+}
+
+fn extract_first_video_frame(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            path.to_str()
+                .ok_or_else(|| anyhow!("non-UTF-8 video path: {}", path.display()))?,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to start ffmpeg")?;
+
+    let mut stdout = child.stdout.take().context("failed to capture ffmpeg stdout")?;
+    let mut buffer = Vec::new();
+    stdout.read_to_end(&mut buffer)?;
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(anyhow!(
+            "ffmpeg failed while extracting first frame from {}",
+            path.display()
+        ));
+    }
+    Ok(buffer)
+}
+
+fn load_video_input(
+    path: &Path,
+    crop: Option<CropBox>,
+) -> anyhow::Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
+    let frame = extract_first_video_frame(path)?;
+    let image = image::load_from_memory(&frame)
+        .with_context(|| format!("failed to decode first frame for {}", path.display()))?;
+    Ok(crop_image(image, crop))
+}
+
+fn save_debug_crop(
+    output_dir: &Path,
+    media_path: &Path,
+    image: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+) -> anyhow::Result<()> {
+    let debug_dir = output_dir.join("debug_crops");
+    fs::create_dir_all(&debug_dir)?;
+    let filename = media_path
+        .file_name()
+        .ok_or_else(|| anyhow!("media path has no filename: {}", media_path.display()))?;
+    let mut debug_path = debug_dir.join(filename);
+    debug_path.set_extension("png");
+    image.save(&debug_path)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct OcrOptions {
     pub input_path: PathBuf,
@@ -132,6 +229,7 @@ pub fn run_ocr(_options: OcrOptions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_valid_relative_crop_box() {
@@ -181,5 +279,29 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no datetime matched"));
+    }
+
+    #[test]
+    fn crop_box_converts_to_pixel_rect() {
+        let crop = CropBox {
+            x: 0.25,
+            y: 0.50,
+            width: 0.50,
+            height: 0.25,
+        };
+        assert_eq!(crop.to_pixel_rect(400, 200), (100, 100, 200, 50));
+    }
+
+    #[test]
+    fn sample_limit_keeps_first_n_paths() {
+        let paths = vec![
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+            PathBuf::from("c.jpg"),
+        ];
+        assert_eq!(
+            apply_sample_limit(paths, Some(2)),
+            vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]
+        );
     }
 }
