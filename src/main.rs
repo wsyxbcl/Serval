@@ -1,8 +1,10 @@
+mod ocr;
 mod schema;
 mod tags;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use ocr::{OcrOptions, run_ocr};
 use std::path::PathBuf;
 use tags::{
     extract_resources, get_classifications, get_temporal_independence, init_xmp, update_datetime,
@@ -171,6 +173,25 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        Commands::Ocr {
+            path,
+            output,
+            box_,
+            debug_crops,
+            sample,
+            datetime_format,
+            allowed_chars,
+        } => {
+            run_ocr(OcrOptions {
+                input_path: absolute_path(path)?,
+                output_dir: output,
+                crop_box: box_,
+                debug_crops,
+                sample,
+                datetime_format,
+                allowed_chars,
+            })?;
+        }
         Commands::Translate {
             csv_path,
             taglist_path,
@@ -352,6 +373,35 @@ enum Commands {
     /// XMP file operations
     #[command(subcommand)]
     Xmp(XmpCommands),
+    /// OCR media watermarks and extract visible datetimes
+    #[command(arg_required_else_help = true)]
+    Ocr {
+        /// Media file or directory to scan recursively
+        path: PathBuf,
+        /// Output directory
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_ocr"
+        )]
+        output: PathBuf,
+        /// Relative crop box as x,y,w,h, each value in 0..=1
+        #[arg(long = "box", value_name = "X,Y,W,H")]
+        box_: Option<String>,
+        /// Save cropped OCR inputs for inspection
+        #[arg(long)]
+        debug_crops: bool,
+        /// Process only the first N media files
+        #[arg(long, value_name = "N")]
+        sample: Option<usize>,
+        /// Required datetime format, e.g. YYYY-MM-DD HH:mm:ss or %Y-%m-%d %H:%M:%S
+        #[arg(long, value_name = "FORMAT", required = true)]
+        datetime_format: String,
+        /// Optional OCR recognition character whitelist
+        #[arg(long, value_name = "CHARS")]
+        allowed_chars: Option<String>,
+    },
     /// Translate species column in csv according to taglist
     Translate {
         /// Path for tags.csv
