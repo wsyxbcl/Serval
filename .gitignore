@@ -2,4 +2,5 @@
 /serval_output
 /test
 /data
+.worktrees/
 *.rten
