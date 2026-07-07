@@ -156,7 +156,8 @@ fn load_image_input(
     path: &Path,
     crop: Option<CropBox>,
 ) -> anyhow::Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
-    let image = image::open(path).with_context(|| format!("failed to read image {}", path.display()))?;
+    let image =
+        image::open(path).with_context(|| format!("failed to read image {}", path.display()))?;
     Ok(crop_image(image, crop))
 }
 
@@ -181,7 +182,10 @@ fn extract_first_video_frame(path: &Path) -> anyhow::Result<Vec<u8>> {
         .spawn()
         .context("failed to start ffmpeg")?;
 
-    let mut stdout = child.stdout.take().context("failed to capture ffmpeg stdout")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("failed to capture ffmpeg stdout")?;
     let mut buffer = Vec::new();
     stdout.read_to_end(&mut buffer)?;
     let status = child.wait()?;
@@ -226,8 +230,9 @@ struct ServalOcrEngine {
 
 impl ServalOcrEngine {
     fn load(allowed_chars: Option<String>) -> anyhow::Result<Self> {
-        let detection_model = Model::load_file(DETECTION_MODEL_PATH)
-            .with_context(|| format!("failed to load OCR detection model from {DETECTION_MODEL_PATH}"))?;
+        let detection_model = Model::load_file(DETECTION_MODEL_PATH).with_context(|| {
+            format!("failed to load OCR detection model from {DETECTION_MODEL_PATH}")
+        })?;
         let recognition_model = Model::load_file(RECOGNITION_MODEL_PATH).with_context(|| {
             format!("failed to load OCR recognition model from {RECOGNITION_MODEL_PATH}")
         })?;
@@ -328,11 +333,15 @@ fn write_ocr_csv(output_dir: &Path, rows: &[OcrRow]) -> anyhow::Result<()> {
             ),
             Column::new(
                 "status".into(),
-                rows.iter().map(|row| row.status.as_str()).collect::<Vec<_>>(),
+                rows.iter()
+                    .map(|row| row.status.as_str())
+                    .collect::<Vec<_>>(),
             ),
             Column::new(
                 "error".into(),
-                rows.iter().map(|row| row.error.as_str()).collect::<Vec<_>>(),
+                rows.iter()
+                    .map(|row| row.error.as_str())
+                    .collect::<Vec<_>>(),
             ),
         ],
     )?;
@@ -354,7 +363,10 @@ fn collect_media_paths(input_path: PathBuf, sample: Option<usize>) -> anyhow::Re
     } else if input_path.is_dir() {
         path_enumerate(input_path, ResourceType::Media)
     } else {
-        return Err(anyhow!("input path does not exist: {}", input_path.display()));
+        return Err(anyhow!(
+            "input path does not exist: {}",
+            input_path.display()
+        ));
     };
 
     Ok(apply_sample_limit(paths, sample))
