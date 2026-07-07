@@ -473,6 +473,7 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -547,5 +548,33 @@ mod tests {
             apply_sample_limit(paths, Some(2)),
             vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]
         );
+    }
+
+    #[test]
+    fn writes_ocr_csv_with_expected_columns() {
+        let temp_dir = std::env::temp_dir().join(format!("serval-ocr-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let rows = vec![OcrRow {
+            path: "/tmp/a.jpg".to_string(),
+            filename: "a.jpg".to_string(),
+            media_type: "image/jpeg".to_string(),
+            datetime_ocr: "2026-07-07 13:45:59".to_string(),
+            datetime_raw: "2026-07-07 13:45:59".to_string(),
+            ocr_text: "2026-07-07 13:45:59".to_string(),
+            datetime_format: "YYYY-MM-DD HH:mm:ss".to_string(),
+            status: "ok".to_string(),
+            error: String::new(),
+        }];
+
+        write_ocr_csv(&temp_dir, &rows).unwrap();
+        let csv = fs::read_to_string(temp_dir.join("ocr.csv")).unwrap();
+        assert!(csv.contains(
+            "path,filename,media_type,datetime_ocr,datetime_raw,ocr_text,datetime_format,status,error"
+        ));
+        assert!(csv.contains("2026-07-07 13:45:59"));
+
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
