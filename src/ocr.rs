@@ -79,15 +79,44 @@ pub fn datetime_format_to_chrono(format: &str) -> String {
         return format.to_string();
     }
 
-    format
-        .replace("YYYY", "%Y")
-        .replace("yyyy", "%Y")
-        .replace("MM", "%m")
-        .replace("DD", "%d")
-        .replace("dd", "%d")
-        .replace("HH", "%H")
-        .replace("mm", "%M")
-        .replace("ss", "%S")
+    let mut converted = String::new();
+    let mut chars = format.chars().peekable();
+    let mut in_time = false;
+
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_alphabetic() {
+            let mut token = String::from(ch);
+            while chars.peek().is_some_and(|next| *next == ch) {
+                token.push(chars.next().unwrap());
+            }
+
+            let replacement = match token.as_str() {
+                "YYYY" | "yyyy" => "%Y",
+                "YY" | "yy" => "%y",
+                "DD" | "dd" => "%d",
+                "HH" | "hh" => {
+                    in_time = true;
+                    "%H"
+                }
+                "SS" | "ss" => {
+                    in_time = true;
+                    "%S"
+                }
+                "MM" => "%m",
+                "mm" if in_time => "%M",
+                "mm" => "%m",
+                _ => token.as_str(),
+            };
+            converted.push_str(replacement);
+        } else {
+            if ch.is_whitespace() {
+                in_time = true;
+            }
+            converted.push(ch);
+        }
+    }
+
+    converted
 }
 
 fn datetime_candidate_regex(chrono_format: &str) -> anyhow::Result<Regex> {
@@ -514,6 +543,10 @@ mod tests {
     fn converts_user_datetime_format_to_chrono() {
         assert_eq!(
             datetime_format_to_chrono("YYYY-MM-DD HH:mm:ss"),
+            "%Y-%m-%d %H:%M:%S"
+        );
+        assert_eq!(
+            datetime_format_to_chrono("yyyy-mm-dd hh:mm:ss"),
             "%Y-%m-%d %H:%M:%S"
         );
         assert_eq!(
