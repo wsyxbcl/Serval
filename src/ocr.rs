@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 
 const DETECTION_MODEL_PATH: &str = "assets/text-detection.rten";
 const RECOGNITION_MODEL_PATH: &str = "assets/text-recognition.rten";
+pub const DEFAULT_DATETIME_ALLOWED_CHARS: &str = "0123456789-: ";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CropBox {
@@ -74,6 +75,13 @@ pub struct ParsedDatetime {
     pub normalized: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepairedDatetime {
+    pub raw: String,
+    pub normalized: String,
+    pub method: String,
+}
+
 pub fn datetime_format_to_chrono(format: &str) -> String {
     if format.contains('%') {
         return format.to_string();
@@ -124,26 +132,15 @@ fn datetime_candidate_regex(chrono_format: &str) -> anyhow::Result<Regex> {
     for (token, replacement) in [
         ("%Y", r"\d{4}"),
         ("%y", r"\d{2}"),
-        ("%m", r"\d{1,2}"),
-        ("%d", r"\d{1,2}"),
-        ("%H", r"\d{1,2}"),
-        ("%M", r"\d{1,2}"),
-        ("%S", r"\d{1,2}"),
+        ("%m", r"\d{2}"),
+        ("%d", r"\d{2}"),
+        ("%H", r"\d{2}"),
+        ("%M", r"\d{2}"),
+        ("%S", r"\d{2}"),
     ] {
         pattern = pattern.replace(&regex::escape(token), replacement);
     }
     Regex::new(&pattern).context("failed to build datetime candidate regex")
-}
-
-fn clean_datetime_candidate(candidate: &str) -> String {
-    candidate
-        .chars()
-        .map(|ch| match ch {
-            'O' | 'o' => '0',
-            'I' | 'l' => '1',
-            _ => ch,
-        })
-        .collect()
 }
 
 pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedDatetime> {
@@ -152,8 +149,7 @@ pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedD
 
     for mat in re.find_iter(text) {
         let raw = mat.as_str().to_string();
-        let cleaned = clean_datetime_candidate(&raw);
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&cleaned, &chrono_format) {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&raw, &chrono_format) {
             return Ok(ParsedDatetime {
                 raw,
                 normalized: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -162,6 +158,67 @@ pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedD
     }
 
     Err(anyhow!("no datetime matched the supplied format"))
+}
+
+pub fn repair_datetime(text: &str, user_format: &str) -> anyhow::Result<RepairedDatetime> {
+    let chrono_format = datetime_format_to_chrono(user_format);
+    for token in ["%Y", "%m", "%d", "%H", "%M", "%S"] {
+        if !chrono_format.contains(token) {
+            return Err(anyhow!(
+                "datetime repair requires year, month, day, hour, minute, and second"
+            ));
+        }
+    }
+
+    let year_re = Regex::new(r"20\d{2}")?;
+    for year_match in year_re.find_iter(text) {
+        let mut digits = String::new();
+        let mut raw_end = year_match.end();
+
+        for (offset, ch) in text[year_match.start()..].char_indices() {
+            if ch.is_ascii_digit() {
+                digits.push(ch);
+                raw_end = year_match.start() + offset + ch.len_utf8();
+                if digits.len() == 14 {
+                    break;
+                }
+            }
+        }
+
+        if digits.len() != 14 {
+            continue;
+        }
+
+        let candidate = format!(
+            "{}-{}-{} {}:{}:{}",
+            &digits[0..4],
+            &digits[4..6],
+            &digits[6..8],
+            &digits[8..10],
+            &digits[10..12],
+            &digits[12..14]
+        );
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&candidate, "%Y-%m-%d %H:%M:%S") {
+            return Ok(RepairedDatetime {
+                raw: text[year_match.start()..raw_end].to_string(),
+                normalized: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                method: "first_14_digits_after_year".to_string(),
+            });
+        }
+    }
+
+    Err(anyhow!("no repairable datetime found"))
+}
+
+pub fn effective_allowed_chars(
+    allowed_chars: Option<String>,
+    no_allowed_chars: bool,
+) -> Option<String> {
+    if no_allowed_chars {
+        None
+    } else {
+        Some(allowed_chars.unwrap_or_else(|| DEFAULT_DATETIME_ALLOWED_CHARS.to_string()))
+    }
 }
 
 pub fn apply_sample_limit(mut paths: Vec<PathBuf>, sample: Option<usize>) -> Vec<PathBuf> {
@@ -292,6 +349,7 @@ struct OcrRow {
     datetime_raw: String,
     ocr_text: String,
     datetime_format: String,
+    datetime_repair: String,
     status: String,
     error: String,
 }
@@ -309,6 +367,7 @@ impl OcrRow {
             datetime_raw: String::new(),
             ocr_text: String::new(),
             datetime_format: datetime_format.to_string(),
+            datetime_repair: String::new(),
             status: status.to_string(),
             error: error.to_string(),
         }
@@ -361,6 +420,12 @@ fn write_ocr_csv(output_dir: &Path, rows: &[OcrRow]) -> anyhow::Result<()> {
                     .collect::<Vec<_>>(),
             ),
             Column::new(
+                "datetime_repair".into(),
+                rows.iter()
+                    .map(|row| row.datetime_repair.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
                 "status".into(),
                 rows.iter()
                     .map(|row| row.status.as_str())
@@ -408,8 +473,17 @@ fn process_media(
     crop: Option<CropBox>,
     debug_crops: bool,
     datetime_format: &str,
+    repair_datetime_enabled: bool,
 ) -> OcrRow {
-    match process_media_inner(engine, path, output_dir, crop, debug_crops, datetime_format) {
+    match process_media_inner(
+        engine,
+        path,
+        output_dir,
+        crop,
+        debug_crops,
+        datetime_format,
+        repair_datetime_enabled,
+    ) {
         Ok(row) => row,
         Err(err) => OcrRow::failed(path, datetime_format, "ocr_failed", err),
     }
@@ -422,6 +496,7 @@ fn process_media_inner(
     crop: Option<CropBox>,
     debug_crops: bool,
     datetime_format: &str,
+    repair_datetime_enabled: bool,
 ) -> anyhow::Result<OcrRow> {
     let media_type = infer_media_type(path)?.to_string();
     let image = if media_type.starts_with("image/") {
@@ -438,19 +513,35 @@ fn process_media_inner(
 
     let ocr_text = engine.get_text(&image)?;
     let parsed = extract_datetime(&ocr_text, datetime_format);
-    let (datetime_ocr, datetime_raw, status, error) = match parsed {
+    let (datetime_ocr, datetime_raw, datetime_repair, status, error) = match parsed {
         Ok(parsed) => (
             parsed.normalized,
             parsed.raw,
+            String::new(),
             "ok".to_string(),
             String::new(),
         ),
-        Err(err) => (
-            String::new(),
-            String::new(),
-            "parse_failed".to_string(),
-            err.to_string(),
-        ),
+        Err(err) => {
+            if repair_datetime_enabled
+                && let Ok(repaired) = repair_datetime(&ocr_text, datetime_format)
+            {
+                (
+                    repaired.normalized,
+                    repaired.raw,
+                    repaired.method,
+                    "ok_repaired".to_string(),
+                    String::new(),
+                )
+            } else {
+                (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    "parse_failed".to_string(),
+                    err.to_string(),
+                )
+            }
+        }
     };
 
     Ok(OcrRow {
@@ -464,6 +555,7 @@ fn process_media_inner(
         datetime_raw,
         ocr_text,
         datetime_format: datetime_format.to_string(),
+        datetime_repair,
         status,
         error,
     })
@@ -478,6 +570,8 @@ pub struct OcrOptions {
     pub sample: Option<usize>,
     pub datetime_format: String,
     pub allowed_chars: Option<String>,
+    pub no_allowed_chars: bool,
+    pub repair_datetime: bool,
 }
 
 pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
@@ -489,7 +583,8 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
     let media_paths = collect_media_paths(options.input_path, options.sample)?;
     fs::create_dir_all(&options.output_dir)?;
 
-    let engine = ServalOcrEngine::load(options.allowed_chars)?;
+    let allowed_chars = effective_allowed_chars(options.allowed_chars, options.no_allowed_chars);
+    let engine = ServalOcrEngine::load(allowed_chars)?;
     let pb = ProgressBar::new(media_paths.len() as u64);
     configure_progress_bar(&pb);
 
@@ -502,6 +597,7 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
             crop,
             options.debug_crops,
             &options.datetime_format,
+            options.repair_datetime,
         );
         rows.push(row);
         pb.inc(1);
@@ -564,6 +660,54 @@ mod tests {
     }
 
     #[test]
+    fn strict_datetime_requires_two_digit_fields() {
+        let err = extract_datetime("stamp 2026-07-07 13:45:9 end", "YYYY-MM-DD HH:mm:ss")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no datetime matched"));
+    }
+
+    #[test]
+    fn repairs_datetime_from_separator_variants() {
+        for (text, expected) in [
+            ("2025 12 10 14:25:15", "2025-12-10 14:25:15"),
+            ("2026-01-0106:31:27", "2026-01-01 06:31:27"),
+            ("2025-1129 13:39:26", "2025-11-29 13:39:26"),
+            ("202512-18 12:25:08", "2025-12-18 12:25:08"),
+            ("22025-12-20 13:0103", "2025-12-20 13:01:03"),
+            ("2025-12-04 1130:35", "2025-12-04 11:30:35"),
+        ] {
+            let repaired = repair_datetime(text, "yyyy-mm-dd hh:mm:ss").unwrap();
+            assert_eq!(repaired.normalized, expected);
+            assert_eq!(repaired.method, "first_14_digits_after_year");
+        }
+    }
+
+    #[test]
+    fn repair_datetime_rejects_missing_year_prefix() {
+        let err = repair_datetime("025-10-21 16:37:04", "yyyy-mm-dd hh:mm:ss")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no repairable datetime"));
+    }
+
+    #[test]
+    fn uses_datetime_allowed_chars_by_default() {
+        assert_eq!(
+            effective_allowed_chars(None, false),
+            Some(DEFAULT_DATETIME_ALLOWED_CHARS.to_string())
+        );
+        assert_eq!(
+            effective_allowed_chars(Some("0123".to_string()), false),
+            Some("0123".to_string())
+        );
+        assert_eq!(
+            effective_allowed_chars(Some("0123".to_string()), true),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_impossible_datetime() {
         let err = extract_datetime("stamp 2026-99-07 13:45:59", "YYYY-MM-DD HH:mm:ss")
             .unwrap_err()
@@ -609,6 +753,7 @@ mod tests {
             datetime_raw: "2026-07-07 13:45:59".to_string(),
             ocr_text: "2026-07-07 13:45:59".to_string(),
             datetime_format: "YYYY-MM-DD HH:mm:ss".to_string(),
+            datetime_repair: String::new(),
             status: "ok".to_string(),
             error: String::new(),
         }];
@@ -616,7 +761,7 @@ mod tests {
         write_ocr_csv(&temp_dir, &rows).unwrap();
         let csv = fs::read_to_string(temp_dir.join("ocr.csv")).unwrap();
         assert!(csv.contains(
-            "path,filename,media_type,datetime_ocr,datetime_raw,ocr_text,datetime_format,status,error"
+            "path,filename,media_type,datetime_ocr,datetime_raw,ocr_text,datetime_format,datetime_repair,status,error"
         ));
         assert!(csv.contains("2026-07-07 13:45:59"));
 

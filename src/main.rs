@@ -181,6 +181,8 @@ fn main() -> anyhow::Result<()> {
             sample,
             datetime_format,
             allowed_chars,
+            no_allowed_chars,
+            repair_datetime,
         } => {
             run_ocr(OcrOptions {
                 input_path: absolute_path(path)?,
@@ -190,6 +192,8 @@ fn main() -> anyhow::Result<()> {
                 sample,
                 datetime_format,
                 allowed_chars,
+                no_allowed_chars,
+                repair_datetime,
             })?;
         }
         Commands::Translate {
@@ -398,9 +402,15 @@ enum Commands {
         /// Required datetime format, e.g. YYYY-MM-DD HH:mm:ss or %Y-%m-%d %H:%M:%S
         #[arg(long, value_name = "FORMAT", required = true)]
         datetime_format: String,
-        /// Optional OCR recognition character whitelist
+        /// OCR recognition character whitelist, defaults to datetime characters
         #[arg(long, value_name = "CHARS")]
         allowed_chars: Option<String>,
+        /// Disable the default datetime OCR character whitelist
+        #[arg(long)]
+        no_allowed_chars: bool,
+        /// Repair datetimes from OCR text when strict parsing fails
+        #[arg(long)]
+        repair_datetime: bool,
     },
     /// Translate species column in csv according to taglist
     Translate {
