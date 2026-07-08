@@ -1,7 +1,7 @@
 use crate::schema::{FILENAME_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, infer_media_type};
 use crate::utils::{ResourceType, configure_progress_bar, path_enumerate};
 use anyhow::{Context, anyhow};
-use chrono::NaiveDateTime;
+use chrono::{Datelike, NaiveDateTime};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use indicatif::ProgressBar;
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
@@ -82,6 +82,59 @@ pub struct RepairedDatetime {
     pub method: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YearRange {
+    start: i32,
+    end: i32,
+}
+
+impl YearRange {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        let (start, end) = value
+            .split_once("..")
+            .ok_or_else(|| anyhow!("invalid year range '{value}', expected START..END"))?;
+        let start = start
+            .parse::<i32>()
+            .with_context(|| format!("invalid year range start '{start}'"))?;
+        let end = end
+            .parse::<i32>()
+            .with_context(|| format!("invalid year range end '{end}'"))?;
+        if start > end {
+            return Err(anyhow!(
+                "invalid year range '{value}', start must be <= end"
+            ));
+        }
+        Ok(Self { start, end })
+    }
+
+    pub fn contains(self, year: i32) -> bool {
+        self.start <= year && year <= self.end
+    }
+
+    fn unique_single_digit_correction(self, ocr_year: &str) -> Option<i32> {
+        if ocr_year.len() != 4 || !ocr_year.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+
+        let mut matches = (self.start..=self.end).filter(|year| {
+            let year = year.to_string();
+            year.len() == 4
+                && year
+                    .chars()
+                    .zip(ocr_year.chars())
+                    .filter(|(expected, actual)| expected != actual)
+                    .count()
+                    == 1
+        });
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    }
+}
+
 pub fn datetime_format_to_chrono(format: &str) -> String {
     if format.contains('%') {
         return format.to_string();
@@ -143,13 +196,20 @@ fn datetime_candidate_regex(chrono_format: &str) -> anyhow::Result<Regex> {
     Regex::new(&pattern).context("failed to build datetime candidate regex")
 }
 
-pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedDatetime> {
+pub fn extract_datetime(
+    text: &str,
+    user_format: &str,
+    year_range: Option<YearRange>,
+) -> anyhow::Result<ParsedDatetime> {
     let chrono_format = datetime_format_to_chrono(user_format);
     let re = datetime_candidate_regex(&chrono_format)?;
 
     for mat in re.find_iter(text) {
         let raw = mat.as_str().to_string();
         if let Ok(dt) = NaiveDateTime::parse_from_str(&raw, &chrono_format) {
+            if year_range.is_some_and(|range| !range.contains(dt.year())) {
+                continue;
+            }
             return Ok(ParsedDatetime {
                 raw,
                 normalized: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -160,7 +220,27 @@ pub fn extract_datetime(text: &str, user_format: &str) -> anyhow::Result<ParsedD
     Err(anyhow!("no datetime matched the supplied format"))
 }
 
-pub fn repair_datetime(text: &str, user_format: &str) -> anyhow::Result<RepairedDatetime> {
+fn year_candidate_starts(text: &str, year_range: Option<YearRange>) -> anyhow::Result<Vec<usize>> {
+    if year_range.is_none() {
+        let year_re = Regex::new(r"20\d{2}")?;
+        return Ok(year_re.find_iter(text).map(|mat| mat.start()).collect());
+    }
+
+    let chars = text.char_indices().collect::<Vec<_>>();
+    let mut starts = Vec::new();
+    for window in chars.windows(4) {
+        if window.iter().all(|(_, ch)| ch.is_ascii_digit()) {
+            starts.push(window[0].0);
+        }
+    }
+    Ok(starts)
+}
+
+pub fn repair_datetime(
+    text: &str,
+    user_format: &str,
+    year_range: Option<YearRange>,
+) -> anyhow::Result<RepairedDatetime> {
     let chrono_format = datetime_format_to_chrono(user_format);
     for token in ["%Y", "%m", "%d", "%H", "%M", "%S"] {
         if !chrono_format.contains(token) {
@@ -170,15 +250,14 @@ pub fn repair_datetime(text: &str, user_format: &str) -> anyhow::Result<Repaired
         }
     }
 
-    let year_re = Regex::new(r"20\d{2}")?;
-    for year_match in year_re.find_iter(text) {
+    for year_start in year_candidate_starts(text, year_range)? {
         let mut digits = String::new();
-        let mut raw_end = year_match.end();
+        let mut raw_end = year_start;
 
-        for (offset, ch) in text[year_match.start()..].char_indices() {
+        for (offset, ch) in text[year_start..].char_indices() {
             if ch.is_ascii_digit() {
                 digits.push(ch);
-                raw_end = year_match.start() + offset + ch.len_utf8();
+                raw_end = year_start + offset + ch.len_utf8();
                 if digits.len() == 14 {
                     break;
                 }
@@ -187,6 +266,20 @@ pub fn repair_datetime(text: &str, user_format: &str) -> anyhow::Result<Repaired
 
         if digits.len() != 14 {
             continue;
+        }
+
+        let mut method = "first_14_digits_after_year";
+        if let Some(range) = year_range {
+            let raw_year = &digits[0..4];
+            let parsed_year = raw_year.parse::<i32>().ok();
+            if parsed_year.is_some_and(|year| range.contains(year)) {
+                method = "first_14_digits_after_year";
+            } else if let Some(corrected_year) = range.unique_single_digit_correction(raw_year) {
+                digits.replace_range(0..4, &corrected_year.to_string());
+                method = "unique_year_range_correction";
+            } else {
+                continue;
+            }
         }
 
         let candidate = format!(
@@ -200,9 +293,9 @@ pub fn repair_datetime(text: &str, user_format: &str) -> anyhow::Result<Repaired
         );
         if let Ok(dt) = NaiveDateTime::parse_from_str(&candidate, "%Y-%m-%d %H:%M:%S") {
             return Ok(RepairedDatetime {
-                raw: text[year_match.start()..raw_end].to_string(),
+                raw: text[year_start..raw_end].to_string(),
                 normalized: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-                method: "first_14_digits_after_year".to_string(),
+                method: method.to_string(),
             });
         }
     }
@@ -474,6 +567,7 @@ fn process_media(
     debug_crops: bool,
     datetime_format: &str,
     repair_datetime_enabled: bool,
+    year_range: Option<YearRange>,
 ) -> OcrRow {
     match process_media_inner(
         engine,
@@ -483,6 +577,7 @@ fn process_media(
         debug_crops,
         datetime_format,
         repair_datetime_enabled,
+        year_range,
     ) {
         Ok(row) => row,
         Err(err) => OcrRow::failed(path, datetime_format, "ocr_failed", err),
@@ -497,6 +592,7 @@ fn process_media_inner(
     debug_crops: bool,
     datetime_format: &str,
     repair_datetime_enabled: bool,
+    year_range: Option<YearRange>,
 ) -> anyhow::Result<OcrRow> {
     let media_type = infer_media_type(path)?.to_string();
     let image = if media_type.starts_with("image/") {
@@ -512,7 +608,7 @@ fn process_media_inner(
     }
 
     let ocr_text = engine.get_text(&image)?;
-    let parsed = extract_datetime(&ocr_text, datetime_format);
+    let parsed = extract_datetime(&ocr_text, datetime_format, year_range);
     let (datetime_ocr, datetime_raw, datetime_repair, status, error) = match parsed {
         Ok(parsed) => (
             parsed.normalized,
@@ -523,7 +619,7 @@ fn process_media_inner(
         ),
         Err(err) => {
             if repair_datetime_enabled
-                && let Ok(repaired) = repair_datetime(&ocr_text, datetime_format)
+                && let Ok(repaired) = repair_datetime(&ocr_text, datetime_format, year_range)
             {
                 (
                     repaired.normalized,
@@ -572,6 +668,7 @@ pub struct OcrOptions {
     pub allowed_chars: Option<String>,
     pub no_allowed_chars: bool,
     pub repair_datetime: bool,
+    pub year_range: Option<String>,
 }
 
 pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
@@ -582,6 +679,11 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
         .transpose()?;
     let media_paths = collect_media_paths(options.input_path, options.sample)?;
     fs::create_dir_all(&options.output_dir)?;
+    let year_range = options
+        .year_range
+        .as_deref()
+        .map(YearRange::parse)
+        .transpose()?;
 
     let allowed_chars = effective_allowed_chars(options.allowed_chars, options.no_allowed_chars);
     let engine = ServalOcrEngine::load(allowed_chars)?;
@@ -598,6 +700,7 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
             options.debug_crops,
             &options.datetime_format,
             options.repair_datetime,
+            year_range,
         );
         rows.push(row);
         pb.inc(1);
@@ -654,14 +757,14 @@ mod tests {
     #[test]
     fn extracts_and_parses_datetime_with_required_format() {
         let parsed =
-            extract_datetime("stamp 2026-07-07 13:45:59 end", "YYYY-MM-DD HH:mm:ss").unwrap();
+            extract_datetime("stamp 2026-07-07 13:45:59 end", "YYYY-MM-DD HH:mm:ss", None).unwrap();
         assert_eq!(parsed.raw, "2026-07-07 13:45:59");
         assert_eq!(parsed.normalized, "2026-07-07 13:45:59");
     }
 
     #[test]
     fn strict_datetime_requires_two_digit_fields() {
-        let err = extract_datetime("stamp 2026-07-07 13:45:9 end", "YYYY-MM-DD HH:mm:ss")
+        let err = extract_datetime("stamp 2026-07-07 13:45:9 end", "YYYY-MM-DD HH:mm:ss", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no datetime matched"));
@@ -677,15 +780,49 @@ mod tests {
             ("22025-12-20 13:0103", "2025-12-20 13:01:03"),
             ("2025-12-04 1130:35", "2025-12-04 11:30:35"),
         ] {
-            let repaired = repair_datetime(text, "yyyy-mm-dd hh:mm:ss").unwrap();
+            let repaired = repair_datetime(text, "yyyy-mm-dd hh:mm:ss", None).unwrap();
             assert_eq!(repaired.normalized, expected);
             assert_eq!(repaired.method, "first_14_digits_after_year");
         }
     }
 
     #[test]
+    fn parses_year_range() {
+        let range = YearRange::parse("2025..2026").unwrap();
+        assert!(range.contains(2025));
+        assert!(range.contains(2026));
+        assert!(!range.contains(2027));
+    }
+
+    #[test]
+    fn repairs_unique_year_ocr_error_with_year_range() {
+        let range = YearRange::parse("2025..2026").unwrap();
+        let repaired =
+            repair_datetime("2125-11-22 11:34:29", "yyyy-mm-dd hh:mm:ss", Some(range)).unwrap();
+        assert_eq!(repaired.normalized, "2025-11-22 11:34:29");
+        assert_eq!(repaired.method, "unique_year_range_correction");
+    }
+
+    #[test]
+    fn repair_datetime_with_year_range_considers_overlapping_year_windows() {
+        let range = YearRange::parse("2025..2026").unwrap();
+        let repaired =
+            repair_datetime("22025 12-10 13:39:45", "yyyy-mm-dd hh:mm:ss", Some(range)).unwrap();
+        assert_eq!(repaired.normalized, "2025-12-10 13:39:45");
+    }
+
+    #[test]
+    fn repair_datetime_rejects_ambiguous_year_range_correction() {
+        let range = YearRange::parse("2025..2026").unwrap();
+        let err = repair_datetime("2027-11-22 11:34:29", "yyyy-mm-dd hh:mm:ss", Some(range))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no repairable datetime"));
+    }
+
+    #[test]
     fn repair_datetime_rejects_missing_year_prefix() {
-        let err = repair_datetime("025-10-21 16:37:04", "yyyy-mm-dd hh:mm:ss")
+        let err = repair_datetime("025-10-21 16:37:04", "yyyy-mm-dd hh:mm:ss", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no repairable datetime"));
@@ -709,7 +846,7 @@ mod tests {
 
     #[test]
     fn rejects_impossible_datetime() {
-        let err = extract_datetime("stamp 2026-99-07 13:45:59", "YYYY-MM-DD HH:mm:ss")
+        let err = extract_datetime("stamp 2026-99-07 13:45:59", "YYYY-MM-DD HH:mm:ss", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no datetime matched"));

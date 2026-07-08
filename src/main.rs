@@ -183,6 +183,7 @@ fn main() -> anyhow::Result<()> {
             allowed_chars,
             no_allowed_chars,
             repair_datetime,
+            year_range,
         } => {
             run_ocr(OcrOptions {
                 input_path: absolute_path(path)?,
@@ -194,6 +195,7 @@ fn main() -> anyhow::Result<()> {
                 allowed_chars,
                 no_allowed_chars,
                 repair_datetime,
+                year_range,
             })?;
         }
         Commands::Translate {
@@ -411,6 +413,9 @@ enum Commands {
         /// Repair datetimes from OCR text when strict parsing fails
         #[arg(long)]
         repair_datetime: bool,
+        /// Restrict accepted/repaired years, e.g. 2025..2026
+        #[arg(long, value_name = "START..END")]
+        year_range: Option<String>,
     },
     /// Translate species column in csv according to taglist
     Translate {
