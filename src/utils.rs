@@ -1,20 +1,54 @@
-use anyhow::{anyhow, Context};
+use crate::schema::{
+    ALL_RESOURCE_EXTENSIONS, CUSTOM_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN,
+    IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
+    resource_extension,
+};
 use chrono::NaiveDateTime;
 use core::fmt;
-use image::Rgb;
-use image::{imageops::crop, ImageBuffer};
+use indicatif::{ProgressBar, ProgressStyle};
+use pest_derive::Parser;
 use polars::prelude::*;
-use regex::Regex;
+use rayon::prelude::*;
 use std::collections::HashSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::{File, FileTimes};
-use std::io::{self, Read};
-use std::process::{Command, Stdio};
+use std::io;
+use std::str::FromStr;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use walkdir::{DirEntry, WalkDir};
+use xmp_toolkit::{OpenFileOptions, XmpFile, XmpMeta};
+
+pub fn csv_projection_columns(names: &[&str]) -> Option<Arc<[PlSmallStr]>> {
+    Some(Arc::from(
+        names
+            .iter()
+            .map(|name| PlSmallStr::from(*name))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    ))
+}
+
+pub fn reject_duplicate_csv_columns(df: &DataFrame) -> anyhow::Result<()> {
+    if df
+        .get_column_names()
+        .iter()
+        .any(|name| name.as_str().contains("_duplicated_"))
+    {
+        return Err(anyhow::anyhow!(
+            "Duplicated CSV columns detected. Please check the input CSV header."
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Parser)]
+#[grammar = "filter.pest"]
+struct FilterParser;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum ResourceType {
@@ -27,40 +61,38 @@ pub enum ResourceType {
 
 impl fmt::Display for ResourceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
 impl ResourceType {
-    fn extension(self) -> Vec<&'static str> {
+    fn extension(self) -> &'static [&'static str] {
         match self {
-            ResourceType::Image => vec!["jpg", "jpeg", "png"],
-            ResourceType::Video => vec!["avi", "mp4", "mov"],
-            ResourceType::Xmp => vec!["xmp"],
-            ResourceType::Media => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov"],
-            ResourceType::All => vec!["jpg", "jpeg", "png", "avi", "mp4", "mov", "xmp"],
+            ResourceType::Image => IMAGE_EXTENSIONS,
+            ResourceType::Video => VIDEO_EXTENSIONS,
+            ResourceType::Xmp => XMP_EXTENSIONS,
+            ResourceType::Media => crate::schema::MEDIA_EXTENSIONS,
+            ResourceType::All => ALL_RESOURCE_EXTENSIONS,
         }
     }
 
     pub fn is_resource(self, path: &Path) -> bool {
-        match path.extension() {
-            None => false,
-            Some(x) => self
-                .extension()
-                .contains(&x.to_str().unwrap().to_lowercase().as_str()),
-        }
+        resource_extension(path).is_some_and(|ext| self.extension().contains(&ext.as_str()))
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
 pub enum TagType {
     Species,
     Individual,
+    Count,
+    Sex,
+    Bodypart,
 }
 
 impl fmt::Display for TagType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -69,31 +101,437 @@ impl TagType {
         match self {
             TagType::Individual => "individual",
             TagType::Species => "species",
+            TagType::Count => "count",
+            TagType::Sex => "sex",
+            TagType::Bodypart => "bodypart",
         }
     }
     pub fn digikam_tag_prefix(self) -> &'static str {
         match self {
             TagType::Individual => "Individual/",
             TagType::Species => "Species/",
+            TagType::Count => "Count/",
+            TagType::Sex => "Sex/",
+            TagType::Bodypart => "Bodypart/",
+        }
+    }
+    pub fn adobe_tag_prefix(self) -> &'static str {
+        match self {
+            TagType::Individual => "Individual|",
+            TagType::Species => "Species|",
+            TagType::Count => "Count|",
+            TagType::Sex => "Sex|",
+            TagType::Bodypart => "Bodypart|",
         }
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
+pub enum XmpUpdateType {
+    Species,
+    Individual,
+    Rating,
+}
+
+impl fmt::Display for XmpUpdateType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl XmpUpdateType {
+    pub fn col_name(self) -> &'static str {
+        match self {
+            Self::Species => TagType::Species.col_name(),
+            Self::Individual => TagType::Individual.col_name(),
+            Self::Rating => RATING_COLUMN,
+        }
+    }
+
+    pub fn tag_type(self) -> Option<TagType> {
+        match self {
+            Self::Species => Some(TagType::Species),
+            Self::Individual => Some(TagType::Individual),
+            Self::Rating => None,
+        }
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum ExtractFilterType {
     Species,
     Path,
     Individual,
     Rating,
+    Event,
+    Custom,
+    Advanced,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum SubdirType {
+    Species,
+    Individual,
+    Rating,
     Custom,
 }
 
+/// Represents a parsed filter condition
+#[derive(Debug, Clone)]
+pub struct FilterCondition {
+    pub filter_type: ExtractFilterType,
+    pub operator: FilterOperator,
+    pub value: String,
+}
+
+/// Supported filter operators
+#[derive(Debug, Clone)]
+pub enum FilterOperator {
+    Equal, // exact match
+    // Contains,        // TODO: substring match
+    GreaterEqual, // >=
+    LessEqual,    // <=
+    Greater,      // >
+    Less,         // <
+    Range(f64, f64), // min-max range
+                  // Not,             // TODO: negation wrapper
+}
+
+/// Logical operators for combining filters
+#[derive(Debug, Clone)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+/// Complete filter expression tree
+#[derive(Debug, Clone)]
+pub enum FilterExpr {
+    Condition(FilterCondition),
+    Logical {
+        left: Box<FilterExpr>,
+        operator: LogicalOperator,
+        right: Box<FilterExpr>,
+    },
+    // Not(Box<FilterExpr>), // TODO, need to consider the multiple-tag case
+}
+
+impl ExtractFilterType {
+    /// Parse field aliases to filter types
+    pub fn from_alias(alias: &str) -> Option<Self> {
+        match alias.to_lowercase().as_str() {
+            "species" | "sp" | "s" => Some(Self::Species),
+            "individual" | "ind" | "i" => Some(Self::Individual),
+            "rating" | "rate" | "r" => Some(Self::Rating),
+            "path" | "p" => Some(Self::Path),
+            "event" | "e" => Some(Self::Event),
+            "custom" | "c" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+/// Parse advanced filter string into FilterExpr using pest
+pub fn parse_advanced_filter(input: &str) -> anyhow::Result<FilterExpr> {
+    use pest::Parser;
+
+    let pairs = FilterParser::parse(Rule::filter, input)
+        .map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
+
+    // Get the or_expr inside the filter rule
+    let or_expr = pairs
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty parse result"))?
+        .into_inner()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No expression found"))?;
+
+    build_expr(or_expr)
+}
+
+/// Build FilterExpr from pest Pair
+fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
+    match pair.as_rule() {
+        Rule::or_expr => {
+            let mut inner = pair.into_inner();
+            let mut expr = build_expr(inner.next().unwrap())?;
+
+            while let Some(next) = inner.next() {
+                if next.as_rule() == Rule::or_op {
+                    let right = build_expr(inner.next().unwrap())?;
+                    expr = FilterExpr::Logical {
+                        left: Box::new(expr),
+                        operator: LogicalOperator::Or,
+                        right: Box::new(right),
+                    };
+                }
+            }
+
+            Ok(expr)
+        }
+
+        Rule::and_expr => {
+            let mut inner = pair.into_inner();
+            let mut expr = build_expr(inner.next().unwrap())?;
+
+            while let Some(next) = inner.next() {
+                if next.as_rule() == Rule::and_op {
+                    let right = build_expr(inner.next().unwrap())?;
+                    expr = FilterExpr::Logical {
+                        left: Box::new(expr),
+                        operator: LogicalOperator::And,
+                        right: Box::new(right),
+                    };
+                }
+            }
+
+            Ok(expr)
+        }
+
+        Rule::primary => {
+            let inner = pair.into_inner().next().unwrap();
+            build_expr(inner)
+        }
+
+        Rule::paren_expr => {
+            let inner = pair.into_inner().next().unwrap();
+            build_expr(inner)
+        }
+
+        Rule::condition => {
+            let mut inner = pair.into_inner();
+            let field = inner.next().unwrap().as_str();
+            let value = inner.next().unwrap().as_str().trim(); // Trim whitespace from value
+
+            let filter_type = ExtractFilterType::from_alias(field)
+                .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {field}"))?;
+
+            let (operator, cleaned_value) = parse_value_and_operator(value)?;
+
+            Ok(FilterExpr::Condition(FilterCondition {
+                filter_type,
+                operator,
+                value: cleaned_value,
+            }))
+        }
+
+        _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),
+    }
+}
+
+/// Parse value and detect operator (>=, <=, range, etc.)
+fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, String)> {
+    // Handle range syntax first (e.g., "1-5", "0.5-4.5")
+    if let Some((min_str, max_str)) = value.split_once('-')
+        && let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
+    {
+        return Ok((FilterOperator::Range(min, max), value.to_string()));
+    }
+
+    // Handle comparison operators
+    if let Some(stripped) = value.strip_prefix(">=") {
+        return Ok((FilterOperator::GreaterEqual, stripped.trim().to_string()));
+    }
+    if let Some(stripped) = value.strip_prefix("<=") {
+        return Ok((FilterOperator::LessEqual, stripped.trim().to_string()));
+    }
+    if let Some(stripped) = value.strip_prefix('>') {
+        return Ok((FilterOperator::Greater, stripped.trim().to_string()));
+    }
+    if let Some(stripped) = value.strip_prefix('<') {
+        return Ok((FilterOperator::Less, stripped.trim().to_string()));
+    }
+
+    // Remove quotes if present
+    let cleaned_value = if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    };
+
+    // Default to exact match for most fields, contains for path
+    Ok((FilterOperator::Equal, cleaned_value))
+}
+
+pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
+    fn collect_and_fields(expr: &FilterExpr, fields: &mut Vec<ExtractFilterType>) {
+        match expr {
+            FilterExpr::Condition(cond) => {
+                fields.push(cond.filter_type);
+            }
+            FilterExpr::Logical {
+                left,
+                operator,
+                right,
+            } => {
+                match operator {
+                    LogicalOperator::And => {
+                        collect_and_fields(left, fields);
+                        collect_and_fields(right, fields);
+                    }
+                    LogicalOperator::Or => {
+                        // OR branches are separate, don't mix them
+                    }
+                }
+            }
+        }
+    }
+
+    let mut fields = Vec::new();
+    collect_and_fields(expr, &mut fields);
+
+    // Check if any field appears more than once in AND conditions
+    for i in 0..fields.len() {
+        for j in (i + 1)..fields.len() {
+            if fields[i] == fields[j] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Convert FilterExpr to Polars Expr
+///
+/// # Parameters
+/// * `expr` - The filter expression to convert
+/// * `use_aggregated` - If true, treats species/individual as list columns (for path-level filtering)
+pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow::Result<Expr> {
+    use crate::utils::TagType;
+
+    match expr {
+        FilterExpr::Condition(condition) => {
+            let col_name = match condition.filter_type {
+                ExtractFilterType::Species => TagType::Species.col_name(),
+                ExtractFilterType::Individual => TagType::Individual.col_name(),
+                ExtractFilterType::Rating => RATING_COLUMN,
+                ExtractFilterType::Path => PATH_COLUMN,
+                ExtractFilterType::Event => EVENT_ID_COLUMN,
+                ExtractFilterType::Custom => CUSTOM_COLUMN,
+                ExtractFilterType::Advanced => {
+                    return Err(anyhow::anyhow!(
+                        "Advanced filter should not appear in conditions"
+                    ));
+                }
+            };
+
+            let base_col = col(col_name);
+
+            match &condition.operator {
+                FilterOperator::Equal => {
+                    if condition.filter_type == ExtractFilterType::Path {
+                        // Path uses contains for substring matching
+                        Ok(base_col
+                            .str()
+                            .contains_literal(lit(condition.value.clone())))
+                    } else if use_aggregated
+                        && (condition.filter_type == ExtractFilterType::Species
+                            || condition.filter_type == ExtractFilterType::Individual)
+                    {
+                        // For aggregated species/individual, check if list contains the value
+                        Ok(base_col
+                            .list()
+                            .contains(lit(condition.value.clone()), false))
+                    } else {
+                        Ok(base_col.eq(lit(condition.value.clone())))
+                    }
+                }
+                FilterOperator::Range(min, max) => {
+                    // Rating stays as scalar in both modes
+                    let numeric_col = base_col.cast(DataType::Float64);
+                    Ok(numeric_col
+                        .clone()
+                        .is_not_null()
+                        .and(numeric_col.clone().gt_eq(lit(*min)))
+                        .and(numeric_col.lt_eq(lit(*max))))
+                }
+                FilterOperator::GreaterEqual => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.gt_eq(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "GreaterEqual operator requires numeric value"
+                        ))
+                    }
+                }
+                FilterOperator::LessEqual => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.lt_eq(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("LessEqual operator requires numeric value"))
+                    }
+                }
+                FilterOperator::Greater => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.gt(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("Greater operator requires numeric value"))
+                    }
+                }
+                FilterOperator::Less => {
+                    if let Ok(value) = condition.value.parse::<f64>() {
+                        let numeric_col = base_col.cast(DataType::Float64);
+                        Ok(numeric_col
+                            .clone()
+                            .is_not_null()
+                            .and(numeric_col.lt(lit(value))))
+                    } else {
+                        Err(anyhow::anyhow!("Less operator requires numeric value"))
+                    }
+                }
+            }
+        }
+        FilterExpr::Logical {
+            left,
+            operator,
+            right,
+        } => {
+            let left_expr = filter_expr_to_polars(left, use_aggregated)?;
+            let right_expr = filter_expr_to_polars(right, use_aggregated)?;
+
+            match operator {
+                LogicalOperator::And => Ok(left_expr.and(right_expr)),
+                LogicalOperator::Or => Ok(left_expr.or(right_expr)),
+            }
+        }
+    }
+}
+
+// Serval ignores
 fn is_ignored(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
         .map(|s| s.starts_with('.') || s.contains("精选")) // ignore 精选 and .dtrash
         .unwrap_or(false)
+}
+
+// Serval bar style
+pub fn serval_pb_style() -> ProgressStyle {
+    ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap()
+        .progress_chars("=> ")
+}
+
+pub fn configure_progress_bar(pb: &ProgressBar) {
+    pb.set_style(serval_pb_style());
+    pb.enable_steady_tick(std::time::Duration::from_secs(1));
 }
 
 // workaround for https://github.com/rust-lang/rust/issues/42869
@@ -120,30 +558,31 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
 }
 
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = vec![];
-    for entry in WalkDir::new(root_dir)
+    WalkDir::new(root_dir)
         .into_iter()
         .filter_entry(|e| !is_ignored(e))
+        .par_bridge()
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
-    {
-        paths.push(entry.into_path());
-    }
-    paths
+        .map(|e| e.into_path())
+        .collect()
 }
 
-pub fn resources_align(
+pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
+    prefix_deploy_id_in_name: bool,
+    keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
-    let deploy_id = deploy_dir.file_name().unwrap();
-    let deploy_path = deploy_dir.to_str();
+    let deploy_id = deploy_dir
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
 
-    let output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(output_dir.clone())?;
+    let base_output_dir = working_dir.join(deploy_id);
+    fs::create_dir_all(base_output_dir.clone())?;
 
     let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
     let num_resource = resource_paths.len();
@@ -151,43 +590,67 @@ pub fn resources_align(
         "{} {}(s) found in {}",
         num_resource,
         resource_type,
-        deploy_dir.to_str().unwrap()
+        deploy_dir.to_string_lossy()
     );
-    let pb = indicatif::ProgressBar::new(num_resource as u64);
+
     let mut visited_path: HashSet<String> = HashSet::new();
+    let pb = if !dry_run {
+        Some(indicatif::ProgressBar::new(num_resource as u64))
+    } else {
+        None
+    };
+    if let Some(pb_ref) = &pb {
+        configure_progress_bar(pb_ref);
+    }
     for resource in resource_paths {
         let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
-        let resource_name = if resource_parent.to_str() == deploy_path {
-            let mut resource_name = deploy_id.to_os_string();
-            resource_name.push("-");
-            resource_name.push(resource.file_name().unwrap());
-            resource_name
-        } else {
-            let mut resource_name = deploy_id.to_os_string();
-            resource_name.push("-");
-            resource_name.push(resource.parent().unwrap().file_name().unwrap());
-            resource_name.push("-");
-            resource_name.push(resource.file_name().unwrap());
-            resource_name
-        };
+        let relative_path = resource.strip_prefix(&deploy_dir).unwrap_or(&resource);
+        let mut relative_parts: Vec<OsString> = relative_path
+            .iter()
+            .map(|part| part.to_os_string())
+            .collect();
+        if relative_parts.is_empty() {
+            relative_parts.push("unnamed_file".into());
+        }
+
+        let mut output_dir = base_output_dir.clone();
+        if keep_first_subdir && relative_parts.len() > 1 {
+            output_dir = output_dir.join(&relative_parts[0]);
+            if !dry_run {
+                fs::create_dir_all(output_dir.clone())?;
+            }
+        }
+
+        let mut name_parts: Vec<OsString> = Vec::new();
+        if prefix_deploy_id_in_name {
+            name_parts.push(deploy_id.to_os_string());
+        }
+        name_parts.extend(relative_parts.into_iter());
+        let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
+
         output_path.push(output_dir.join(resource_name));
+
         if !dry_run {
             if move_mode {
                 fs::rename(resource, output_path)?;
-                pb.inc(1);
             } else {
                 fs::copy(resource, output_path)?;
-                pb.inc(1);
             }
-        } else if !visited_path.contains(&resource_parent.to_str().unwrap().to_string()) {
-            visited_path.insert(resource_parent.to_str().unwrap().to_string());
+            if let Some(pb_ref) = &pb {
+                pb_ref.inc(1);
+            }
+        } else if !visited_path.contains(resource_parent.to_string_lossy().as_ref()) {
+            visited_path.insert(resource_parent.to_string_lossy().to_string());
             println!(
                 "DRYRUN sample: From {} to {}",
                 resource.display(),
                 output_path.display()
             );
         }
+    }
+    if let Some(pb_ref) = pb {
+        pb_ref.finish();
     }
     Ok(())
 }
@@ -199,28 +662,39 @@ pub fn deployments_align(
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
+    keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[DEPLOYMENT_ID_COLUMN]))
         .try_into_reader_with_file_path(Some(deploy_table))?
         .finish()?;
-    let deploy_array = deploy_df["deploymentID"].str()?;
+    reject_duplicate_csv_columns(&deploy_df)?;
+    let deploy_df = deploy_df
+        .lazy()
+        .select([col(DEPLOYMENT_ID_COLUMN)])
+        .collect()?;
+    let deploy_array = deploy_df[DEPLOYMENT_ID_COLUMN].str()?;
 
-    let deploy_iter = deploy_array.into_iter();
+    let deploy_iter = deploy_array.iter();
     let num_iter = deploy_iter.len();
     let pb = indicatif::ProgressBar::new(num_iter as u64);
+    configure_progress_bar(&pb);
     for deploy_id in deploy_iter {
         let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
         let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
         let collection_output_dir = output_dir.join(collection_name);
-        resources_align(
+        resources_flatten(
             deploy_dir,
             collection_output_dir.clone(),
             resource_type,
             dry_run,
             move_mode,
+            true,
+            keep_first_subdir,
         )?;
         pb.inc(1);
     }
+    pb.finish();
     Ok(())
 }
 
@@ -231,37 +705,70 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            let collection = path;
-            for deploy in collection.read_dir()? {
-                let deploy_dir = deploy.unwrap().path();
+            let mut collection_dir = path;
+            let original_collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
+            let collection_name_lower = original_collection_name.to_lowercase();
+            if original_collection_name != collection_name_lower {
+                let mut new_collection_dir = collection_dir.clone();
+                new_collection_dir.set_file_name(&collection_name_lower);
+                if dry_run {
+                    println!(
+                        "Will rename collection {original_collection_name} to {collection_name_lower}"
+                    );
+                } else {
+                    println!(
+                        "Renaming collection {} to {}",
+                        collection_dir.display(),
+                        new_collection_dir.display()
+                    );
+                    fs::rename(&collection_dir, &new_collection_dir)?;
+                    collection_dir = new_collection_dir;
+                }
+            }
+            let collection_name = collection_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid collection directory name"))?;
+            for deploy in collection_dir.read_dir()? {
+                let deploy_dir = deploy?.path();
                 if deploy_dir.is_file() {
                     continue;
                 }
                 count += 1;
-                let collection_name = deploy_dir
-                    .parent()
-                    .unwrap()
+                let deploy_name = deploy_dir
                     .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap();
-                let deploy_name = deploy_dir.file_name().unwrap().to_str().unwrap();
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory name"))?;
                 if !deploy_name.contains(collection_name) {
                     if dry_run {
                         println!(
                             "Will rename {} to {}_{}",
-                            deploy_name, deploy_name, collection_name
+                            deploy_name,
+                            deploy_name.to_lowercase(),
+                            collection_name.to_lowercase()
                         );
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(format!("{}_{}", deploy_name, collection_name));
+                        deploy_id_dir.set_file_name(format!(
+                            "{}_{}",
+                            deploy_name.to_lowercase(),
+                            collection_name.to_lowercase()
+                        ));
+                        println!(
+                            "Renaming {} to {}",
+                            deploy_dir.display(),
+                            deploy_id_dir.display()
+                        );
                         fs::rename(deploy_dir, deploy_id_dir)?;
                     }
                 }
             }
         }
     }
-    println!("Total directories: {}", count);
+    println!("Total directories: {count}");
     Ok(())
 }
 
@@ -269,8 +776,9 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
     let num_xmp = xmp_paths.len();
-    println!("{} xmp files found", num_xmp);
+    println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    configure_progress_bar(&pb);
 
     for xmp in xmp_paths {
         let mut output_path = output_dir.clone();
@@ -284,25 +792,253 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+// Sync XMP metadata to corresponding media files
+pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
+    let media_path_str = match xmp_path.to_str() {
+        Some(path_str) => path_str.trim_end_matches(".xmp"),
+        None => {
+            eprintln!(
+                "Warning: Skipping XMP file with non-UTF-8 path: {}",
+                xmp_path.display()
+            );
+            return Ok(());
+        }
+    };
+    let media_path = Path::new(media_path_str);
+
+    if !media_path.exists() {
+        eprintln!(
+            "Warning: Skipping,'{}' does not exist.",
+            media_path.display()
+        );
+        return Ok(());
+    }
+
+    let xmp_content = fs::read_to_string(xmp_path)?;
+    let xmp_meta = XmpMeta::from_str(&xmp_content)?;
+
+    let mut xmp_file = XmpFile::new()?;
+    let open_options = OpenFileOptions::default().for_update();
+    xmp_file.open_file(media_path, open_options)?;
+    xmp_file.put_xmp(&xmp_meta)?;
+    xmp_file.try_close()?;
+
+    Ok(())
+}
+
+pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let num_xmp = xmp_paths.len();
+
+    if num_xmp == 0 {
+        println!("No XMP files found in {}", source_dir.display());
+        return Ok(());
+    }
+
+    println!(
+        "Found {} XMP files to sync in {}",
+        num_xmp,
+        source_dir.display()
+    );
+
+    let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Syncing XMP metadata to media files...");
+
+    let results: Vec<anyhow::Result<()>> = xmp_paths
+        .par_iter()
+        .map(|xmp_path| {
+            let result = sync_xmp_to_media(xmp_path);
+            pb.inc(1);
+            result
+        })
+        .collect();
+
+    pb.finish();
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
+    let num_synced = successes.len();
+    let num_skipped = failures.len();
+
+    for result in failures {
+        if let Err(e) = result {
+            eprintln!("Failed to sync: {e}");
+        }
+    }
+
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
+
+    Ok(())
+}
+
+pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
+    let df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[PATH_COLUMN]))
+        .with_ignore_errors(false)
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+
+    let df_filtered = df
+        .lazy()
+        .filter(col("path").is_not_null())
+        .filter(col("path").str().ends_with(lit(".xmp")))
+        .select([col("path")])
+        .unique(
+            Some(cols(vec!["path".to_string()])),
+            UniqueKeepStrategy::First,
+        )
+        .collect()?;
+
+    let num_files = df_filtered.height();
+    if num_files == 0 {
+        println!("No XMP files found in CSV");
+        return Ok(());
+    }
+
+    println!("Found {num_files} XMP files in CSV to sync");
+
+    let pb = indicatif::ProgressBar::new(num_files as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Syncing XMP files in CSV...");
+
+    let path_col = df_filtered.column("path")?.str()?;
+
+    let results: Vec<anyhow::Result<()>> = path_col
+        .par_iter()
+        .filter_map(|path| path.map(PathBuf::from))
+        .map(|xmp_path| {
+            let result = sync_xmp_to_media(&xmp_path);
+            pb.inc(1);
+            result
+        })
+        .collect();
+
+    pb.finish();
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
+    let num_synced = successes.len();
+    let num_skipped = failures.len();
+
+    for result in failures {
+        if let Err(e) = result {
+            eprintln!("Failed to sync: {e}");
+        }
+    }
+
+    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
+
+    Ok(())
+}
+
+// Remove all XMP files recursively from a directory
+pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let num_xmp = xmp_paths.len();
+
+    if num_xmp == 0 {
+        println!("No XMP files found in {}", source_dir.display());
+        return Ok(());
+    }
+
+    println!("Found {} XMP files in {}", num_xmp, source_dir.display());
+
+    let pb = indicatif::ProgressBar::new(num_xmp as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Removing XMP files...");
+
+    let results: Vec<anyhow::Result<()>> = xmp_paths
+        .par_iter()
+        .map(|xmp_path| {
+            let result = fs::remove_file(xmp_path);
+            pb.inc(1);
+            result.map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", xmp_path.display(), e))
+        })
+        .collect();
+
+    pb.finish();
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
+    let num_removed = successes.len();
+    let num_failed = failures.len();
+
+    for result in failures {
+        if let Err(e) = result {
+            eprintln!("{e}");
+        }
+    }
+
+    println!("Successfully removed {num_removed} XMP files, failed to remove {num_failed} files");
+    Ok(())
+}
+
 pub fn is_temporal_independent(
     time_ref: String,
     time: String,
     min_delta_time: i32,
 ) -> anyhow::Result<bool> {
     // TODO Timezone
-    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
-    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S").unwrap();
+    let dt_ref = NaiveDateTime::parse_from_str(time_ref.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse reference datetime '{time_ref}': {e}"))?;
+    let dt = NaiveDateTime::parse_from_str(time.as_str(), "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{time}': {e}"))?;
     let diff = dt - dt_ref;
 
-    Ok(diff >= chrono::Duration::try_minutes(min_delta_time.into()).unwrap())
+    Ok(diff
+        >= chrono::Duration::try_minutes(min_delta_time.into())
+            .ok_or_else(|| anyhow::anyhow!("Invalid minute value: {min_delta_time}"))?)
 }
 
-pub fn get_path_seperator() -> &'static str {
-    if env::consts::OS == "windows" {
-        r"\"
-    } else {
-        r"/"
-    }
+pub fn get_path_levels(path: String) -> Vec<String> {
+    // Abandoned for performance
+    // let normalized_path = PathBuf::from(path.replace('\\', "/"));
+    // let levels: Vec<String> = normalized_path
+    //     .components()
+    //     .filter_map(|comp| match comp {
+    //         Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+    //         Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().into_owned()), // For windows path prefixes
+    //         _ => None, // Skip root and other components
+    //     })
+    //     .collect();
+
+    let normalized_path = normalize_path_separators(&path);
+    let levels: Vec<String> = normalized_path
+        .split('/')
+        .map(|comp| comp.to_string())
+        .collect();
+    levels[1..levels.len() - 1].to_vec()
+}
+
+fn normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+pub fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
+    let normalized_path = normalize_path_separators(&path.to_string_lossy());
+    normalized_path
+        .split('/')
+        .nth(deploy_path_index.try_into()?)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot extract deployment from path '{}' with index {}.",
+                path.display(),
+                deploy_path_index
+            )
+        })
+}
+
+pub fn deployment_from_path_expr(path_expr: Expr, deploy_path_index: i32) -> Expr {
+    path_expr
+        .str()
+        .replace_all(lit("\\"), lit("/"), true)
+        .str()
+        .split(lit("/"))
+        .list()
+        .get(lit(deploy_path_index), false)
 }
 
 pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
@@ -311,136 +1047,8 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     Ok(time_ignore_zone.to_string())
 }
 
-pub fn extract_first_frame(video_path: PathBuf) -> anyhow::Result<Vec<u8>> {
-    let mut child = Command::new("ffmpeg")
-        .args([
-            "-i",
-            video_path.to_str().unwrap(),
-            "-vf",
-            "select=eq(n\\,72)",
-            "-vframes",
-            "1",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "png",
-            "-",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null()) // Suppress ffmpeg output
-        .spawn()?;
-
-    let mut output = child
-        .stdout
-        .take()
-        .context("Failed to open FFmpeg stdout")?;
-    let mut buffer = Vec::new();
-    output.read_to_end(&mut buffer)?;
-    child.wait()?;
-    Ok(buffer)
-}
-
-pub fn crop_image(
-    image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
-    x_ratio: f32,
-    y_ratio: f32,
-    width_ratio: f32,
-    height_ratio: f32,
-) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let (width, height) = image.dimensions();
-    let x = (width as f32 * x_ratio) as u32;
-    let y = (height as f32 * y_ratio) as u32;
-    let width = (width as f32 * width_ratio) as u32;
-    let height = (height as f32 * height_ratio) as u32;
-    crop(image, x, y, width, height).to_image()
-}
-
-pub fn extract_timestamp(input: String) -> anyhow::Result<String> {
-    // let known_formats = [
-    //     "%m/%d/%Y %H:%M:%S", // Ltl Acorn
-    //     "%m/%d/%Y-%H:%M:%S",
-    //     "%Y-%m-%d %H:%M:%S", // Uovision, Ere
-    // ];
-    let regex_patterns = [
-        r"\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{4}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}", // Ltl Acorn
-        r"\d{4}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}(?:[^\d\n]){0,2}\d{2}", // Uovision, Ere
-    ];
-    let combined_pattern = regex_patterns.join("|");
-    let re = regex::Regex::new(&combined_pattern).unwrap();
-    for cap in re.captures_iter(&input) {
-        let datetime_str = cap.get(0).unwrap().as_str();
-        println!("Capture: {:?}", datetime_str);
-        let datetime_str_fixed = fix_ocr_timestamp(datetime_str)?;
-        println!("Fixed: {:?}", datetime_str_fixed);
-
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&datetime_str_fixed, "%Y-%m-%d %H:%M:%S") {
-            return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
-        }
-    }
-    Err(anyhow!("Failed to parse datetime from the input string"))
-}
-
-fn fix_ocr_timestamp(ts: &str) -> anyhow::Result<String> {
-    // Extract all digits from the input string
-    let re_digits = Regex::new(r"\d")?;
-    let digits: String = re_digits.find_iter(ts).map(|mat| mat.as_str()).collect();
-
-    // Ensure we have exactly 14 digits for YYYYMMDDHHMMSS
-    if digits.len() != 14 {
-        return Err(anyhow!(
-            "Error parsing timestamp: {} - not enough numeric parts",
-            ts
-        ));
-    }
-
-    // Identify the format (MM/DD/YYYY or YYYY-MM-DD) and extract components
-    let re_ymd = Regex::new(r"^\d{4}[-/]\d{2}[-/]\d{2}")?;
-    let re_mdy = Regex::new(r"^\d{2}[-/]\d{2}[-/]\d{4}")?;
-
-    let cleaned_ts = if re_ymd.is_match(ts) {
-        // YYYY-MM-DD format
-        let year = &digits[0..4];
-        let month = &digits[4..6];
-        let day = &digits[6..8];
-        let hour = &digits[8..10];
-        let minute = &digits[10..12];
-        let second = &digits[12..14];
-        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
-    } else if re_mdy.is_match(ts) || ts.contains('/') {
-        // MM/DD/YYYY format
-        let month = &digits[0..2];
-        let day = &digits[2..4];
-        // for month larger than 12 swap month and day
-        let (month, day) = if month.parse::<i32>().unwrap() > 12 {
-            (day, month)
-        } else {
-            (month, day)
-        };
-        let year = &digits[4..8];
-        let hour = &digits[8..10];
-        let minute = &digits[10..12];
-        let second = &digits[12..14];
-        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
-    } else {
-        // General case: assuming digits in the order YYYYMMDDHHMMSS
-        let year = &digits[0..4];
-        let month = &digits[4..6];
-        let day = &digits[6..8];
-        let hour = &digits[8..10];
-        let minute = &digits[10..12];
-        let second = &digits[12..14];
-        format!("{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second)
-    };
-
-    // Parse the cleaned timestamp
-    let parsed_ts = NaiveDateTime::parse_from_str(&cleaned_ts, "%Y-%m-%d %H:%M:%S")?;
-    Ok(parsed_ts.format("%Y-%m-%d %H:%M:%S").to_string())
-}
-pub fn append_ext(ext: impl AsRef<OsStr>, path: PathBuf) -> anyhow::Result<PathBuf> {
-    let mut os_string: OsString = path.into();
-    os_string.push(".");
-    os_string.push(ext.as_ref());
-    Ok(os_string.into())
+pub fn iso_datetime_to_csv_format(time: &str) -> String {
+    time.replace('T', " ")
 }
 
 pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
@@ -450,5 +1058,79 @@ pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()
         .set_accessed(src.accessed()?)
         .set_modified(src.modified()?);
     dest.set_times(times)?;
+    Ok(())
+}
+
+pub fn tags_csv_translate(
+    source_csv: PathBuf,
+    taglist_csv: PathBuf,
+    output_dir: PathBuf,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<()> {
+    let source_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .try_into_reader_with_file_path(Some(source_csv.clone()))?
+        .finish()?;
+    reject_duplicate_csv_columns(&source_df)?;
+    let taglist_df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[from, to]))
+        .try_into_reader_with_file_path(Some(taglist_csv))?
+        .finish()?;
+    reject_duplicate_csv_columns(&taglist_df)?;
+
+    let joined = source_df.clone().lazy().join(
+        taglist_df.clone().lazy(),
+        [col(TagType::Species.col_name())],
+        [col(from)],
+        JoinArgs::new(JoinType::Left),
+    );
+
+    let unknown = joined
+        .clone()
+        .filter(
+            col(to)
+                .is_null()
+                .and(col(TagType::Species.col_name()).is_not_null())
+                .and(col(TagType::Species.col_name()).neq(lit(""))),
+        )
+        .select([col(TagType::Species.col_name())])
+        .unique(None, UniqueKeepStrategy::Any)
+        .collect()?;
+    if unknown.height() > 0 {
+        let mut sample = Vec::new();
+        if let Ok(col) = unknown.column(TagType::Species.col_name())
+            && let Ok(ca) = col.str()
+        {
+            for v in ca.iter().flatten().take(20) {
+                sample.push(v.to_string());
+            }
+        }
+        return Err(anyhow::anyhow!(
+            "Unknown tag(s) not found in taglist: {}",
+            sample.join(", ")
+        ));
+    }
+
+    let mut result = joined
+        .drop(cols([TagType::Species.col_name()]))
+        .rename(vec![to], vec![TagType::Species.col_name()], true)
+        // .with_column(col(to).alias("species"))
+        .collect()?;
+
+    let output_csv = output_dir.join(format!(
+        "{}_translated.csv",
+        source_csv
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("tags")
+    ));
+    fs::create_dir_all(output_dir.clone())?;
+    let mut file = std::fs::File::create(&output_csv)?;
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut result)?;
+
+    println!("Saved to {}", output_csv.display());
     Ok(())
 }

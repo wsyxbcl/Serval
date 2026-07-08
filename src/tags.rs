@@ -1,23 +1,54 @@
-use crate::utils::{
-    absolute_path, append_ext, get_path_seperator, ignore_timezone, is_temporal_independent,
-    path_enumerate, sync_modified_time, ExtractFilterType, ResourceType, TagType,
+use crate::schema::{
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
+    LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
+    SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
+    canonicalize_observe_tags_df, infer_media_type,
 };
-use chrono::{DateTime, Local};
+use crate::utils::{
+    ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
+    configure_progress_bar, csv_projection_columns, deployment_from_path,
+    deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
+    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
+    reject_duplicate_csv_columns, sync_modified_time,
+};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
 use itertools::izip;
 use polars::{lazy::dsl::StrptimeOptions, prelude::*};
 use rayon::prelude::*;
 use rustyline::{
-    validate::{ValidationContext, ValidationResult, Validator},
     Cmd, Completer, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, Helper,
     Highlighter, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount, Result,
+    validate::{ValidationContext, ValidationResult, Validator},
 };
 use std::{
     fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
-use xmp_toolkit::{xmp_ns, OpenFileOptions, ToStringOptions, XmpFile, XmpMeta, XmpValue};
+use xmp_toolkit::{
+    FromStrOptions, OpenFileOptions, ToStringOptions, XmpDate, XmpDateTime, XmpFile, XmpMeta,
+    XmpTime, XmpValue, xmp_gps, xmp_ns,
+};
+
+// Namesapce for "taglists"
+// Adobe
+const LIGHTROOM_NS: &str = "http://ns.adobe.com/lightroom/1.0/";
+const LR_HIERARCHICAL_SUBJECT: &str = "hierarchicalSubject";
+// DigiKam
+const DIGIKAM_NS: &str = "http://www.digikam.org/ns/1.0/";
+const DIGIKAM_TAGSLIST: &str = "TagsList";
+
+// Default species/tags to exclude from temporal independence analysis
+const DEFAULT_EXCLUDE_TAGS: &[&str] = &[
+    "",
+    "Blank",
+    "Useless data",
+    "Unidentified",
+    "Unknown",
+    "Blur",
+];
 
 struct NumericFilteringHandler;
 impl ConditionalEventHandler for NumericFilteringHandler {
@@ -58,6 +89,124 @@ impl Validator for NumericSelectValidator {
     }
 }
 
+fn finalize_xmp_file<T>(
+    file: &mut XmpFile,
+    operation_result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match file.try_close().map_err(anyhow::Error::from) {
+        Ok(()) => operation_result,
+        Err(close_err) => match operation_result {
+            Ok(_) => Err(close_err.context("Failed to close XMP file")),
+            Err(err) => Err(err.context(format!("Failed to close XMP file: {close_err}"))),
+        },
+    }
+}
+
+fn naive_datetime_to_xmp(datetime: &str) -> anyhow::Result<XmpDateTime> {
+    let datetime = NaiveDateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%S")?;
+    Ok(XmpDateTime {
+        date: Some(XmpDate {
+            year: datetime.year(),
+            month: datetime.month() as i32,
+            day: datetime.day() as i32,
+        }),
+        time: Some(XmpTime {
+            hour: datetime.hour() as i32,
+            minute: datetime.minute() as i32,
+            second: datetime.second() as i32,
+            nanosecond: datetime.nanosecond() as i32,
+            time_zone: None,
+        }),
+    })
+}
+
+fn set_xmp_datetime_without_timezone(
+    xmp: &mut XmpMeta,
+    namespace: &str,
+    path: &str,
+    datetime: &str,
+) -> anyhow::Result<()> {
+    let value = XmpValue::new(naive_datetime_to_xmp(datetime)?);
+    xmp.set_property_date(namespace, path, &value)
+        .map_err(anyhow::Error::from)
+}
+
+fn set_xmp_datetime_fields(xmp: &mut XmpMeta, datetime: &str) -> anyhow::Result<()> {
+    // following the convertion table by Exiv2: https://exiv2.org/conversion.html
+    set_xmp_datetime_without_timezone(xmp, xmp_ns::EXIF, "DateTimeOriginal", datetime)?;
+    set_xmp_datetime_without_timezone(xmp, xmp_ns::PHOTOSHOP, "DateCreated", datetime)?;
+    Ok(())
+}
+
+fn strip_xmp_datetime_timezone(
+    xmp: &mut XmpMeta,
+    namespace: &str,
+    path: &str,
+) -> anyhow::Result<()> {
+    if let Some(mut value) = xmp.property_date(namespace, path)
+        && let Some(time) = value.value.time.as_mut()
+        && time.time_zone.is_some()
+    {
+        time.time_zone = None;
+        xmp.set_property_date(namespace, path, &value)
+            .map_err(anyhow::Error::from)?;
+    }
+    Ok(())
+}
+
+fn parse_xmp_gps_coordinate(raw: &str, property: &str) -> Option<f64> {
+    match property {
+        "GPSLatitude" => xmp_gps::exif_latitude_to_decimal(raw).or_else(|| raw.parse().ok()),
+        "GPSLongitude" => xmp_gps::exif_longitude_to_decimal(raw).or_else(|| raw.parse().ok()),
+        _ => None,
+    }
+}
+
+fn format_coordinate(coordinate: f64) -> String {
+    format!("{coordinate:.6}")
+}
+
+fn extract_xmp_gps_coordinates(xmp: &XmpMeta) -> (Option<String>, Option<String>) {
+    let latitude_raw = xmp
+        .property(xmp_ns::EXIF, "GPSLatitude")
+        .map(|value| value.value);
+    let longitude_raw = xmp
+        .property(xmp_ns::EXIF, "GPSLongitude")
+        .map(|value| value.value);
+    let latitude = latitude_raw
+        .as_deref()
+        .and_then(|raw| parse_xmp_gps_coordinate(raw, "GPSLatitude"))
+        .map(format_coordinate);
+    let longitude = longitude_raw
+        .as_deref()
+        .and_then(|raw| parse_xmp_gps_coordinate(raw, "GPSLongitude"))
+        .map(format_coordinate);
+    (latitude, longitude)
+}
+
+fn prompt_deployment_path_index(
+    rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
+    path_sample: String,
+) -> anyhow::Result<i32> {
+    println!("\nHere is a sample of the file path ({path_sample})");
+    let path_levels = get_path_levels(path_sample);
+    if path_levels.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Cannot infer deployment from path: expected at least one directory level before the file name."
+        ));
+    }
+    for (i, entry) in path_levels.iter().enumerate() {
+        println!("{}): {}", i + 1, entry);
+    }
+    let h = NumericSelectValidator {
+        min: 1,
+        max: path_levels.len().try_into()?,
+    };
+    rl.set_helper(Some(h));
+    let readline = rl.readline("Select the number corresponding to the deployment: ");
+    Ok(readline?.trim().parse::<i32>()?)
+}
+
 pub fn write_taglist(
     taglist_path: PathBuf,
     image_path: PathBuf,
@@ -69,58 +218,288 @@ pub fn write_taglist(
         .with_infer_schema_length(Some(0))
         .try_into_reader_with_file_path(Some(taglist_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&tag_df)?;
     let tags = tag_df.column(tag_type.col_name())?.unique()?;
-    let ns_digikam = "http://www.digikam.org/ns/1.0/";
-    XmpMeta::register_namespace(ns_digikam, "digiKam")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
     let mut meta = XmpMeta::from_str(dummy_xmp)?;
-    for tag in tags.str()? {
+    for tag in tags.str()?.iter() {
         meta.set_array_item(
-            ns_digikam,
-            "TagsList",
+            DIGIKAM_NS,
+            DIGIKAM_TAGSLIST,
             xmp_toolkit::ItemPlacement::InsertBeforeIndex(1),
             &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag.unwrap())),
         )?;
     }
 
     f.open_file(image_path, OpenFileOptions::default().for_update())?;
-    f.put_xmp(&meta)?;
-    f.close();
+    let put_result = f.put_xmp(&meta).map_err(anyhow::Error::from);
+    finalize_xmp_file(&mut f, put_result)?;
     Ok(())
 }
 
-pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
+#[derive(Clone, Default)]
+struct XmpInitDebugRow {
+    path: String,
+    deployment: String,
+    media_type: String,
+    embedded_datetime_original_raw: String,
+    embedded_create_date_raw: String,
+    file_modified_time: String,
+    datetime: String,
+    latitude: String,
+    longitude: String,
+    xmp_update_datetime: String,
+}
+
+impl XmpInitDebugRow {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        }
+    }
+}
+
+fn write_xmp_init_debug_csv(
+    output_dir: &Path,
+    debug_rows: Vec<XmpInitDebugRow>,
+) -> anyhow::Result<()> {
+    let timestamp = Local::now().format("%Y%m%d%H%M%S");
+    let debug_csv_path = output_dir.join(format!("xmp_init_debug_{timestamp}.csv"));
+    let mut df = DataFrame::new(
+        debug_rows.len(),
+        vec![
+            Column::new(
+                PATH_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "deployment".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.deployment.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                MEDIA_TYPE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.media_type.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "embedded_datetime_original_raw".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.embedded_datetime_original_raw.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "embedded_create_date_raw".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.embedded_create_date_raw.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "file_modified_time".into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.file_modified_time.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                LATITUDE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.latitude.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                LONGITUDE_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.longitude.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                DATETIME_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.datetime.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                XMP_UPDATE_DATETIME_COLUMN.into(),
+                debug_rows
+                    .iter()
+                    .map(|row| row.xmp_update_datetime.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        ],
+    )?;
+    df = df.sort([PATH_COLUMN], SortMultipleOptions::default())?;
+    let mut file = std::fs::File::create(debug_csv_path.clone())?;
+    CsvWriter::new(&mut file)
+        .include_bom(true)
+        .finish(&mut df)?;
+    println!("Saved debug CSV to {}", debug_csv_path.to_string_lossy());
+    Ok(())
+}
+
+pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
     let media_count = media_paths.len();
+
+    let mut debug_rows = if info {
+        Vec::with_capacity(media_count)
+    } else {
+        Vec::new()
+    };
+    let debug_row_init = if info {
+        let deploy_path_index = if media_count > 0 {
+            let mut rl = Editor::new()?;
+            rl.bind_sequence(
+                Event::Any,
+                EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+            );
+            Some(prompt_deployment_path_index(
+                &mut rl,
+                media_paths[0].to_string_lossy().into_owned(),
+            )?)
+        } else {
+            None
+        };
+        Some(
+            media_paths
+                .iter()
+                .map(|media| {
+                    let xmp_path = working_dir.join(media.with_added_extension("xmp"));
+                    let mut row = XmpInitDebugRow::new(&xmp_path);
+                    if let Some(deploy_path_index) = deploy_path_index {
+                        row.deployment = deployment_from_path(media, deploy_path_index)?;
+                    }
+                    row.media_type = infer_media_type(media)?.to_string();
+                    Ok(row)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
     let pb = ProgressBar::new(media_count.try_into()?);
-    for media in media_paths {
+    configure_progress_bar(&pb);
+
+    for (index, media) in media_paths.into_iter().enumerate() {
+        let xmp_path = working_dir.join(media.with_added_extension("xmp"));
+        let mut debug_row = debug_row_init
+            .as_ref()
+            .and_then(|rows| rows.get(index).cloned());
+        if let Some(row) = debug_row.as_mut()
+            && let Ok(metadata) = fs::metadata(&media)
+            && let Ok(modified_time) = metadata.modified()
+        {
+            let datetime: DateTime<Local> = DateTime::from(modified_time);
+            row.file_modified_time =
+                iso_datetime_to_csv_format(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
+        }
+        if xmp_path.exists() && !info {
+            pb.inc(1);
+            pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+            continue;
+        }
         let mut media_xmp = XmpFile::new()?;
         if media_xmp
-            .open_file(
-                media.clone(),
-                OpenFileOptions::default().only_xmp().repair_file(),
-            )
+            .open_file(media.clone(), OpenFileOptions::default())
             .is_ok()
         {
-            if let Some(xmp) = media_xmp.xmp() {
-                let xmp_path = working_dir.join(append_ext("xmp", media)?);
-                // Check existence of xmp file
-                if xmp_path.exists() {
-                    pb.inc(1);
-                    pb.println(format!("XMP file already exists: {}", xmp_path.display()));
-                    continue;
+            let xmp_result = (|| -> anyhow::Result<XmpMeta> {
+                let mut xmp = media_xmp.xmp().unwrap_or_default();
+                if let Some(row) = debug_row.as_mut() {
+                    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+                        row.embedded_datetime_original_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                        row.datetime = row.embedded_datetime_original_raw.clone();
+                    }
+                    if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                        row.embedded_create_date_raw =
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
+                    }
+                    let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
+                    row.latitude = latitude.unwrap_or_default();
+                    row.longitude = longitude.unwrap_or_default();
                 }
-                fs::File::create(xmp_path.clone())?;
-                let xmp_string = xmp.to_string_with_options(
-                    ToStringOptions::default().set_newline("\n".to_string()),
-                )?;
-                fs::write(xmp_path, xmp_string)?;
-                pb.inc(1);
+                // Workaround for Exiv2 not recognizing this EXIF field in sidecars.
+                xmp.delete_property(xmp_ns::EXIF, "DeviceSettingDescription")
+                    .map_err(anyhow::Error::from)?;
+                Ok(xmp)
+            })();
+            let mut xmp = finalize_xmp_file(&mut media_xmp, xmp_result)?;
+
+            let has_datetime_original = xmp.property(xmp_ns::EXIF, "DateTimeOriginal").is_some();
+            let has_metadata_date = xmp.property(xmp_ns::XMP, "MetadataDate").is_some();
+            if !has_datetime_original && !has_metadata_date {
+                let create_date = xmp.property(xmp_ns::XMP, "CreateDate");
+                let use_create_date = create_date.as_ref().is_some_and(|value| {
+                    !value.value.starts_with("1904-01-01") && !value.value.starts_with("1970-01-01")
+                });
+                if use_create_date {
+                    let chosen_datetime = if let Some(row) = debug_row.as_ref() {
+                        if !row.embedded_create_date_raw.is_empty() {
+                            row.embedded_create_date_raw.clone()
+                        } else if let Some(value) = create_date.as_ref() {
+                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
+                        } else {
+                            String::new()
+                        }
+                    } else if let Some(value) = create_date.as_ref() {
+                        iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
+                    } else {
+                        String::new()
+                    };
+                    if let Some(row) = debug_row.as_mut() {
+                        row.datetime = chosen_datetime.clone();
+                    }
+                    // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+                    // And timezone is ignored for they write UTC-8 time but label as UTC
+                    // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
+                    // and skip the 0 timestamp if manufacturer write it
+                    set_xmp_datetime_fields(&mut xmp, &chosen_datetime.replace(' ', "T"))?;
+                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
+                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
+                } else {
+                    // Get the modified time of the file
+                    if let Ok(metadata) = fs::metadata(media)
+                        && let Ok(modified_time) = metadata.modified()
+                    {
+                        let datetime: DateTime<Local> = DateTime::from(modified_time);
+                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        if let Some(row) = debug_row.as_mut() {
+                            row.datetime = iso_datetime_to_csv_format(&datetime_str);
+                        }
+                        set_xmp_datetime_fields(&mut xmp, &datetime_str)?;
+                    }
+                }
             }
+            let xmp_string = xmp
+                .to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+            fs::write(&xmp_path, xmp_string)?;
+            pb.inc(1);
         } else {
             pb.println(format!("Failed to open file: {}", media.display()));
             pb.inc(1);
         }
+        if let Some(row) = debug_row {
+            debug_rows.push(row);
+        }
+    }
+    pb.finish();
+    if info {
+        write_xmp_init_debug_csv(&working_dir, debug_rows)?;
     }
     Ok(())
 }
@@ -128,104 +507,158 @@ pub fn init_xmp(working_dir: PathBuf) -> anyhow::Result<()> {
 type Metadata = (
     Vec<String>, // species
     Vec<String>, // individuals
+    Vec<String>, // count
+    Vec<String>, // sex
+    Vec<String>, // bodyparts
     Vec<String>, // subjects
-    String,      // datetime_original
-    String,      // datetime_digitized
-    String,      // time_modified
-    String,      // rating
+    String,      // datetime
+    String,      // latitude
+    String,      // longitude
+    // String,      // datetime_digitized
+    String, // time_modified
+    String, // rating
 );
 
-fn retrieve_metadata(
-    file_path: &String,
-    include_subject: bool,
-    include_time_modified: bool,
-) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
     // Retrieve metadata from given file
-    // digikam taglist (species and individual), subject, datetime_original, datetime_digitized, rating and file modified time
+    // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
+    // datetime, datetime_digitized, rating and file modified time
 
     let mut f = XmpFile::new()?;
-    f.open_file(file_path, OpenFileOptions::default().only_xmp())?;
+    f.open_file(file_path, OpenFileOptions::default())?;
 
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
+    let mut count: Vec<String> = Vec::new();
+    let mut sex: Vec<String> = Vec::new();
+    let mut bodyparts: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new(); // for old digikam vesrion?
-    let mut datetime_original = String::new();
-    let mut datetime_digitized = String::new();
+    let mut datetime = String::new();
+    let mut latitude = String::new();
+    let mut longitude = String::new();
+    // let mut datetime_digitized = String::new();
     let mut time_modified = String::new();
     let mut rating = String::new();
 
-    if include_time_modified {
+    if debug_mode {
         let file_metadata = fs::metadata(file_path)?;
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
-    // Retrieve digikam taglist and datetime from file
-    let mut f = XmpFile::new()?;
-    if f.open_file(file_path, OpenFileOptions::default().only_xmp())
-        .is_ok()
-    {
+    let metadata_result = (|| -> anyhow::Result<Metadata> {
         if let Some(xmp) = f.xmp() {
             if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                datetime_original = ignore_timezone(value.value.to_string())?;
+                datetime = ignore_timezone(value.value.to_string())?;
+            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+                // And timezone is ignored for they write UTC-8 time but label as UTC
+                // i.e. we follow time shown in the picture without considering timezone in metadata
+                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
+                if !value.value.to_string().starts_with("1904")
+                    && !value.value.to_string().starts_with("1970")
+                {
+                    datetime = ignore_timezone(value.value.to_string())?;
+                }
             }
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-                datetime_digitized = ignore_timezone(value.value.to_string())?;
-            }
+            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+            // }
             if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
                 rating = value.value.to_string();
             }
-            if include_subject {
+            let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
+            latitude = gps_latitude.unwrap_or_default();
+            longitude = gps_longitude.unwrap_or_default();
+            if debug_mode {
                 for property in xmp.property_array(xmp_ns::DC, "subject") {
                     subjects.push(property.value.to_string());
                 }
             }
-            // Register the digikam namespace
-            let ns_digikam = "http://www.digikam.org/ns/1.0/";
-            XmpMeta::register_namespace(ns_digikam, "digiKam")?;
 
-            for property in xmp.property_array(ns_digikam, "TagsList") {
+            // use adobe hierarchicalSubject if available (digikam also writes to this field)
+            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
                 let tag = property.value;
-                if tag.starts_with(TagType::Species.digikam_tag_prefix()) {
+                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
                     species.push(
-                        tag.strip_prefix(TagType::Species.digikam_tag_prefix())
+                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
                             .unwrap()
                             .to_string(),
                     );
-                } else if tag.starts_with(TagType::Individual.digikam_tag_prefix()) {
+                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
                     individuals.push(
-                        tag.strip_prefix(TagType::Individual.digikam_tag_prefix())
+                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                    count.push(
+                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                    sex.push(
+                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                            .unwrap()
+                            .to_string(),
+                    );
+                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                    bodyparts.push(
+                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
                             .unwrap()
                             .to_string(),
                     );
                 }
             }
         }
-    }
-    Ok((
-        species,
-        individuals,
-        subjects,
-        datetime_original,
-        datetime_digitized,
-        time_modified,
-        rating,
-    ))
+        Ok((
+            species,
+            individuals,
+            count,
+            sex,
+            bodyparts,
+            subjects,
+            datetime,
+            latitude,
+            longitude,
+            // datetime_digitized,
+            time_modified,
+            rating,
+        ))
+    })();
+    finalize_xmp_file(&mut f, metadata_result)
 }
 
 pub fn get_classifications(
     file_dir: PathBuf,
     output_dir: PathBuf,
     resource_type: ResourceType,
-    independent: bool,
-    include_subject: bool,
-    include_time_modified: bool,
     debug_mode: bool,
+    volunteer_mode: bool, //TODO: make a mode argument
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
 
-    let file_paths = path_enumerate(file_dir, resource_type);
+    let file_paths = path_enumerate(file_dir.clone(), resource_type);
     fs::create_dir_all(output_dir.clone())?;
+    // Determine output filename based on parameters
+    let output_suffix = if volunteer_mode {
+        String::new()
+    } else {
+        let file_name = file_dir
+            .file_name()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("unk")); // For root dir
+
+        let suffix = format!(
+            "_{}_{}_{}.csv",
+            file_name,
+            resource_type.to_string().to_lowercase(),
+            Local::now().format("%Y%m%d%H%M%S"),
+        );
+        suffix
+    };
+
     let image_paths: Vec<String> = file_paths
         .clone()
         .into_iter()
@@ -236,32 +669,43 @@ pub fn get_classifications(
         .into_iter()
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
+    let media_types: Vec<String> = file_paths
+        .iter()
+        .map(|path| infer_media_type(path).map(str::to_string))
+        .collect::<anyhow::Result<_>>()?;
     let num_images = file_paths.len();
-    println!("Total {}: {}.", resource_type, num_images);
+    println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
+    configure_progress_bar(&pb);
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
+    let mut count_tags: Vec<String> = Vec::new();
+    let mut sex_tags: Vec<String> = Vec::new();
+    let mut bodypart_tags: Vec<String> = Vec::new();
     let mut subjects: Vec<String> = Vec::new();
-    let mut datetime_originals: Vec<String> = Vec::new();
-    let mut datetime_digitizeds: Vec<String> = Vec::new();
+    let mut datetimes: Vec<String> = Vec::new();
+    let mut latitudes: Vec<String> = Vec::new();
+    let mut longitudes: Vec<String> = Vec::new();
+    // let mut datetime_digitizeds: Vec<String> = Vec::new();
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
     let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(|i| {
-            match retrieve_metadata(
-                &file_paths[i].to_string_lossy().into_owned(),
-                include_subject,
-                include_time_modified,
-            ) {
+            match retrieve_metadata(&file_paths[i], debug_mode) {
                 Ok((
                     species,
                     individuals,
+                    count,
+                    sex,
+                    bodyparts,
                     subjects,
-                    datetime_original,
-                    datetime_digitized,
+                    datetime,
+                    latitude,
+                    longitude,
+                    // datetime_digitized,
                     time_modified,
                     rating,
                 )) => {
@@ -269,9 +713,14 @@ pub fn get_classifications(
                     (
                         species.join("|"),
                         individuals.join("|"),
-                        subjects.join("|"), // for just human review
-                        datetime_original,
-                        datetime_digitized,
+                        count.join("|"),
+                        sex.join("|"),
+                        bodyparts.join("|"),
+                        subjects.join("|"), // subject just for reviewing
+                        datetime,
+                        latitude,
+                        longitude,
+                        // datetime_digitized,
                         time_modified,
                         rating,
                     )
@@ -287,6 +736,10 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
+                        "".to_string(),
                     )
                 }
             }
@@ -295,56 +748,116 @@ pub fn get_classifications(
     for tag in result {
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
-        subjects.push(tag.2);
-        datetime_originals.push(tag.3);
-        datetime_digitizeds.push(tag.4);
-        time_modifieds.push(tag.5);
-        ratings.push(tag.6);
+        count_tags.push(tag.2);
+        sex_tags.push(tag.3);
+        bodypart_tags.push(tag.4);
+        subjects.push(tag.5);
+        datetimes.push(tag.6);
+        latitudes.push(tag.7);
+        longitudes.push(tag.8);
+        // datetime_digitizeds.push(tag.7);
+        time_modifieds.push(tag.9);
+        ratings.push(tag.10);
     }
+    pb.finish();
     // Analysis
-    let s_species = Series::new("species_tags", species_tags);
-    let s_individuals = Series::new("individual_tags", individual_tags);
-    let s_subjects = Series::new("subjects", subjects);
-    let s_datetime_original = Series::new("datetime_original", datetime_originals);
-    let s_datetime_digitized = Series::new("datetime_digitized", datetime_digitizeds);
-    let s_time_modified = Series::new("time_modified", time_modifieds);
-    let s_rating = Series::new("rating", ratings);
+    let s_species = Column::new("species_tags".into(), species_tags);
+    let s_individuals = Column::new("individual_tags".into(), individual_tags);
+    let s_count = Column::new("count_tags".into(), count_tags);
+    let s_sex = Column::new("sex_tags".into(), sex_tags);
+    let s_bodyparts = Column::new("bodypart_tags".into(), bodypart_tags);
+    let s_subjects = Column::new(SUBJECTS_COLUMN.into(), subjects);
+    let s_datetime = Column::new(DATETIME_COLUMN.into(), datetimes);
+    let s_latitude = Column::new(LATITUDE_COLUMN.into(), latitudes);
+    let s_longitude = Column::new(LONGITUDE_COLUMN.into(), longitudes);
+    // let s_datetime_digitized = Column::new("datetime_digitized".into(), datetime_digitizeds);
+    let s_time_modified = Column::new(TIME_MODIFIED_COLUMN.into(), time_modifieds);
+    let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
-    let mut df_raw = DataFrame::new(vec![
-        Series::new("path", image_paths),
-        Series::new("filename", image_filenames),
-        s_species,
-        s_individuals,
-        s_subjects,
-        s_datetime_original,
-        s_datetime_digitized,
-        s_time_modified,
-        s_rating,
-    ])?;
+    let df_raw_height = image_paths.len();
+    let mut df_raw = DataFrame::new(
+        df_raw_height,
+        vec![
+            Column::new(PATH_COLUMN.into(), image_paths),
+            Column::new(FILENAME_COLUMN.into(), image_filenames),
+            Column::new(MEDIA_TYPE_COLUMN.into(), media_types),
+            s_species,
+            s_individuals,
+            s_count,
+            s_sex,
+            s_bodyparts,
+            s_subjects,
+            s_datetime,
+            s_latitude,
+            s_longitude,
+            // s_datetime_digitized,
+            s_time_modified,
+            s_rating,
+        ],
+    )?;
+    if volunteer_mode {
+        // println!("{:?}", df_raw);
+        let mut df_empty_species = df_raw
+            .clone()
+            .lazy()
+            .filter(col("species_tags").eq(lit("")))
+            .collect()?;
+        let num_xmp = df_raw.height();
+        let num_tagged_sp = num_xmp - df_empty_species.height();
+        let progress = if num_xmp > 0 {
+            (num_tagged_sp as f64 / num_xmp as f64) * 100.0
+        } else {
+            0.0
+        };
 
+        println!("Species Labeling Progress: {progress:.2}%");
+
+        let pb = ProgressBar::new(num_xmp as u64);
+        pb.set_prefix("Species Labeling Progress:");
+        pb.set_position(num_tagged_sp as u64);
+
+        println!("Untagged xmp: {}", df_empty_species.height());
+
+        let mut rl = rustyline::DefaultEditor::new()?;
+        let input = rl.readline("Save CSV of files with missing tags for review? (y/n): ")?;
+
+        if input.trim().eq_ignore_ascii_case("y") {
+            let mut file = std::fs::File::create("serval_check_empty.csv")?;
+            CsvWriter::new(&mut file)
+                .include_bom(true)
+                .finish(&mut df_empty_species)?;
+        } else {
+            println!("Skipping save.");
+        }
+
+        return Ok(());
+    }
     let datetime_options = StrptimeOptions {
         // TODO: Serval does not include timezone info now
         format: Some("%Y-%m-%dT%H:%M:%S".into()),
         strict: false,
         ..Default::default()
     };
-    let mut df_split = df_raw
+    let df_split = df_raw
         .clone()
         .lazy()
         .select([
-            col("path"),
-            col("filename"),
-            col("datetime_original").str().strptime(
+            col(PATH_COLUMN),
+            col(FILENAME_COLUMN),
+            col(MEDIA_TYPE_COLUMN),
+            col(DATETIME_COLUMN).str().strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
                 datetime_options.clone(),
                 lit("raise"),
             ),
-            col("datetime_digitized").str().strptime(
-                DataType::Datetime(TimeUnit::Milliseconds, None),
-                datetime_options.clone(),
-                lit("raise"),
-            ),
-            col("time_modified")
+            col(LATITUDE_COLUMN),
+            col(LONGITUDE_COLUMN),
+            // col("datetime_digitized").str().strptime(
+            //     DataType::Datetime(TimeUnit::Milliseconds, None),
+            //     datetime_options.clone(),
+            //     lit("raise"),
+            // ),
+            col(TIME_MODIFIED_COLUMN)
                 .str()
                 .to_datetime(
                     Some(TimeUnit::Milliseconds),
@@ -362,71 +875,71 @@ pub fn get_classifications(
                 .str()
                 .split(lit("|"))
                 .alias(TagType::Individual.col_name()),
-            col("subjects"),
-            col("rating"),
+            col("count_tags").alias(TagType::Count.col_name()),
+            col("sex_tags").alias(TagType::Sex.col_name()),
+            col("bodypart_tags").alias(TagType::Bodypart.col_name()),
+            col(SUBJECTS_COLUMN),
+            col(RATING_COLUMN),
         ])
         .collect()?;
-    println!("{:?}", df_split);
+    println!("{df_split:?}");
 
-    if !include_subject {
-        let _ = df_split.drop_in_place("subjects")?;
-    }
-    if !include_time_modified {
-        let _ = df_split.drop_in_place("time_modified")?;
-    }
     if debug_mode {
-        println!("{}", df_raw);
-        let debug_csv_path = output_dir.join("raw.csv");
+        println!("{df_raw}");
+        let debug_csv_path = output_dir.join(format!("raw{output_suffix}"));
         let mut file = std::fs::File::create(debug_csv_path.clone())?;
         CsvWriter::new(&mut file)
             .include_bom(true)
-            .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_raw)?;
         println!("Saved to {}", debug_csv_path.to_string_lossy());
     }
     // For multiple tags in a single image (individual only for two species that won't be in the same image)
-    let mut df_flatten = df_split
+    let df_flatten = df_split
         .clone()
         .lazy()
         .select([col("*")])
-        .explode([TagType::Individual.col_name()])
-        .explode([TagType::Species.col_name()])
+        .explode(
+            cols([TagType::Individual.col_name()]),
+            ExplodeOptions {
+                empty_as_null: false,
+                keep_nulls: true,
+            },
+        )
+        .explode(
+            cols([TagType::Species.col_name()]),
+            ExplodeOptions {
+                empty_as_null: false,
+                keep_nulls: true,
+            },
+        )
+        .sort([PATH_COLUMN], SortMultipleOptions::default())
         .collect()?;
-    println!("{}", df_flatten);
+    let mut df_flatten = canonicalize_observe_tags_df(df_flatten)?;
+    println!("{df_flatten}");
 
-    let tags_csv_path = output_dir.join("tags.csv");
+    let tags_csv_path = output_dir.join(format!("tags{output_suffix}"));
     let mut file = std::fs::File::create(tags_csv_path.clone())?;
     CsvWriter::new(&mut file)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .include_bom(true)
         .finish(&mut df_flatten)?;
-    println!("Saved to {}", output_dir.join("tags.csv").to_string_lossy());
+    println!("Saved to {}", tags_csv_path.to_string_lossy());
 
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(
-            true,
-            true,
-            "count".to_string(),
-            false,
-        )])
-        .unnest([TagType::Species.col_name()])
+        .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
+        .unnest(cols([TagType::Species.col_name()]), None)
         .collect()?;
-    println!("{:?}", df_count_species);
+    println!("{df_count_species:?}");
 
-    let mut file = std::fs::File::create(output_dir.join("species_stats.csv"))?;
+    let species_stats_path = output_dir.join(format!("species_stats{output_suffix}"));
+    let mut file = std::fs::File::create(species_stats_path.clone())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df_count_species)?;
-    println!(
-        "Saved to {}",
-        output_dir.join("species_stats.csv").to_string_lossy()
-    );
-
-    if independent {
-        get_temporal_independence(tags_csv_path, output_dir)?;
-    }
+    println!("Saved to {}", species_stats_path.to_string_lossy());
     Ok(())
 }
 
@@ -434,11 +947,23 @@ pub fn extract_resources(
     filter_value: String,
     filter_type: ExtractFilterType,
     rename: bool,
+    skip_existing: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
+    use_subdir: bool,
+    subdir_value: SubdirType,
 ) -> anyhow::Result<()> {
+    // Use subdir for default output_dir in case of overwrite
+    let output_dir = if output_dir.ends_with("serval_extract") {
+        let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
+        // remove dot from output_dir
+        let sanitized_filter_value = filter_value.replace('.', "");
+        output_dir.join(format!("{current_time}_{sanitized_filter_value}"))
+    } else {
+        output_dir
+    };
+
     let df = CsvReadOptions::default()
-        .with_has_header(true)
         .with_infer_schema_length(Some(0)) // parse all columns as string
         .with_ignore_errors(true)
         .with_parse_options(
@@ -448,43 +973,147 @@ pub fn extract_resources(
         )
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+    // Create default values for missing columns
+    // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
+    let required_columns = [
+        TagType::Species.col_name(),
+        TagType::Individual.col_name(),
+        "rating",
+        "custom",
+    ];
 
-    let df_filtered: DataFrame = match filter_type {
-        ExtractFilterType::Species => df
-            .clone()
-            .lazy()
-            .filter(col(TagType::Species.col_name()).eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Path => df
-            .clone()
-            .lazy()
-            //TODO use regex?
-            .filter(col("path").str().contains_literal(lit(filter_value)))
-            .collect()?,
-        ExtractFilterType::Individual => df
-            .clone()
-            .lazy()
-            .filter(col(TagType::Individual.col_name()).eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Rating => df
-            .clone()
-            .lazy()
-            .filter(col("rating").eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
-        ExtractFilterType::Custom => df
-            .clone()
-            .lazy()
-            .filter(col("custom").eq(lit(filter_value)))
-            // .select([col("path")])
-            .collect()?,
+    let missing_columns = required_columns
+        .iter()
+        .filter(|col| {
+            !df.get_column_names()
+                .iter()
+                .any(|name| name.as_str() == **col)
+        })
+        .map(|col| lit("").alias(*col))
+        .collect::<Vec<_>>();
+    let mut df_lazy = df.lazy();
+    if !missing_columns.is_empty() {
+        df_lazy = df_lazy.with_columns(missing_columns);
+    }
+
+    // Fill null values for columns that will be used for file naming
+    if rename {
+        df_lazy = df_lazy.with_columns([
+            col(TagType::Species.col_name()).fill_null(lit("")),
+            col(TagType::Individual.col_name()).fill_null(lit("")),
+        ]);
+    }
+    let df = df_lazy.collect()?;
+
+    let filter_expr = if filter_value == "ALL_VALUES" {
+        match filter_type {
+            ExtractFilterType::Species => col(TagType::Species.col_name()).is_not_null(),
+            ExtractFilterType::Path => col("path").is_not_null(),
+            ExtractFilterType::Individual => col(TagType::Individual.col_name()).is_not_null(),
+            ExtractFilterType::Rating => col("rating").is_not_null(),
+            ExtractFilterType::Event => col("event_id").is_not_null(),
+            ExtractFilterType::Custom => col("custom").is_not_null(),
+            ExtractFilterType::Advanced => {
+                return Err(anyhow::anyhow!(
+                    "Advanced filter requires a specific filter expression, not 'ALL_VALUES'"
+                ));
+            }
+        }
+    } else {
+        match filter_type {
+            ExtractFilterType::Species => {
+                col(TagType::Species.col_name()).eq(lit(filter_value.clone()))
+            }
+            ExtractFilterType::Path => col("path")
+                .str()
+                .contains_literal(lit(filter_value.clone())),
+            ExtractFilterType::Individual => {
+                col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
+            }
+            ExtractFilterType::Rating => {
+                // Support range syntax like "0-5" or "1-5", or exact match
+                if let Some((min_str, max_str)) = filter_value.split_once('-') {
+                    // Range filter
+                    if let (Ok(min), Ok(max)) =
+                        (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
+                    {
+                        // Cast to Float64 to handle decimal ratings
+                        let rating_col = col("rating").cast(DataType::Float64);
+                        rating_col
+                            .clone()
+                            .is_not_null()
+                            .and(rating_col.clone().gt_eq(lit(min)))
+                            .and(rating_col.lt_eq(lit(max)))
+                    } else {
+                        col("rating").eq(lit(filter_value.clone()))
+                    }
+                } else {
+                    // Exact match
+                    col("rating").eq(lit(filter_value.clone()))
+                }
+            }
+            ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
+            ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
+            ExtractFilterType::Advanced => {
+                // Parse the advanced filter expression
+                let advanced_expr = parse_advanced_filter(&filter_value)?;
+
+                // Check if we need path-level aggregation for same-field AND conditions
+                if has_same_field_and_conditions(&advanced_expr) {
+                    println!("Using path-level aggregation for same-field AND conditions");
+
+                    // Aggregate tags by path
+                    let df_agg = df
+                        .clone()
+                        .lazy()
+                        .group_by([col("path")])
+                        .agg([
+                            col(TagType::Species.col_name()).drop_nulls().unique(),
+                            col(TagType::Individual.col_name()).drop_nulls().unique(),
+                            col("rating").first(), // Rating is scalar per path
+                            col("custom").first(), // Custom is scalar per path
+                        ])
+                        .collect()?;
+
+                    // Apply filter to aggregated data
+                    let polars_expr = filter_expr_to_polars(&advanced_expr, true)?;
+                    let df_matched_paths = df_agg.lazy().filter(polars_expr).collect()?;
+
+                    // Get matching paths
+                    let matching_paths = df_matched_paths.column("path")?.str()?;
+                    let path_set: Vec<String> = matching_paths
+                        .iter()
+                        .filter_map(|p| p.map(|s| s.to_string()))
+                        .collect();
+
+                    // Return all rows for matching paths (preserves multi-row structure)
+                    let path_series = Series::new("matching_paths".into(), path_set);
+                    col("path").is_in(lit(path_series), false)
+                } else {
+                    filter_expr_to_polars(&advanced_expr, false)?
+                }
+            }
+        }
     };
 
+    let df_filtered = df.lazy().filter(filter_expr).collect()?;
+
+    // Check if any records match the filter
+    if df_filtered.height() == 0 {
+        return Err(anyhow::anyhow!("No records found matching the filter."));
+    }
+
+    println!("Found {} matching records", df_filtered.height());
+
     // Get the top level directory (to keep)
-    let path_sample = df_filtered["path"].get(0)?.to_string().replace('"', ""); // TODO
-    println!("Here is a sample of the file path ({}): ", path_sample);
+    let path_sample = df_filtered
+        .column("path")?
+        .str()?
+        .get(0)
+        .ok_or_else(|| anyhow::anyhow!("Missing path value in the first filtered record"))?
+        .to_string();
+    println!("Here is a sample of the file path ({path_sample}): ");
     let mut num_option = 0;
     println!("0): File Only (no directory)");
     for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
@@ -505,91 +1134,262 @@ pub fn extract_resources(
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
     let deploy_path_index = readline?.trim().parse::<usize>()?;
-    let path_strip = Path::new(&path_sample)
-        .ancestors()
-        .nth(deploy_path_index + 1)
-        .unwrap();
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
+    configure_progress_bar(&pb);
 
     let paths = df_filtered.column("path")?.str()?;
-    let species_tags = df_filtered.column(TagType::Species.col_name())?.str()?;
-    let individual_tags = df_filtered.column(TagType::Individual.col_name())?.str()?;
+    // Remove dot from tags, as it causes issues when cross-platform
+    let species_tags = df_filtered
+        .column(TagType::Species.col_name())?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let individual_tags = df_filtered
+        .column(TagType::Individual.col_name())?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let rating_tags = df_filtered
+        .column("rating")?
+        .str()?
+        .replace_all(r"\.", "")?;
+    let custom_tags = df_filtered
+        .column("custom")?
+        .str()?
+        .replace_all(r"\.", "")?;
 
-    for (path, species_tag, individual_tag) in izip!(paths, species_tags, individual_tags) {
-        let input_path = if path.unwrap().ends_with(".xmp") {
-            path.unwrap().strip_suffix(".xmp").unwrap()
-        } else {
-            path.unwrap()
-        };
-        let output_path = if deploy_path_index == 0 {
-            let relative_path_output = Path::new(input_path).file_name().unwrap();
-            if rename {
-                output_dir.join(format!(
-                    "{}-{}-{}",
-                    species_tag.unwrap(),
-                    individual_tag.unwrap(),
-                    relative_path_output.to_string_lossy()
-                ))
-            } else {
-                output_dir.join(relative_path_output)
+    for (path, species_tag, individual_tag, rating_tag, custom_tag) in izip!(
+        paths.iter(),
+        species_tags.iter(),
+        individual_tags.iter(),
+        rating_tags.iter(),
+        custom_tags.iter()
+    ) {
+        let subdir = if use_subdir {
+            match subdir_value {
+                SubdirType::Species => species_tag.unwrap_or("untagged_species"),
+                SubdirType::Individual => individual_tag.unwrap_or("untagged_individual"),
+                SubdirType::Rating => rating_tag.unwrap_or("unrated"),
+                SubdirType::Custom => custom_tag.unwrap_or("no_custom"),
             }
         } else {
-            let relative_path_output = Path::new(input_path)
-                .strip_prefix(path_strip.to_string_lossy().replace('"', ""))?; // Where's quote come from
+            ""
+        };
+        let input_path_xmp: String;
+        let input_path_media: String;
+        if path.unwrap().ends_with(".xmp") {
+            input_path_xmp = path.unwrap().to_string();
+            input_path_media = path.unwrap().strip_suffix(".xmp").unwrap().to_string();
+        } else {
+            input_path_xmp = path.unwrap().to_string() + ".xmp";
+            input_path_media = path.unwrap().to_string();
+        }
+
+        let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
+            let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
+            let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
             if rename {
-                output_dir
-                    .join(relative_path_output.parent().unwrap())
-                    .join(format!(
-                        "{}-{}-{}",
-                        species_tag.unwrap(),
-                        individual_tag.unwrap(),
-                        relative_path_output.file_name().unwrap().to_string_lossy()
-                    ))
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("untagged_species"),
+                    individual_tag.unwrap_or("untagged_individual")
+                );
+                (
+                    output_dir.join(subdir).join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_xmp.to_string_lossy()
+                    )),
+                    output_dir.join(subdir).join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_media.to_string_lossy()
+                    )),
+                )
             } else {
-                output_dir.join(relative_path_output)
+                (
+                    output_dir.join(subdir).join(relative_path_output_xmp),
+                    output_dir.join(subdir).join(relative_path_output_media),
+                )
+            }
+        } else {
+            let path_strip = Path::new(&input_path_media)
+                .ancestors()
+                .nth(deploy_path_index + 1)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Failed to determine the preserved directory prefix for {}",
+                        input_path_media
+                    )
+                })?;
+            let relative_path_output_xmp = Path::new(&input_path_xmp).strip_prefix(path_strip)?;
+            let relative_path_output_media =
+                Path::new(&input_path_media).strip_prefix(path_strip)?;
+            if rename {
+                let filename_prefix = format!(
+                    "{}-{}-",
+                    species_tag.unwrap_or("unknown_species"),
+                    individual_tag.unwrap_or("unknown_individual")
+                );
+                (
+                    output_dir
+                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(subdir)
+                        .join(format!(
+                            "{}{}",
+                            filename_prefix,
+                            relative_path_output_xmp
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                        )),
+                    output_dir
+                        .join(relative_path_output_media.parent().unwrap())
+                        .join(subdir)
+                        .join(format!(
+                            "{}{}",
+                            filename_prefix,
+                            relative_path_output_media
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                        )),
+                )
+            } else {
+                (
+                    output_dir
+                        .join(relative_path_output_xmp.parent().unwrap())
+                        .join(subdir)
+                        .join(relative_path_output_xmp.file_name().unwrap()),
+                    output_dir
+                        .join(relative_path_output_media.parent().unwrap())
+                        .join(subdir)
+                        .join(relative_path_output_media.file_name().unwrap()),
+                )
             }
         };
 
-        pb.println(format!("Copying to {}", output_path.to_string_lossy()));
-        fs::create_dir_all(output_path.parent().unwrap())?;
+        pb.println(format!(
+            "Copying to {}",
+            output_path_media.to_string_lossy()
+        ));
+        fs::create_dir_all(output_path_media.parent().unwrap())?;
+        if skip_existing && output_path_media.exists() {
+            pb.println(format!(
+                "Skipping existing {}",
+                output_path_media.to_string_lossy()
+            ));
+            pb.inc(1);
+            continue;
+        }
         // check if the file exists, if so, rename it
-        if output_path.exists() {
+        if output_path_media.exists() {
             let mut i = 1;
-            let mut output_path_renamed = output_path.clone();
-            while output_path_renamed.exists() {
-                output_path_renamed = output_path.with_file_name(format!(
+            let mut output_path_media_renamed = output_path_media.clone();
+            while output_path_media_renamed.exists() {
+                output_path_media_renamed = output_path_media.with_file_name(format!(
                     "{}_{}.{}",
-                    output_path.file_stem().unwrap().to_string_lossy(),
+                    output_path_media.file_stem().unwrap().to_string_lossy(),
                     i,
-                    output_path.extension().unwrap().to_string_lossy()
+                    output_path_media.extension().unwrap().to_string_lossy()
                 ));
                 i += 1;
             }
+            // get the xmp file from output_path_media_renamed
+            let output_path_xmp_renamed =
+                output_path_media_renamed.to_string_lossy().into_owned() + ".xmp";
             pb.println(format!(
                 "Renamed to {}",
-                output_path_renamed.to_string_lossy()
+                output_path_media_renamed.to_string_lossy()
             ));
-            fs::copy(input_path, output_path_renamed.clone())?;
-            sync_modified_time(input_path.into(), output_path_renamed)?;
-        } else {
-            fs::copy(input_path, output_path.clone())?;
-            sync_modified_time(input_path.into(), output_path)?;
+            output_path_media = output_path_media_renamed.clone();
+            output_path_xmp = output_path_xmp_renamed.into();
         }
+
+        fs::copy(input_path_media.clone(), output_path_media.clone())?;
+        if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                pb.println("Missing XMP file, tag info for certain video files may be lost.");
+            } else {
+                return Err(anyhow::anyhow!("Failed to copy XMP file: {err}"));
+            }
+        }
+        sync_modified_time(input_path_media.into(), output_path_media)?;
+
         pb.inc(1);
     }
     pb.finish_with_message("done");
     Ok(())
 }
 
-pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+pub fn get_temporal_independence(
+    csv_path: PathBuf,
+    output_dir: PathBuf,
+    event: bool,
+    no_exclude: bool,
+    camtrap_dp: bool,
+) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let df = CsvReadOptions::default()
-        .with_has_header(true)
-        .with_ignore_errors(true)
-        .with_parse_options(CsvParseOptions::default().with_try_parse_dates(true))
-        .try_into_reader_with_file_path(Some(csv_path))?
-        .finish()?;
+    let mut read_opts = CsvReadOptions::default().with_ignore_errors(false);
+    if camtrap_dp {
+        read_opts = read_opts
+            .with_columns(csv_projection_columns(&[
+                "observationID",
+                DEPLOYMENT_ID_COLUMN,
+                "eventStart",
+                "scientificName",
+                "individualID",
+            ]))
+            .with_parse_options(CsvParseOptions::default());
+    } else {
+        read_opts =
+            read_opts.with_parse_options(CsvParseOptions::default().with_try_parse_dates(true));
+    }
+    let mut df = match read_opts
+        .try_into_reader_with_file_path(Some(csv_path))
+        .and_then(|reader| reader.finish())
+    {
+        Ok(df) => {
+            reject_duplicate_csv_columns(&df)?;
+            if camtrap_dp {
+                let event_col = df.column("eventStart")?;
+                if event_col.null_count() > 0 {
+                    return Err(anyhow::anyhow!(
+                        "eventStart column contains empty values, please check."
+                    ));
+                }
+            } else {
+                let datetime_col = df.column(DATETIME_COLUMN)?;
+                // Check empty/null values first
+                if datetime_col.null_count() > 0 {
+                    return Err(anyhow::anyhow!(
+                        "Datetime column contains empty values, please fill them before proceeding."
+                    ));
+                }
+                // Check if the datetime column is parsed correctly, i.e. the type is not str
+                if datetime_col.dtype() == &DataType::String {
+                    return Err(anyhow::anyhow!(
+                        "Datetime column parsing failed: column contains string data instead of datetime values.\n\
+                        Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+                    ));
+                }
+            }
+            df
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to read or parse CSV file: {e}"));
+        }
+    };
+
+    // Rename datetime_original to datetime, adapts to old tags.csv
+    let df = if camtrap_dp {
+        &mut df
+    } else {
+        match df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into()) {
+            Ok(renamed_df) => renamed_df,
+            Err(_) => &mut df,
+        }
+    };
+
     // Readlines for parameter setup
     let mut rl = Editor::new()?;
     rl.bind_sequence(
@@ -599,7 +1399,19 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
     // Read min_delta_time
     let readline = rl.readline(
         "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
-    let min_delta_time: i32 = readline?.trim().parse()?;
+    let min_delta_time: i32 = readline?
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?;
+    if min_delta_time <= 0 {
+        return Err(anyhow::anyhow!(
+            "Invalid time difference: must be greater than 0"
+        ));
+    }
+    if min_delta_time > 10080 {
+        // 1 week
+        println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
+    }
     // Read delta_time_compared_to
     let h = NumericSelectValidator { min: 1, max: 2 };
     rl.set_helper(Some(h));
@@ -621,68 +1433,127 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         _ => TagType::Species,
     };
     // Find deployment
-    let path_sample = df.column("path")?.get(0)?.to_string().replace('"', "");
-    println!("\nHere is a sample of the file path ({})", path_sample);
-    let mut num_option = 0;
-    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
-        .parent()
-        .unwrap()
-        .ancestors()
-        .enumerate()
-    {
-        println!("{}): {}", i + 1, entry.to_string_lossy());
-        num_option += 1;
-    }
-    let h = NumericSelectValidator {
-        min: 1,
-        max: num_option,
+    let deploy_path_index = if camtrap_dp {
+        None
+    } else {
+        let path_sample = df
+            .column("path")?
+            .str()?
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing path value in the first record"))?
+            .to_string();
+        Some(prompt_deployment_path_index(&mut rl, path_sample)?)
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline("Select the path corresponding to the deployment: ");
-    let deploy_path_index = readline?.trim().parse::<i32>()?;
 
-    let exclude = [
-        "",
-        "Blank",
-        "Useless data",
-        "Unidentified",
-        "Human",
-        "Unknown",
-        "Blur",
-    ]; // TODO: make it configurable
-    let tag_exclude = Series::new("tag_exclude", exclude);
+    let mut exclude_expr = lit(false);
+    for tag in DEFAULT_EXCLUDE_TAGS {
+        let tag_expr = if tag.is_empty() {
+            col(target.col_name()).eq(lit(""))
+        } else {
+            col(target.col_name()).str().starts_with(lit(*tag))
+        };
+        exclude_expr = exclude_expr.or(tag_expr);
+    }
 
     // Data processing
-    let df_cleaned = df
-        .clone()
-        .lazy()
-        .select([
-            col("path")
-                .str()
-                .split(lit(get_path_seperator()))
-                .list()
-                .get(lit(num_option - deploy_path_index), false)
-                .alias("deployment"),
-            col("filename"),
-            col("datetime_original").alias("time"),
-            col(target.col_name()),
-        ])
-        .drop_nulls(None)
-        .filter(col(target.col_name()).is_in(lit(tag_exclude)).not())
-        .unique(
-            Some(vec![
-                "deployment".to_string(),
-                "time".to_string(),
-                target.col_name().to_string(),
-            ]),
-            UniqueKeepStrategy::Any,
-        )
-        .collect()?;
+    let id_col_name = if camtrap_dp { "observationID" } else { "path" };
+    let df_deployment = if camtrap_dp {
+        let path_col = "observationID";
+        if df.column(path_col).is_err() {
+            return Err(anyhow::anyhow!(
+                "Missing observationID column in camtrap-dp input."
+            ));
+        }
+        let target_col = match target {
+            TagType::Species => "scientificName",
+            TagType::Individual => "individualID",
+            _ => unreachable!("capture prompt only allows species or individual"),
+        };
+        let time_expr = col("eventStart")
+            .cast(DataType::String)
+            .str()
+            .replace_all(lit("T"), lit(" "), true)
+            .str()
+            .replace_all(lit(r"([+-]\d{2}:?\d{2}|Z)$"), lit(""), false)
+            .str()
+            .strptime(
+                DataType::Datetime(TimeUnit::Milliseconds, None),
+                StrptimeOptions {
+                    format: Some("%Y-%m-%d %H:%M:%S".into()),
+                    strict: false,
+                    exact: true,
+                    cache: true,
+                },
+                lit("raise"),
+            )
+            .alias("time");
+        let df_deployment = df
+            .clone()
+            .lazy()
+            .select([
+                col(path_col).alias(id_col_name),
+                col(DEPLOYMENT_ID_COLUMN).alias("deployment"),
+                time_expr,
+                col(target_col).alias(target.col_name()),
+            ])
+            .collect()?;
+        if df_deployment.column("time")?.dtype() == &DataType::String {
+            return Err(anyhow::anyhow!(
+                "eventStart column parsing failed: expected ISO-8601 like 2023-12-08T10:47:39+0800."
+            ));
+        }
+        df_deployment
+    } else {
+        let deploy_path_index = deploy_path_index
+            .ok_or_else(|| anyhow::anyhow!("Missing deployment path index selection"))?;
+        df.clone()
+            .lazy()
+            .select([
+                col(PATH_COLUMN).alias(id_col_name),
+                deployment_from_path_expr(col(PATH_COLUMN), deploy_path_index).alias("deployment"),
+                col(DATETIME_COLUMN).alias("time"),
+                col(target.col_name()),
+            ])
+            .collect()?
+    };
 
-    let mut df_sorted = df_cleaned
-        .sort(["time"], SortMultipleOptions::default())?
-        .sort([target.col_name()], SortMultipleOptions::default())?
-        .sort(["deployment"], SortMultipleOptions::default())?;
+    let df_cleaned = if no_exclude {
+        df_deployment
+            .clone()
+            .lazy()
+            .drop_nulls(None)
+            .unique(
+                Some(cols(vec![
+                    "deployment".to_string(),
+                    "time".to_string(),
+                    target.col_name().to_string(),
+                ])),
+                UniqueKeepStrategy::Any,
+            )
+            .collect()?
+    } else {
+        df_deployment
+            .clone()
+            .lazy()
+            .drop_nulls(None)
+            .filter(exclude_expr.not())
+            .unique(
+                Some(cols(vec![
+                    "deployment".to_string(),
+                    "time".to_string(),
+                    target.col_name().to_string(),
+                ])),
+                UniqueKeepStrategy::Any,
+            )
+            .collect()?
+    };
+
+    // The temporal pass relies on contiguous [deployment, target] groups and ascending time.
+    // Keep the sort stable so exact duplicate keys preserve input order deterministically.
+    let mut df_sorted = df_cleaned.sort(
+        ["deployment", target.col_name(), "time"],
+        SortMultipleOptions::default().with_maintain_order(true),
+    )?;
 
     let mut df_capture_independent;
     if delta_time_compared_to == "LastRecord" {
@@ -693,30 +1564,40 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
                 col("time"),
                 [col("deployment"), col(target.col_name())],
                 RollingGroupOptions {
-                    period: Duration::parse(format!("{}m", min_delta_time).as_str()),
-                    offset: Duration::parse("0"),
+                    period: Duration::parse(format!("{min_delta_time}m").as_str()),
+                    offset: Duration::parse(format!("-{min_delta_time}m").as_str()),
+                    closed_window: ClosedWindow::Right,
                     ..Default::default()
                 },
             )
             .agg([
                 col(target.col_name()).count().alias("count"),
-                col("filename").last(),
+                col(id_col_name).last(),
             ])
             .filter(col("count").eq(lit(1)))
             .select([
                 col("deployment"),
-                col("filename"),
+                col(id_col_name),
                 col("time"),
                 col(target.col_name()),
             ])
             .collect()?;
-        println!("{}", df_capture_independent);
+        println!("{df_capture_independent}");
     } else {
-        df_sorted.as_single_chunk_par();
-        let mut iters = df_sorted
-            .columns(["time", target.col_name(), "deployment"])?
+        if df_sorted.height() == 0 {
+            return Err(anyhow::anyhow!(
+                "No records remain after filtering empty/default tags."
+            ));
+        }
+        df_sorted.align_chunks_par();
+        let columns = [
+            df_sorted.column("time")?,
+            df_sorted.column(target.col_name())?,
+            df_sorted.column("deployment")?,
+        ];
+        let mut iters = columns
             .iter()
-            .map(|s| s.iter())
+            .map(|s| s.as_materialized_series().iter())
             .collect::<Vec<_>>();
 
         let mut capture = Vec::new();
@@ -756,19 +1637,67 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
 
         df_capture_independent = df_sorted
             .lazy()
-            .filter(Series::new("independent", capture_independent).lit())
+            .filter(Series::new("independent".into(), capture_independent).lit())
             .collect()?;
-        println!("{}", df_capture_independent);
+        println!("{df_capture_independent}");
     }
 
+    // Include parameters in the output filename, LIR: Last Independent Record, LR: Last Record
+    let output_suffix = format!(
+        "_{}_{}m_{}.csv",
+        target.to_string().to_lowercase(),
+        min_delta_time,
+        if delta_time_compared_to == "LastIndependentRecord" {
+            "LIR"
+        } else {
+            "LR"
+        },
+    );
     fs::create_dir_all(output_dir.clone())?;
-    let filename = format!("{}_temporal_independent.csv", target);
+    let filename = format!("temporal-independence{output_suffix}");
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_capture_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+
+    if event {
+        let df_events = df_capture_independent.with_row_index("event_id".into(), Some(1))?;
+        let by_columns = &[target.col_name(), "deployment"];
+        let df_raw_sorted = df_deployment.sort(
+            ["deployment", target.col_name(), "time"],
+            SortMultipleOptions::default().with_maintain_order(true),
+        )?;
+        let mut df_with_events = df_raw_sorted.join_asof_by(
+            &df_events,
+            "time",
+            "time",
+            by_columns,
+            by_columns,
+            AsofStrategy::Backward,
+            None,
+            true,
+            false, // Sortedness of columns cannot be checked when 'by' groups provided
+        )?;
+        df_with_events = df_with_events
+            .lazy()
+            .select([
+                col(id_col_name),
+                col("deployment"),
+                col("time"),
+                col(target.col_name()),
+                col("event_id"),
+            ])
+            .collect()?;
+        let filename = format!("events{output_suffix}");
+        let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
+            .finish(&mut df_with_events.clone())?;
+        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    }
 
     let mut df_count_independent = df_capture_independent
         .clone()
@@ -776,14 +1705,390 @@ pub fn get_temporal_independence(csv_path: PathBuf, output_dir: PathBuf) -> anyh
         .group_by_stable([col("deployment"), col(target.col_name())])
         .agg([col(target.col_name()).count().alias("count")])
         .collect()?;
-    println!("{}", df_count_independent);
+    println!("{df_count_independent}");
 
-    let filename = format!("{}_temporal_independent_count.csv", target);
-    let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+    let filename = "count_by_deployment.csv";
+    let mut file = std::fs::File::create(output_dir.join(filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
-        .with_datetime_format(Option::from("%Y-%m-%d %H:%M:%S".to_string()))
+        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_count_independent)?;
     println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+
+    if target == TagType::Species {
+        let mut df_count_independent_species = df_capture_independent
+            .clone()
+            .lazy()
+            .group_by_stable([col(TagType::Species.col_name())])
+            .agg([col(TagType::Species.col_name()).count().alias("count")])
+            .collect()?;
+        println!("{df_count_independent_species}");
+
+        let filename = "count_all.csv";
+        let mut file = std::fs::File::create(output_dir.join(filename))?;
+        CsvWriter::new(&mut file)
+            .include_bom(true)
+            .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
+            .finish(&mut df_count_independent_species)?;
+        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    }
+    Ok(())
+}
+
+fn update_xmp(
+    file_path: PathBuf,
+    old_value: String,
+    new_value: String,
+    update_type: XmpUpdateType,
+    pb: &ProgressBar,
+) -> anyhow::Result<()> {
+    let xmp_content = fs::read_to_string(&file_path)?;
+    let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
+
+    if update_type == XmpUpdateType::Rating {
+        update_xmp_rating(&file_path, &mut xmp, &old_value, &new_value, pb)?;
+        return finalize_xmp_update(file_path, xmp);
+    }
+
+    let tag_type = update_type
+        .tag_type()
+        .ok_or_else(|| anyhow::anyhow!("Invalid hierarchical tag update type: {update_type}"))?;
+
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+
+    fn insert_tag(
+        xmp: &mut XmpMeta,
+        ns: &str,
+        array_name: &str,
+        tag_value: String,
+    ) -> anyhow::Result<()> {
+        let array_name = XmpValue::new(array_name.to_string()).set_is_array(true);
+        let item_value = XmpValue::new(tag_value);
+        xmp.append_array_item(ns, &array_name, &item_value)?;
+        Ok(())
+    }
+
+    fn update_tag_array(
+        xmp: &mut XmpMeta,
+        ns: &str,
+        array_name: &str,
+        old_tag: &str,
+        new_tag: &str,
+    ) -> anyhow::Result<usize> {
+        if xmp.property(ns, array_name).is_none() {
+            return Ok(0);
+        }
+
+        let array_len = xmp.array_len(ns, array_name);
+        let mut match_count = 0;
+        for i in 1..=array_len {
+            let array_item_path = &format!("{array_name}[{i}]");
+            if let Some(prop) = xmp.property(ns, array_item_path) {
+                let value = &prop.value;
+                if value == old_tag {
+                    match_count += 1;
+                    let new_xmp_value = XmpValue::new(new_tag.to_string());
+                    xmp.set_property(ns, array_item_path, &new_xmp_value)
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to update tag {i} in {array_name}: {e:?}")
+                        })?;
+                }
+            }
+        }
+        Ok(match_count)
+    }
+
+    if old_value.is_empty() {
+        pb.println(format!("Inserting new {tag_type} tag: {new_value}"));
+
+        let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
+        let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
+
+        insert_tag(
+            &mut xmp,
+            LIGHTROOM_NS,
+            LR_HIERARCHICAL_SUBJECT,
+            new_tag_adobe,
+        )?;
+        insert_tag(&mut xmp, DIGIKAM_NS, DIGIKAM_TAGSLIST, new_tag_digikam)?;
+        insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
+    } else {
+        pb.println(format!(
+            "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
+        ));
+        // adobe hierarchical subject
+        let adobe_matches = update_tag_array(
+            &mut xmp,
+            LIGHTROOM_NS,
+            LR_HIERARCHICAL_SUBJECT,
+            &format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
+            &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
+        )?;
+        if adobe_matches == 0 {
+            let expected_tag = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
+            return Err(anyhow::anyhow!(
+                "Tag mismatch in {}: expected '{}' in {}",
+                file_path.display(),
+                expected_tag,
+                LR_HIERARCHICAL_SUBJECT,
+            ));
+        }
+
+        // digiKam taglist
+        update_tag_array(
+            &mut xmp,
+            DIGIKAM_NS,
+            DIGIKAM_TAGSLIST,
+            &format!("{}{}", tag_type.digikam_tag_prefix(), old_value),
+            &format!("{}{}", tag_type.digikam_tag_prefix(), new_value),
+        )?;
+
+        // subject
+        update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
+    }
+
+    finalize_xmp_update(file_path, xmp)
+}
+
+fn update_xmp_rating(
+    file_path: &Path,
+    xmp: &mut XmpMeta,
+    old_value: &str,
+    new_value: &str,
+    pb: &ProgressBar,
+) -> anyhow::Result<()> {
+    let current_rating = xmp
+        .property(xmp_ns::XMP, "Rating")
+        .map(|value| value.value.to_string())
+        .unwrap_or_default();
+
+    if !old_value.is_empty() && current_rating != old_value {
+        return Err(anyhow::anyhow!(
+            "Rating mismatch in {}: expected '{}', found '{}'",
+            file_path.display(),
+            old_value,
+            current_rating
+        ));
+    }
+
+    if old_value.is_empty() {
+        pb.println(format!("Setting Rating to '{new_value}'"));
+    } else {
+        pb.println(format!(
+            "Updating Rating from '{old_value}' to '{new_value}'"
+        ));
+    }
+
+    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.to_string()))?;
+    Ok(())
+}
+
+fn finalize_xmp_update(file_path: PathBuf, xmp: XmpMeta) -> anyhow::Result<()> {
+    let modified_xmp =
+        xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
+
+    fs::copy(&file_path, &backup_path)?;
+    fs::write(&temp_path, &modified_xmp)?;
+    fs::rename(&temp_path, &file_path)?;
+
+    Ok(())
+}
+
+pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
+    let tag_column_name = update_type.col_name();
+    let df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .with_columns(csv_projection_columns(&[
+            PATH_COLUMN,
+            XMP_UPDATE_COLUMN,
+            tag_column_name,
+        ]))
+        .with_ignore_errors(false)
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+
+    let mut df_filtered_lazy = df
+        .lazy()
+        .filter(col(XMP_UPDATE_COLUMN).is_not_null())
+        .select([
+            col(PATH_COLUMN),
+            col(XMP_UPDATE_COLUMN),
+            col(tag_column_name),
+        ]);
+    if update_type == XmpUpdateType::Rating {
+        df_filtered_lazy = df_filtered_lazy.unique(
+            Some(cols(vec![
+                PATH_COLUMN.to_string(),
+                tag_column_name.to_string(),
+            ])),
+            UniqueKeepStrategy::First,
+        );
+    }
+    let df_filtered = df_filtered_lazy.collect()?;
+
+    let num_updates = df_filtered.height();
+    println!("Found {num_updates} rows with updates");
+
+    let pb = ProgressBar::new(num_updates as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Processing XMP updates...");
+
+    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
+    let xmp_update_col = df_filtered.column(XMP_UPDATE_COLUMN)?.str()?;
+    let tag_original_col = df_filtered.column(tag_column_name)?.str()?;
+
+    let iter = path_col
+        .iter()
+        .zip(xmp_update_col.iter())
+        .zip(tag_original_col.iter())
+        .map(|((path, xmp_up), tag_orig)| (path, xmp_up, tag_orig));
+
+    for (path, xmp_update, tag_original) in iter {
+        if let Some(path_str) = path {
+            let current_path = PathBuf::from(path_str);
+            let xmp_update = xmp_update.unwrap_or("");
+
+            if !xmp_update.is_empty() {
+                // Check if the file has .xmp extension
+                if let Some(ext) = current_path.extension() {
+                    if ext != "xmp" {
+                        pb.println(format!("Skipping non-XMP file: {path_str}"));
+                        pb.inc(1);
+                        continue;
+                    }
+                } else {
+                    pb.println(format!("Skipping file without extension: {path_str}"));
+                    pb.inc(1);
+                    continue;
+                }
+
+                let tag_original = tag_original.unwrap_or("");
+                pb.println(format!("Processing: {path_str}"));
+                update_xmp(
+                    current_path.clone(),
+                    tag_original.to_string(),
+                    xmp_update.to_string(),
+                    update_type,
+                    &pb,
+                )?;
+            }
+        } else {
+            pb.println("Missing xmp path, skipping.");
+        }
+        pb.inc(1);
+    }
+
+    pb.finish_with_message("Finished processing all XMP updates");
+    Ok(())
+}
+
+pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
+    let df = CsvReadOptions::default()
+        .with_columns(csv_projection_columns(&[
+            PATH_COLUMN,
+            XMP_UPDATE_DATETIME_COLUMN,
+        ]))
+        .with_ignore_errors(false)
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+
+    let df_filtered = df
+        .lazy()
+        .filter(col(XMP_UPDATE_DATETIME_COLUMN).is_not_null())
+        .select([
+            col(PATH_COLUMN),
+            col(XMP_UPDATE_DATETIME_COLUMN)
+                .str()
+                .to_datetime(
+                    None,
+                    None,
+                    StrptimeOptions::default(),
+                    lit("raise"), // Tell Polars how to handle errors
+                )
+                .alias(XMP_UPDATE_DATETIME_COLUMN),
+        ])
+        .collect()?;
+
+    // Check if the datetime column is parsed correctly
+    let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?;
+    if datetime_col.dtype() == &DataType::String {
+        return Err(anyhow::anyhow!(
+            "XMP update datetime column parsing failed: column contains string data instead of datetime values.\n\
+            Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
+        ));
+    }
+
+    let num_updates = df_filtered.height();
+    println!("Found {num_updates} rows with valid datetime updates");
+
+    let pb = ProgressBar::new(num_updates as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Processing XMP datetime updates...");
+
+    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
+    let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?.datetime()?;
+    let datetime_strings = datetime_col.to_string("%Y-%m-%dT%H:%M:%S")?;
+
+    let iter = path_col.iter().zip(datetime_strings.iter());
+
+    for (path, datetime) in iter {
+        if let Some(path_str) = path {
+            let current_path = PathBuf::from(path_str);
+
+            if let Some(datetime_str) = datetime {
+                // Check if the file has .xmp extension
+                if let Some(ext) = current_path.extension() {
+                    if ext != "xmp" {
+                        pb.println(format!("Skipping non-XMP file: {path_str}"));
+                        pb.inc(1);
+                        continue;
+                    }
+                } else {
+                    pb.println(format!("Skipping file without extension: {path_str}"));
+                    pb.inc(1);
+                    continue;
+                }
+
+                pb.println(format!(
+                    "Processing datetime update: {path_str} -> {datetime_str}"
+                ));
+                update_xmp_datetime(current_path.clone(), datetime_str.to_string())?;
+            }
+        } else {
+            pb.println("Missing xmp path, skipping.");
+        }
+        pb.inc(1);
+    }
+
+    pb.finish_with_message("Finished processing all XMP datetime updates");
+    Ok(())
+}
+
+fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::Result<()> {
+    let xmp_content = fs::read_to_string(&file_path)?;
+    let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
+
+    set_xmp_datetime_fields(&mut xmp, &iso8601_datetime)?;
+
+    let modified_xmp =
+        xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
+
+    fs::copy(&file_path, &backup_path)?;
+    fs::write(&temp_path, &modified_xmp)?;
+    fs::rename(&temp_path, &file_path)?;
+
     Ok(())
 }

@@ -1,38 +1,53 @@
 [package]
 name = "maze-serval"
+default-run = "serval"
 description = "Serval helps you prepare data for Maze and Trapper"
 repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
-version = "0.2.8-ocr-alpha"
-edition = "2021"
+version = "0.6.10"
+edition = "2024"
 license = "GPL-3.0-or-later"
 keywords = ["camtrap", "camera-trap"]
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.86"
-chrono = "0.4.38"
-clap = { version = "4.5.13", features = ["derive"] }
-image = "0.25.1"
-imageproc = "0.25.0"
-indicatif = "0.17.8"
-itertools = "0.13.0"
-ocrs = "0.8.1"
-polars = { version = "0.41.3", features = ["lazy", "strings", "list_eval", "csv", "dtype-struct", "is_in", "dynamic_group_by", "dtype-datetime", "timezones", "polars-io"] }
-rayon = "1.10.0"
-regex = "1.10.4"
-rten = "0.13.1"
-rten-tensor = "0.10.0"
-rustyline = { version = "14.0.0", features = ["derive"] }
+anyhow = "1.0.102"
+chrono = "0.4.44"
+clap = { version = "4.6.1", features = ["derive"] }
+image = "0.25.9"
+indicatif = "0.18.4"
+itertools = "0.15.0"
+ocrs = "0.12.2"
+pest = "2.8.6"
+pest_derive = "2.8.6"
+polars = { version = "0.54.4", default-features = false, features = ["lazy", "fmt", "strings", "dtype-struct", "is_in", "dynamic_group_by", "temporal", "timezones", "dtype-datetime", "asof_join"] }
+polars-io = { version = "0.54.4", default-features = false, features = ["csv"] }
+rayon = "1.12.0"
+regex = "1.12.3"
+rten = "0.24.0"
+rustyline = { version = "18.0.0", features = ["derive"] }
 walkdir = "2.5.0"
-xmp_toolkit = "1.9.0"
+xmp_toolkit = "1.12.1"
 
 [profile.release-lto]
 inherits = "release"
 opt-level = "s"
 lto = true
 
+[lib]
+name = "serval"
+path = "src/lib.rs"
+
 [[bin]]
 name = "serval"
 path = "src/main.rs"
+
+[[bin]]
+name = "serval-xmp-extract"
+path = "bin/serval-xmp-extract.rs"
+
+[[bin]]
+name = "serval-check"
+path = "bin/serval-check.rs"
