@@ -443,6 +443,8 @@ struct OcrRow {
     ocr_text: String,
     datetime_format: String,
     datetime_repair: String,
+    confidence: String,
+    confidence_reason: String,
     status: String,
     error: String,
 }
@@ -461,6 +463,8 @@ impl OcrRow {
             ocr_text: String::new(),
             datetime_format: datetime_format.to_string(),
             datetime_repair: String::new(),
+            confidence: "needs_llm".to_string(),
+            confidence_reason: status.to_string(),
             status: status.to_string(),
             error: error.to_string(),
         }
@@ -516,6 +520,18 @@ fn write_ocr_csv(output_dir: &Path, rows: &[OcrRow]) -> anyhow::Result<()> {
                 "datetime_repair".into(),
                 rows.iter()
                     .map(|row| row.datetime_repair.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "confidence".into(),
+                rows.iter()
+                    .map(|row| row.confidence.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "confidence_reason".into(),
+                rows.iter()
+                    .map(|row| row.confidence_reason.as_str())
                     .collect::<Vec<_>>(),
             ),
             Column::new(
@@ -639,6 +655,11 @@ fn process_media_inner(
             }
         }
     };
+    let (confidence, confidence_reason) = if status == "ok" {
+        ("confident".to_string(), "strict_datetime".to_string())
+    } else {
+        ("needs_llm".to_string(), status.clone())
+    };
 
     Ok(OcrRow {
         path: path.to_string_lossy().into_owned(),
@@ -652,9 +673,92 @@ fn process_media_inner(
         ocr_text,
         datetime_format: datetime_format.to_string(),
         datetime_repair,
+        confidence,
+        confidence_reason,
         status,
         error,
     })
+}
+
+fn parse_normalized_datetime(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok()
+}
+
+fn sequence_key(row: &OcrRow) -> &str {
+    row.filename.as_str()
+}
+
+fn is_sequence_outlier(rows: &[OcrRow], index: usize) -> bool {
+    let Some(current) = parse_normalized_datetime(&rows[index].datetime_ocr) else {
+        return false;
+    };
+
+    let prev = rows[..index]
+        .iter()
+        .rev()
+        .take(4)
+        .find_map(|row| parse_normalized_datetime(&row.datetime_ocr));
+    let next = rows[index + 1..]
+        .iter()
+        .take(4)
+        .find_map(|row| parse_normalized_datetime(&row.datetime_ocr));
+    let (Some(prev), Some(next)) = (prev, next) else {
+        return false;
+    };
+
+    let neighbor_gap = (next - prev).num_seconds().abs();
+    let prev_gap = (current - prev).num_seconds().abs();
+    let next_gap = (current - next).num_seconds().abs();
+    neighbor_gap <= 15 * 60 && prev_gap > 30 * 60 && next_gap > 30 * 60
+}
+
+fn apply_sequence_outlier_check(rows: &mut [OcrRow]) {
+    rows.sort_by(|left, right| {
+        let left_parent = Path::new(&left.path)
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let right_parent = Path::new(&right.path)
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        left_parent
+            .cmp(&right_parent)
+            .then_with(|| sequence_key(left).cmp(sequence_key(right)))
+    });
+
+    let mut group_start = 0;
+    while group_start < rows.len() {
+        let parent = Path::new(&rows[group_start].path)
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut group_end = group_start + 1;
+        while group_end < rows.len() {
+            let row_parent = Path::new(&rows[group_end].path)
+                .parent()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if row_parent != parent {
+                break;
+            }
+            group_end += 1;
+        }
+
+        let outliers = (0..group_end - group_start)
+            .filter(|index| {
+                rows[group_start + *index].confidence == "confident"
+                    && is_sequence_outlier(&rows[group_start..group_end], *index)
+            })
+            .collect::<Vec<_>>();
+        for index in outliers {
+            let row = &mut rows[group_start + index];
+            row.confidence = "needs_llm".to_string();
+            row.confidence_reason = "sequence_outlier".to_string();
+        }
+
+        group_start = group_end;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -669,6 +773,7 @@ pub struct OcrOptions {
     pub no_allowed_chars: bool,
     pub repair_datetime: bool,
     pub year_range: Option<String>,
+    pub sequence_outlier_check: bool,
 }
 
 pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
@@ -706,6 +811,10 @@ pub fn run_ocr(options: OcrOptions) -> anyhow::Result<()> {
         pb.inc(1);
     }
     pb.finish();
+
+    if options.sequence_outlier_check {
+        apply_sequence_outlier_check(&mut rows);
+    }
 
     write_ocr_csv(&options.output_dir, &rows)
 }
@@ -876,6 +985,55 @@ mod tests {
         );
     }
 
+    fn test_row(filename: &str, datetime_ocr: &str) -> OcrRow {
+        OcrRow {
+            path: format!("/media/cam/{filename}"),
+            filename: filename.to_string(),
+            media_type: "image/jpeg".to_string(),
+            datetime_ocr: datetime_ocr.to_string(),
+            datetime_raw: datetime_ocr.to_string(),
+            ocr_text: datetime_ocr.to_string(),
+            datetime_format: "YYYY-MM-DD HH:mm:ss".to_string(),
+            datetime_repair: String::new(),
+            confidence: "confident".to_string(),
+            confidence_reason: "strict_datetime".to_string(),
+            status: "ok".to_string(),
+            error: String::new(),
+        }
+    }
+
+    #[test]
+    fn sequence_outlier_check_downgrades_local_time_outlier() {
+        let mut rows = vec![
+            test_row("IMG_0796.jpg", "2026-01-03 16:23:16"),
+            test_row("IMG_0797.jpg", "2026-01-13 16:23:16"),
+            test_row("IMG_0798.jpg", "2026-01-03 16:27:06"),
+        ];
+
+        apply_sequence_outlier_check(&mut rows);
+
+        let outlier = rows
+            .iter()
+            .find(|row| row.filename == "IMG_0797.jpg")
+            .unwrap();
+        assert_eq!(outlier.datetime_ocr, "2026-01-13 16:23:16");
+        assert_eq!(outlier.confidence, "needs_llm");
+        assert_eq!(outlier.confidence_reason, "sequence_outlier");
+    }
+
+    #[test]
+    fn sequence_outlier_check_keeps_regular_time_jump_confident() {
+        let mut rows = vec![
+            test_row("IMG_0001.jpg", "2025-12-19 18:15:17"),
+            test_row("IMG_0002.jpg", "2025-12-20 08:25:34"),
+            test_row("IMG_0003.jpg", "2025-12-20 08:25:33"),
+        ];
+
+        apply_sequence_outlier_check(&mut rows);
+
+        assert!(rows.iter().all(|row| row.confidence == "confident"));
+    }
+
     #[test]
     fn writes_ocr_csv_with_expected_columns() {
         let temp_dir = std::env::temp_dir().join(format!("serval-ocr-test-{}", std::process::id()));
@@ -891,6 +1049,8 @@ mod tests {
             ocr_text: "2026-07-07 13:45:59".to_string(),
             datetime_format: "YYYY-MM-DD HH:mm:ss".to_string(),
             datetime_repair: String::new(),
+            confidence: "confident".to_string(),
+            confidence_reason: "strict_datetime".to_string(),
             status: "ok".to_string(),
             error: String::new(),
         }];
@@ -898,7 +1058,7 @@ mod tests {
         write_ocr_csv(&temp_dir, &rows).unwrap();
         let csv = fs::read_to_string(temp_dir.join("ocr.csv")).unwrap();
         assert!(csv.contains(
-            "path,filename,media_type,datetime_ocr,datetime_raw,ocr_text,datetime_format,datetime_repair,status,error"
+            "path,filename,media_type,datetime_ocr,datetime_raw,ocr_text,datetime_format,datetime_repair,confidence,confidence_reason,status,error"
         ));
         assert!(csv.contains("2026-07-07 13:45:59"));
 

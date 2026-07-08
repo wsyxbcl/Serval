@@ -184,6 +184,7 @@ fn main() -> anyhow::Result<()> {
             no_allowed_chars,
             repair_datetime,
             year_range,
+            sequence_outlier_check,
         } => {
             run_ocr(OcrOptions {
                 input_path: absolute_path(path)?,
@@ -196,6 +197,7 @@ fn main() -> anyhow::Result<()> {
                 no_allowed_chars,
                 repair_datetime,
                 year_range,
+                sequence_outlier_check,
             })?;
         }
         Commands::Translate {
@@ -416,6 +418,9 @@ enum Commands {
         /// Restrict accepted/repaired years, e.g. 2025..2026
         #[arg(long, value_name = "START..END")]
         year_range: Option<String>,
+        /// Downgrade strict datetimes that are local sequence outliers to needs_llm
+        #[arg(long)]
+        sequence_outlier_check: bool,
     },
     /// Translate species column in csv according to taglist
     Translate {
