@@ -987,22 +987,17 @@ pub fn is_temporal_independent(
 }
 
 pub fn get_path_levels(path: String) -> Vec<String> {
-    // Abandoned for performance
-    // let normalized_path = PathBuf::from(path.replace('\\', "/"));
-    // let levels: Vec<String> = normalized_path
-    //     .components()
-    //     .filter_map(|comp| match comp {
-    //         Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-    //         Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().into_owned()), // For windows path prefixes
-    //         _ => None, // Skip root and other components
-    //     })
-    //     .collect();
-
+    // Plain string splitting instead of Path::components for performance.
+    // The first component (root/prefix) and the last one (file name) are not
+    // selectable as deployment levels.
     let normalized_path = normalize_path_separators(&path);
     let levels: Vec<String> = normalized_path
         .split('/')
         .map(|comp| comp.to_string())
         .collect();
+    if levels.len() < 2 {
+        return Vec::new();
+    }
     levels[1..levels.len() - 1].to_vec()
 }
 
