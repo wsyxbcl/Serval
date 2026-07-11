@@ -1212,33 +1212,26 @@ pub fn extract_resources(
             continue;
         }
 
+        let filename_prefix = if rename {
+            format!(
+                "{}-{}-",
+                species_tag.unwrap_or("untagged_species"),
+                individual_tag.unwrap_or("untagged_individual")
+            )
+        } else {
+            String::new()
+        };
         let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
-            let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
-            let relative_path_output_media = Path::new(&input_path_media).file_name().unwrap();
-            if rename {
-                let filename_prefix = format!(
-                    "{}-{}-",
-                    species_tag.unwrap_or("untagged_species"),
-                    individual_tag.unwrap_or("untagged_individual")
-                );
-                (
-                    output_dir.join(subdir).join(format!(
-                        "{}{}",
-                        filename_prefix,
-                        relative_path_output_xmp.to_string_lossy()
-                    )),
-                    output_dir.join(subdir).join(format!(
-                        "{}{}",
-                        filename_prefix,
-                        relative_path_output_media.to_string_lossy()
-                    )),
-                )
-            } else {
-                (
-                    output_dir.join(subdir).join(relative_path_output_xmp),
-                    output_dir.join(subdir).join(relative_path_output_media),
-                )
-            }
+            let xmp_name = Path::new(&input_path_xmp).file_name().unwrap();
+            let media_name = Path::new(&input_path_media).file_name().unwrap();
+            (
+                output_dir
+                    .join(subdir)
+                    .join(format!("{}{}", filename_prefix, xmp_name.to_string_lossy())),
+                output_dir
+                    .join(subdir)
+                    .join(format!("{}{}", filename_prefix, media_name.to_string_lossy())),
+            )
         } else {
             let path_strip = Path::new(&input_path_media)
                 .ancestors()
@@ -1252,48 +1245,30 @@ pub fn extract_resources(
             let relative_path_output_xmp = Path::new(&input_path_xmp).strip_prefix(path_strip)?;
             let relative_path_output_media =
                 Path::new(&input_path_media).strip_prefix(path_strip)?;
-            if rename {
-                let filename_prefix = format!(
-                    "{}-{}-",
-                    species_tag.unwrap_or("unknown_species"),
-                    individual_tag.unwrap_or("unknown_individual")
-                );
-                (
-                    output_dir
-                        .join(relative_path_output_xmp.parent().unwrap())
-                        .join(subdir)
-                        .join(format!(
-                            "{}{}",
-                            filename_prefix,
-                            relative_path_output_xmp
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                        )),
-                    output_dir
-                        .join(relative_path_output_media.parent().unwrap())
-                        .join(subdir)
-                        .join(format!(
-                            "{}{}",
-                            filename_prefix,
-                            relative_path_output_media
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                        )),
-                )
-            } else {
-                (
-                    output_dir
-                        .join(relative_path_output_xmp.parent().unwrap())
-                        .join(subdir)
-                        .join(relative_path_output_xmp.file_name().unwrap()),
-                    output_dir
-                        .join(relative_path_output_media.parent().unwrap())
-                        .join(subdir)
-                        .join(relative_path_output_media.file_name().unwrap()),
-                )
-            }
+            (
+                output_dir
+                    .join(relative_path_output_xmp.parent().unwrap())
+                    .join(subdir)
+                    .join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_xmp
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                    )),
+                output_dir
+                    .join(relative_path_output_media.parent().unwrap())
+                    .join(subdir)
+                    .join(format!(
+                        "{}{}",
+                        filename_prefix,
+                        relative_path_output_media
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                    )),
+            )
         };
 
         pb.println(format!(
