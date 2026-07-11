@@ -357,41 +357,34 @@ fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, Stri
 }
 
 pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
-    fn collect_and_fields(expr: &FilterExpr, fields: &mut Vec<ExtractFilterType>) {
+    // Detects whether any AND-combination in the expression (after distributing
+    // AND over OR) repeats a field, e.g. "sp:A and sp:B" but also
+    // "(sp:A and sp:B) or r:5" and "sp:A and (sp:B or r:5)".
+    // Returns (fields reachable in the subtree, repeated field found).
+    fn check(expr: &FilterExpr) -> (Vec<ExtractFilterType>, bool) {
         match expr {
-            FilterExpr::Condition(cond) => {
-                fields.push(cond.filter_type);
-            }
+            FilterExpr::Condition(cond) => (vec![cond.filter_type], false),
             FilterExpr::Logical {
                 left,
                 operator,
                 right,
             } => {
-                match operator {
-                    LogicalOperator::And => {
-                        collect_and_fields(left, fields);
-                        collect_and_fields(right, fields);
-                    }
-                    LogicalOperator::Or => {
-                        // OR branches are separate, don't mix them
-                    }
-                }
+                let (left_fields, left_dup) = check(left);
+                let (right_fields, right_dup) = check(right);
+                // For AND, a field reachable on both sides ends up repeated in
+                // some distributed AND-term; for OR, branches stay separate.
+                let dup = left_dup
+                    || right_dup
+                    || (matches!(operator, LogicalOperator::And)
+                        && left_fields.iter().any(|f| right_fields.contains(f)));
+                let mut fields = left_fields;
+                fields.extend(right_fields);
+                (fields, dup)
             }
         }
     }
 
-    let mut fields = Vec::new();
-    collect_and_fields(expr, &mut fields);
-
-    // Check if any field appears more than once in AND conditions
-    for i in 0..fields.len() {
-        for j in (i + 1)..fields.len() {
-            if fields[i] == fields[j] {
-                return true;
-            }
-        }
-    }
-    false
+    check(expr).1
 }
 
 /// Convert FilterExpr to Polars Expr
@@ -1160,5 +1153,18 @@ mod tests {
         assert_eq!(strip("2023-12-08T10:47:39"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08T10:47:39.123+08:00"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
+    }
+
+    #[test]
+    fn advanced_filter_detects_same_field_and_conditions() {
+        let needs_agg =
+            |input: &str| has_same_field_and_conditions(&parse_advanced_filter(input).unwrap());
+        assert!(needs_agg("species:A and species:B"));
+        assert!(needs_agg("(species:A and species:B) or rating:5"));
+        assert!(needs_agg("species:A and (species:B or rating:5)"));
+        assert!(needs_agg("(species:A or rating:5) and species:B"));
+        assert!(!needs_agg("species:A or species:B"));
+        assert!(!needs_agg("species:A and rating:4-5"));
+        assert!(!needs_agg("(species:A or rating:5) and custom:x"));
     }
 }
