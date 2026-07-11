@@ -680,8 +680,15 @@ pub fn deployments_align(
     let pb = indicatif::ProgressBar::new(num_iter as u64);
     configure_progress_bar(&pb);
     for deploy_id in deploy_iter {
-        let (_, collection_name) = deploy_id.unwrap().rsplit_once('_').unwrap();
-        let deploy_dir = project_dir.join(collection_name).join(deploy_id.unwrap());
+        let deploy_id = deploy_id.ok_or_else(|| {
+            anyhow::anyhow!("Empty deploymentID found in the deployments table")
+        })?;
+        let (_, collection_name) = deploy_id.rsplit_once('_').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid deploymentID '{deploy_id}': expected '<deployment_name>_<collection_name>'"
+            )
+        })?;
+        let deploy_dir = project_dir.join(collection_name).join(deploy_id);
         let collection_output_dir = output_dir.join(collection_name);
         resources_flatten(
             deploy_dir,
