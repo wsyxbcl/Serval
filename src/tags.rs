@@ -487,9 +487,13 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                     }
                 }
             }
-            let xmp_string = xmp
-                .to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
-            fs::write(&xmp_path, xmp_string)?;
+            if xmp_path.exists() {
+                pb.println(format!(
+                    "Backing up existing XMP before regenerating: {}",
+                    xmp_path.display()
+                ));
+            }
+            write_xmp_with_backup(&xmp_path, &xmp)?;
             pb.inc(1);
         } else {
             pb.println(format!("Failed to open file: {}", media.display()));
@@ -1745,7 +1749,7 @@ fn update_xmp(
 
     if update_type == XmpUpdateType::Rating {
         update_xmp_rating(&file_path, &mut xmp, &old_value, &new_value, pb)?;
-        return finalize_xmp_update(file_path, xmp);
+        return write_xmp_with_backup(&file_path, &xmp);
     }
 
     let tag_type = update_type
@@ -1846,7 +1850,7 @@ fn update_xmp(
         update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
     }
 
-    finalize_xmp_update(file_path, xmp)
+    write_xmp_with_backup(&file_path, &xmp)
 }
 
 fn update_xmp_rating(
@@ -1882,17 +1886,21 @@ fn update_xmp_rating(
     Ok(())
 }
 
-fn finalize_xmp_update(file_path: PathBuf, xmp: XmpMeta) -> anyhow::Result<()> {
+/// Serialize `xmp` to `file_path` atomically; an existing file is kept as a
+/// timestamped .backup first.
+fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta) -> anyhow::Result<()> {
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
     let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
 
-    fs::copy(&file_path, &backup_path)?;
+    if file_path.exists() {
+        let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
+        fs::copy(file_path, &backup_path)?;
+    }
     fs::write(&temp_path, &modified_xmp)?;
-    fs::rename(&temp_path, &file_path)?;
+    fs::rename(&temp_path, file_path)?;
 
     Ok(())
 }
@@ -2076,16 +2084,5 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
 
     set_xmp_datetime_fields(&mut xmp, &iso8601_datetime)?;
 
-    let modified_xmp =
-        xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
-
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
-    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
-
-    fs::copy(&file_path, &backup_path)?;
-    fs::write(&temp_path, &modified_xmp)?;
-    fs::rename(&temp_path, &file_path)?;
-
-    Ok(())
+    write_xmp_with_backup(&file_path, &xmp)
 }
