@@ -1107,8 +1107,8 @@ pub fn tags_csv_translate(
         .finish()?;
     reject_duplicate_csv_columns(&taglist_df)?;
 
-    let joined = source_df.clone().lazy().join(
-        taglist_df.clone().lazy(),
+    let joined = source_df.lazy().join(
+        taglist_df.lazy(),
         [col(TagType::Species.col_name())],
         [col(from)],
         JoinArgs::new(JoinType::Left),

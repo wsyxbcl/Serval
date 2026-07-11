@@ -666,13 +666,11 @@ pub fn get_classifications(
     };
 
     let image_paths: Vec<String> = file_paths
-        .clone()
-        .into_iter()
+        .iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
     let image_filenames: Vec<String> = file_paths
-        .clone()
-        .into_iter()
+        .iter()
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     // Keep resources whose media_type cannot be inferred (e.g. orphan sidecars
