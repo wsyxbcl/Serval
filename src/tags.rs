@@ -72,10 +72,11 @@ struct NumericSelectValidator {
 impl Validator for NumericSelectValidator {
     fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
         use ValidationResult::{Invalid, Valid};
-        let input: i32 = if ctx.input() == "" {
-            return Ok(Invalid(Some(" --< Expect numeric input".to_owned())));
-        } else {
-            ctx.input().parse().unwrap()
+        let input: i32 = match ctx.input().trim().parse() {
+            Ok(input) => input,
+            Err(_) => {
+                return Ok(Invalid(Some(" --< Expect numeric input".to_owned())));
+            }
         };
         let result = if !(input >= self.min && input <= self.max) {
             Invalid(Some(format!(
@@ -1127,6 +1128,10 @@ pub fn extract_resources(
     }
 
     let mut rl = Editor::new()?;
+    rl.bind_sequence(
+        Event::Any,
+        EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+    );
     let h = NumericSelectValidator {
         min: 0,
         max: num_option,
