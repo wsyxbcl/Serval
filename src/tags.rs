@@ -224,12 +224,13 @@ pub fn write_taglist(
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
     let dummy_xmp = include_str!("../assets/dummy.xmp");
     let mut meta = XmpMeta::from_str(dummy_xmp)?;
-    for tag in tags.str()?.iter() {
+    // flatten() skips empty (null) cells in the taglist column
+    for tag in tags.str()?.iter().flatten() {
         meta.set_array_item(
             DIGIKAM_NS,
             DIGIKAM_TAGSLIST,
             xmp_toolkit::ItemPlacement::InsertBeforeIndex(1),
-            &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag.unwrap())),
+            &XmpValue::new(format!("{}{}", tag_type.digikam_tag_prefix(), tag)),
         )?;
     }
 
