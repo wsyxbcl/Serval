@@ -1190,7 +1190,11 @@ pub fn extract_resources(
         } else {
             ""
         };
-        let path_str = path.unwrap();
+        let Some(path_str) = path else {
+            pb.println("Missing path value, skipping.");
+            pb.inc(1);
+            continue;
+        };
         let media_path = underlying_media_path(Path::new(path_str));
         let (input_path_xmp, input_path_media) = if media_path == Path::new(path_str) {
             (format!("{path_str}.xmp"), path_str.to_string())
