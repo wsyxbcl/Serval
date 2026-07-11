@@ -1499,7 +1499,7 @@ pub fn get_temporal_independence(
             .str()
             .replace_all(lit("T"), lit(" "), true)
             .str()
-            .replace_all(lit(r"([+-]\d{2}:?\d{2}|Z)$"), lit(""), false)
+            .replace_all(lit(r"(\.\d+)?([+-]\d{2}:?\d{2}|Z)?$"), lit(""), false)
             .str()
             .strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
@@ -1522,9 +1522,12 @@ pub fn get_temporal_independence(
                 col(target_col).alias(target.col_name()),
             ])
             .collect()?;
-        if df_deployment.column("time")?.dtype() == &DataType::String {
+        // eventStart nulls were rejected on read, so any null here is a parse failure
+        // that drop_nulls would otherwise silently discard.
+        let num_unparsed = df_deployment.column("time")?.null_count();
+        if num_unparsed > 0 {
             return Err(anyhow::anyhow!(
-                "eventStart column parsing failed: expected ISO-8601 like 2023-12-08T10:47:39+0800."
+                "{num_unparsed} eventStart value(s) could not be parsed: expected ISO-8601 like 2023-12-08T10:47:39+0800."
             ));
         }
         df_deployment
