@@ -6,7 +6,7 @@ use crate::schema::{
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
-    configure_progress_bar, csv_projection_columns, deployment_from_path,
+    configure_progress_bar, csv_projection_columns, dedup_output_path, deployment_from_path,
     deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
     has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
     iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
@@ -1307,26 +1307,16 @@ pub fn extract_resources(
         }
         // check if the file exists, if so, rename it
         if output_path_media.exists() {
-            let mut i = 1;
-            let mut output_path_media_renamed = output_path_media.clone();
-            while output_path_media_renamed.exists() {
-                output_path_media_renamed = output_path_media.with_file_name(format!(
-                    "{}_{}.{}",
-                    output_path_media.file_stem().unwrap().to_string_lossy(),
-                    i,
-                    output_path_media.extension().unwrap().to_string_lossy()
-                ));
-                i += 1;
-            }
-            // get the xmp file from output_path_media_renamed
-            let output_path_xmp_renamed =
-                output_path_media_renamed.to_string_lossy().into_owned() + ".xmp";
+            let output_path_media_renamed = dedup_output_path(output_path_media);
             pb.println(format!(
                 "Renamed to {}",
                 output_path_media_renamed.to_string_lossy()
             ));
-            output_path_media = output_path_media_renamed.clone();
-            output_path_xmp = output_path_xmp_renamed.into();
+            output_path_xmp = PathBuf::from(format!(
+                "{}.xmp",
+                output_path_media_renamed.to_string_lossy()
+            ));
+            output_path_media = output_path_media_renamed;
         }
 
         fs::copy(input_path_media.clone(), output_path_media.clone())?;

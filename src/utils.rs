@@ -561,6 +561,31 @@ pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<Pat
         .collect()
 }
 
+/// Return a path that does not exist yet by appending "_1", "_2", ... to the
+/// file stem when the given path is already taken.
+pub fn dedup_output_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let extension = path.extension().map(|ext| ext.to_string_lossy().into_owned());
+    let mut i = 1;
+    loop {
+        let file_name = match &extension {
+            Some(ext) => format!("{stem}_{i}.{ext}"),
+            None => format!("{stem}_{i}"),
+        };
+        let candidate = path.with_file_name(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
 pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
@@ -596,7 +621,6 @@ pub fn resources_flatten(
         configure_progress_bar(pb_ref);
     }
     for resource in resource_paths {
-        let mut output_path = PathBuf::new();
         let resource_parent = resource.parent().unwrap();
         let relative_path = resource.strip_prefix(&deploy_dir).unwrap_or(&resource);
         let mut relative_parts: Vec<OsString> = relative_path
@@ -622,13 +646,23 @@ pub fn resources_flatten(
         name_parts.extend(relative_parts.into_iter());
         let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
 
-        output_path.push(output_dir.join(resource_name));
+        let output_path = output_dir.join(resource_name);
 
         if !dry_run {
+            // Different sources can flatten to the same name; never overwrite.
+            let final_output_path = dedup_output_path(output_path.clone());
+            if final_output_path != output_path
+                && let Some(pb_ref) = &pb
+            {
+                pb_ref.println(format!(
+                    "Renamed to {} to avoid overwriting",
+                    final_output_path.display()
+                ));
+            }
             if move_mode {
-                fs::rename(resource, output_path)?;
+                fs::rename(resource, final_output_path)?;
             } else {
-                fs::copy(resource, output_path)?;
+                fs::copy(resource, final_output_path)?;
             }
             if let Some(pb_ref) = &pb {
                 pb_ref.inc(1);
