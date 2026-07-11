@@ -2,7 +2,7 @@ use crate::schema::{
     DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
     SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
-    canonicalize_observe_tags_df, infer_media_type,
+    canonicalize_observe_tags_df, infer_media_type, underlying_media_path,
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
@@ -1179,15 +1179,16 @@ pub fn extract_resources(
         } else {
             ""
         };
-        let input_path_xmp: String;
-        let input_path_media: String;
-        if path.unwrap().ends_with(".xmp") {
-            input_path_xmp = path.unwrap().to_string();
-            input_path_media = path.unwrap().strip_suffix(".xmp").unwrap().to_string();
+        let path_str = path.unwrap();
+        let media_path = underlying_media_path(Path::new(path_str));
+        let (input_path_xmp, input_path_media) = if media_path == Path::new(path_str) {
+            (format!("{path_str}.xmp"), path_str.to_string())
         } else {
-            input_path_xmp = path.unwrap().to_string() + ".xmp";
-            input_path_media = path.unwrap().to_string();
-        }
+            (
+                path_str.to_string(),
+                media_path.to_string_lossy().into_owned(),
+            )
+        };
 
         let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();

@@ -1,7 +1,7 @@
 use crate::schema::{
     ALL_RESOURCE_EXTENSIONS, CUSTOM_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN,
     IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
-    resource_extension,
+    resource_extension, underlying_media_path,
 };
 use chrono::NaiveDateTime;
 use core::fmt;
@@ -794,17 +794,11 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
 
 // Sync XMP metadata to corresponding media files
 pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
-    let media_path_str = match xmp_path.to_str() {
-        Some(path_str) => path_str.trim_end_matches(".xmp"),
-        None => {
-            eprintln!(
-                "Warning: Skipping XMP file with non-UTF-8 path: {}",
-                xmp_path.display()
-            );
-            return Ok(());
-        }
-    };
-    let media_path = Path::new(media_path_str);
+    let media_path = underlying_media_path(xmp_path);
+    if media_path == xmp_path {
+        eprintln!("Warning: Skipping non-XMP file: {}", xmp_path.display());
+        return Ok(());
+    }
 
     if !media_path.exists() {
         eprintln!(
