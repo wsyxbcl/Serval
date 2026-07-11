@@ -671,10 +671,21 @@ pub fn get_classifications(
         .into_iter()
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
+    // Keep resources whose media_type cannot be inferred (e.g. orphan sidecars
+    // like orphan.xmp) in the output, with an empty media_type.
     let media_types: Vec<String> = file_paths
         .iter()
-        .map(|path| infer_media_type(path).map(str::to_string))
-        .collect::<anyhow::Result<_>>()?;
+        .map(|path| match infer_media_type(path) {
+            Ok(media_type) => media_type.to_string(),
+            Err(_) => {
+                eprintln!(
+                    "Warning: cannot infer media_type of {}, leaving it empty",
+                    path.display()
+                );
+                String::new()
+            }
+        })
+        .collect();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = ProgressBar::new(num_images as u64);
@@ -1189,6 +1200,13 @@ pub fn extract_resources(
                 media_path.to_string_lossy().into_owned(),
             )
         };
+        if !Path::new(&input_path_media).exists() {
+            pb.println(format!(
+                "Skipping {path_str}: media file {input_path_media} does not exist"
+            ));
+            pb.inc(1);
+            continue;
+        }
 
         let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
             let relative_path_output_xmp = Path::new(&input_path_xmp).file_name().unwrap();
