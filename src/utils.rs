@@ -1042,9 +1042,14 @@ pub fn deployment_from_path_expr(path_expr: Expr, deploy_path_index: i32) -> Exp
 }
 
 pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
-    let time_remove_designator = time.replace('Z', "");
-    let time_ignore_zone = time_remove_designator.split('+').collect::<Vec<&str>>()[0];
-    Ok(time_ignore_zone.to_string())
+    let time = time.trim_end_matches('Z');
+    // Offsets (+HH:MM / -HH:MM) and fractional seconds can only appear after the
+    // time-of-day part, so search after 'T'/' ' to avoid cutting at date separators.
+    let time_start = time.find(['T', ' ']).map_or(0, |i| i + 1);
+    let tz_start = time[time_start..]
+        .find(['+', '-', '.'])
+        .map_or(time.len(), |i| time_start + i);
+    Ok(time[..tz_start].to_string())
 }
 
 pub fn iso_datetime_to_csv_format(time: &str) -> String {
@@ -1133,4 +1138,20 @@ pub fn tags_csv_translate(
 
     println!("Saved to {}", output_csv.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ignore_timezone_strips_timezone_suffixes() {
+        let strip = |s: &str| ignore_timezone(s.to_string()).unwrap();
+        assert_eq!(strip("2023-12-08T10:47:39+08:00"), "2023-12-08T10:47:39");
+        assert_eq!(strip("2023-12-08T10:47:39-08:00"), "2023-12-08T10:47:39");
+        assert_eq!(strip("2023-12-08T10:47:39Z"), "2023-12-08T10:47:39");
+        assert_eq!(strip("2023-12-08T10:47:39"), "2023-12-08T10:47:39");
+        assert_eq!(strip("2023-12-08T10:47:39.123+08:00"), "2023-12-08T10:47:39");
+        assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
+    }
 }
