@@ -8,8 +8,8 @@ use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
     configure_progress_bar, csv_projection_columns, dedup_output_path, deployment_from_path,
     deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, is_temporal_independent,
-    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate,
+    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
+    parse_advanced_filter, path_enumerate,
     reject_duplicate_csv_columns, sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
@@ -1549,7 +1549,7 @@ pub fn get_temporal_independence(
 
     // The temporal pass relies on contiguous [deployment, target] groups and ascending time.
     // Keep the sort stable so exact duplicate keys preserve input order deterministically.
-    let mut df_sorted = df_cleaned.sort(
+    let df_sorted = df_cleaned.sort(
         ["deployment", target.col_name(), "time"],
         SortMultipleOptions::default().with_maintain_order(true),
     )?;
@@ -1588,50 +1588,39 @@ pub fn get_temporal_independence(
                 "No records remain after filtering empty/default tags."
             ));
         }
-        df_sorted.align_chunks_par();
-        let columns = [
-            df_sorted.column("time")?,
-            df_sorted.column(target.col_name())?,
-            df_sorted.column("deployment")?,
-        ];
-        let mut iters = columns
-            .iter()
-            .map(|s| s.as_materialized_series().iter())
-            .collect::<Vec<_>>();
-
-        let mut capture = Vec::new();
-        for _row in 0..df_sorted.height() {
-            for iter in &mut iters {
-                let value = iter.next().expect("should have as many iterations as rows");
-                capture.push(value);
-            }
-        }
-        let capture_time: Vec<&AnyValue<'_>> = capture.iter().step_by(3).collect();
-        let capture_species: Vec<&AnyValue<'_>> = capture.iter().skip(1).step_by(3).collect();
-        let capture_deployment: Vec<&AnyValue<'_>> = capture.iter().skip(2).step_by(3).collect();
+        let time_col = df_sorted.column("time")?.datetime()?;
+        let target_col = df_sorted.column(target.col_name())?.str()?;
+        let deploy_col = df_sorted.column("deployment")?.str()?;
+        let ticks_per_minute: i64 = match time_col.time_unit() {
+            TimeUnit::Milliseconds => 60_000,
+            TimeUnit::Microseconds => 60_000_000,
+            TimeUnit::Nanoseconds => 60_000_000_000,
+        };
+        let min_delta_ticks = i64::from(min_delta_time) * ticks_per_minute;
 
         // Get temporal independent records
-        let mut capture_independent = Vec::new();
-        let mut last_indep_time = capture_time[0].to_string();
-        let mut last_indep_species = capture_species[0].to_string();
-        let mut last_indep_deployment = capture_deployment[0].to_string();
-        for i in 0..capture_time.len() {
-            let time = capture_time[i].to_string();
-            let species = capture_species[i].to_string();
-            let deployment = capture_deployment[i].to_string();
-
-            if i == 0
-                || species != last_indep_species
-                || deployment != last_indep_deployment
-                || is_temporal_independent(last_indep_time.clone(), time, min_delta_time)?
-            {
-                capture_independent.push(true);
-                last_indep_time = capture_time[i].to_string();
-                last_indep_species = capture_species[i].to_string();
-                last_indep_deployment = capture_deployment[i].to_string();
-            } else {
-                capture_independent.push(false);
+        let mut capture_independent = Vec::with_capacity(df_sorted.height());
+        let mut last_indep: Option<(i64, &str, &str)> = None;
+        for (time, species, deployment) in
+            izip!(time_col.physical().iter(), target_col.iter(), deploy_col.iter())
+        {
+            let (time, species, deployment) = (
+                time.ok_or_else(|| anyhow::anyhow!("Unexpected null time value"))?,
+                species.ok_or_else(|| anyhow::anyhow!("Unexpected null target tag"))?,
+                deployment.ok_or_else(|| anyhow::anyhow!("Unexpected null deployment"))?,
+            );
+            let independent = match last_indep {
+                Some((last_time, last_species, last_deployment)) => {
+                    species != last_species
+                        || deployment != last_deployment
+                        || time - last_time >= min_delta_ticks
+                }
+                None => true,
+            };
+            if independent {
+                last_indep = Some((time, species, deployment));
             }
+            capture_independent.push(independent);
         }
 
         df_capture_independent = df_sorted
