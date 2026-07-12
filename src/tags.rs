@@ -926,9 +926,9 @@ pub fn get_classifications(
             col(RATING_COLUMN),
         ])
         .collect()?;
-    println!("{df_split:?}");
 
     if debug_mode {
+        println!("{df_split:?}");
         if let Some(deploy_path_index) = deploy_path_index {
             df_raw = df_raw
                 .lazy()
