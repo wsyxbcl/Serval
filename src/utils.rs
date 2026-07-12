@@ -875,20 +875,54 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Outcome of one item in a batch operation: performed, or skipped with a reason.
+pub enum BatchOutcome {
+    Done,
+    Skipped(String),
+}
+
+/// Print skip warnings, failure errors, and a per-outcome count summary for a
+/// batch operation.
+pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: &str) {
+    let mut done = 0;
+    let mut skipped = Vec::new();
+    let mut failures = Vec::new();
+    for result in results {
+        match result {
+            Ok(BatchOutcome::Done) => done += 1,
+            Ok(BatchOutcome::Skipped(reason)) => skipped.push(reason),
+            Err(err) => failures.push(err),
+        }
+    }
+    for reason in &skipped {
+        eprintln!("Warning: {reason}");
+    }
+    for err in &failures {
+        eprintln!("Error: {err}");
+    }
+    println!(
+        "{done} XMP file(s) {action}, {} skipped, {} failed",
+        skipped.len(),
+        failures.len()
+    );
+}
+
 // Sync XMP metadata to corresponding media files
-pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
+pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<BatchOutcome> {
     let media_path = underlying_media_path(xmp_path);
     if media_path == xmp_path {
-        eprintln!("Warning: Skipping non-XMP file: {}", xmp_path.display());
-        return Ok(());
+        return Ok(BatchOutcome::Skipped(format!(
+            "Skipping non-XMP file: {}",
+            xmp_path.display()
+        )));
     }
 
     if !media_path.exists() {
-        eprintln!(
-            "Warning: Skipping,'{}' does not exist.",
+        return Ok(BatchOutcome::Skipped(format!(
+            "Skipping {}: media file {} does not exist",
+            xmp_path.display(),
             media_path.display()
-        );
-        return Ok(());
+        )));
     }
 
     let xmp_content = fs::read_to_string(xmp_path)?;
@@ -900,7 +934,7 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<()> {
     xmp_file.put_xmp(&xmp_meta)?;
     xmp_file.try_close()?;
 
-    Ok(())
+    Ok(BatchOutcome::Done)
 }
 
 pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
@@ -922,7 +956,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Syncing XMP metadata to media files...");
 
-    let results: Vec<anyhow::Result<()>> = xmp_paths
+    let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
         .par_iter()
         .map(|xmp_path| {
             let result = sync_xmp_to_media(xmp_path);
@@ -932,19 +966,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
-
-    let num_synced = successes.len();
-    let num_skipped = failures.len();
-
-    for result in failures {
-        if let Err(e) = result {
-            eprintln!("Failed to sync: {e}");
-        }
-    }
-
-    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
+    report_batch_results(results, "synced");
 
     Ok(())
 }
@@ -982,7 +1004,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
 
     let path_col = df_filtered.column("path")?.str()?;
 
-    let results: Vec<anyhow::Result<()>> = path_col
+    let results: Vec<anyhow::Result<BatchOutcome>> = path_col
         .par_iter()
         .filter_map(|path| path.map(PathBuf::from))
         .map(|xmp_path| {
@@ -993,19 +1015,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
-
-    let num_synced = successes.len();
-    let num_skipped = failures.len();
-
-    for result in failures {
-        if let Err(e) = result {
-            eprintln!("Failed to sync: {e}");
-        }
-    }
-
-    println!("Successfully synced {num_synced} XMP files, skipped {num_skipped} files");
+    report_batch_results(results, "synced");
 
     Ok(())
 }
@@ -1026,29 +1036,19 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Removing XMP files...");
 
-    let results: Vec<anyhow::Result<()>> = xmp_paths
+    let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
         .par_iter()
         .map(|xmp_path| {
-            let result = fs::remove_file(xmp_path);
+            let result = fs::remove_file(xmp_path)
+                .map(|_| BatchOutcome::Done)
+                .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", xmp_path.display(), e));
             pb.inc(1);
-            result.map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", xmp_path.display(), e))
+            result
         })
         .collect();
 
     pb.finish();
-
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
-
-    let num_removed = successes.len();
-    let num_failed = failures.len();
-
-    for result in failures {
-        if let Err(e) = result {
-            eprintln!("{e}");
-        }
-    }
-
-    println!("Successfully removed {num_removed} XMP files, failed to remove {num_failed} files");
+    report_batch_results(results, "removed");
     Ok(())
 }
 
