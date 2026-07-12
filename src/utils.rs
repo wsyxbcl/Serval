@@ -528,10 +528,55 @@ pub fn configure_progress_bar(pb: &ProgressBar) {
     pb.enable_steady_tick(std::time::Duration::from_secs(1));
 }
 
+static RUN_LOG: std::sync::OnceLock<(PathBuf, std::sync::Mutex<File>)> = std::sync::OnceLock::new();
+
+/// Best-effort creation of the run log for file-operation commands. Written to
+/// `log_dir` when the command has an output directory, otherwise to
+/// ./serval_output/logs. Per-file statuses and warnings are mirrored there,
+/// since transient bar messages leave no trace in the terminal.
+pub fn init_run_log(command: &str, log_dir: Option<&Path>) {
+    let log_dir = log_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("./serval_output/logs"));
+    let init = || -> anyhow::Result<(PathBuf, std::sync::Mutex<File>)> {
+        fs::create_dir_all(&log_dir)?;
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let log_path = log_dir.join(format!("serval_{command}_{timestamp}.log"));
+        let file = File::create(&log_path)?;
+        Ok((log_path, std::sync::Mutex::new(file)))
+    };
+    match init() {
+        Ok(entry) => {
+            let _ = RUN_LOG.set(entry);
+            log_line(&format!(
+                "Command: {}",
+                env::args().collect::<Vec<_>>().join(" ")
+            ));
+        }
+        Err(err) => eprintln!("Warning: failed to create run log in {}: {err}", log_dir.display()),
+    }
+}
+
+pub fn run_log_path() -> Option<&'static Path> {
+    RUN_LOG.get().map(|(path, _)| path.as_path())
+}
+
+/// Append a timestamped line to the run log; no-op when no log is set up.
+pub fn log_line(message: &str) {
+    if let Some((_, log)) = RUN_LOG.get()
+        && let Ok(mut file) = log.lock()
+    {
+        use std::io::Write;
+        let timestamp = chrono::Local::now().format("%H:%M:%S");
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
+}
+
 /// Show transient per-file status in the progress bar. When the bar is hidden
 /// (non-TTY output), print a plain line instead so logs keep the information.
 pub fn pb_status(pb: &ProgressBar, message: impl Into<String>) {
     let message = message.into();
+    log_line(&message);
     if pb.is_hidden() {
         println!("{message}");
     } else {
@@ -551,6 +596,7 @@ impl WarningCollector {
     /// bar is hidden) and count it for the final notice.
     pub fn warn(&self, pb: &ProgressBar, message: impl Into<String>) {
         let message = message.into();
+        log_line(&format!("Warning: {message}"));
         if pb.is_hidden() {
             eprintln!("Warning: {message}");
         } else {
@@ -563,6 +609,7 @@ impl WarningCollector {
     /// Print the warning without a progress bar and count it for the final notice.
     pub fn warn_plain(&self, message: impl Into<String>) {
         let message = message.into();
+        log_line(&format!("Warning: {message}"));
         eprintln!("Warning: {message}");
         self.count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -571,6 +618,7 @@ impl WarningCollector {
     pub fn summarize(&self) {
         let count = self.count.load(std::sync::atomic::Ordering::Relaxed);
         if count > 0 {
+            log_line(&format!("{count} warning(s) occurred"));
             eprintln!("{count} warning(s) occurred, see messages above.");
         }
     }
@@ -700,14 +748,22 @@ pub fn resources_flatten(
         if !dry_run {
             // Different sources can flatten to the same name; never overwrite.
             let final_output_path = dedup_output_path(output_path.clone());
-            if final_output_path != output_path
-                && let Some(pb_ref) = &pb
-            {
-                pb_ref.println(format!(
+            if final_output_path != output_path {
+                let message = format!(
                     "Renamed to {} to avoid overwriting",
                     final_output_path.display()
-                ));
+                );
+                log_line(&message);
+                if let Some(pb_ref) = &pb {
+                    pb_ref.println(message);
+                }
             }
+            log_line(&format!(
+                "{} {} -> {}",
+                if move_mode { "Moving" } else { "Copying" },
+                resource.display(),
+                final_output_path.display()
+            ));
             if move_mode {
                 fs::rename(resource, final_output_path)?;
             } else {
@@ -802,11 +858,13 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                         "Will rename collection {original_collection_name} to {collection_name_lower}"
                     );
                 } else {
-                    println!(
+                    let message = format!(
                         "Renaming collection {} to {}",
                         collection_dir.display(),
                         new_collection_dir.display()
                     );
+                    log_line(&message);
+                    println!("{message}");
                     fs::rename(&collection_dir, &new_collection_dir)?;
                     collection_dir = new_collection_dir;
                 }
@@ -840,11 +898,13 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                             deploy_name.to_lowercase(),
                             collection_name.to_lowercase()
                         ));
-                        println!(
+                        let message = format!(
                             "Renaming {} to {}",
                             deploy_dir.display(),
                             deploy_id_dir.display()
                         );
+                        log_line(&message);
+                        println!("{message}");
                         fs::rename(deploy_dir, deploy_id_dir)?;
                     }
                 }
@@ -895,16 +955,20 @@ pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: 
         }
     }
     for reason in &skipped {
+        log_line(&format!("Warning: {reason}"));
         eprintln!("Warning: {reason}");
     }
     for err in &failures {
+        log_line(&format!("Error: {err}"));
         eprintln!("Error: {err}");
     }
-    println!(
+    let summary = format!(
         "{done} XMP file(s) {action}, {} skipped, {} failed",
         skipped.len(),
         failures.len()
     );
+    log_line(&summary);
+    println!("{summary}");
 }
 
 // Sync XMP metadata to corresponding media files

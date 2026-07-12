@@ -10,14 +10,26 @@ use tags::{
 };
 use utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path, copy_xmp,
-    deployments_align, deployments_rename, remove_xmp_files, resources_flatten, sync_xmp_directory,
-    sync_xmp_from_csv, tags_csv_translate,
+    deployments_align, deployments_rename, init_run_log, log_line, remove_xmp_files,
+    resources_flatten, run_log_path, sync_xmp_directory, sync_xmp_from_csv, tags_csv_translate,
 };
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    match args.command {
+    let result = run(args.command);
+    match &result {
+        Ok(()) => log_line("Run completed"),
+        Err(err) => log_line(&format!("Run failed: {err:#}")),
+    }
+    if let Some(log_path) = run_log_path() {
+        println!("Log saved to {}", log_path.display());
+    }
+    result
+}
+
+fn run(command: Commands) -> anyhow::Result<()> {
+    match command {
         Commands::Align {
             path,
             output,
@@ -27,6 +39,7 @@ fn main() -> anyhow::Result<()> {
             move_mode,
             keep_first_subdir,
         } => {
+            init_run_log("align", Some(&output));
             if let Some(deploy_table) = deploy_table {
                 println!("Aligning deployments in {}", path.display());
                 deployments_align(
@@ -84,6 +97,7 @@ fn main() -> anyhow::Result<()> {
             project_dir,
             dryrun,
         } => {
+            init_run_log("rename", None);
             deployments_rename(absolute_path(project_dir)?, dryrun)?;
         }
         Commands::Tags2img {
@@ -122,6 +136,7 @@ fn main() -> anyhow::Result<()> {
             use_subdir,
             subdir_type,
         } => {
+            init_run_log("extract", Some(&output));
             extract_resources(
                 value,
                 filter_type,
@@ -138,9 +153,11 @@ fn main() -> anyhow::Result<()> {
                 source_dir,
                 output_dir,
             } => {
+                init_run_log("xmp_copy", Some(&output_dir));
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
             XmpCommands::Init { source_dir, info } => {
+                init_run_log("xmp_init", None);
                 init_xmp(absolute_path(source_dir)?, info)?;
             }
             XmpCommands::Update {
@@ -148,6 +165,7 @@ fn main() -> anyhow::Result<()> {
                 tag_type,
                 datetime,
             } => {
+                init_run_log("xmp_update", None);
                 if datetime {
                     update_datetime(absolute_path(csv_path)?)?;
                 } else {
@@ -157,9 +175,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             XmpCommands::Remove { source_dir } => {
+                init_run_log("xmp_remove", None);
                 remove_xmp_files(absolute_path(source_dir)?)?;
             }
             XmpCommands::Sync { dir, csv } => {
+                init_run_log("xmp_sync", None);
                 if let Some(dir) = dir {
                     sync_xmp_directory(absolute_path(dir)?)?;
                 } else if let Some(csv) = csv {
