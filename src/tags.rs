@@ -8,9 +8,9 @@ use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
     configure_progress_bar, csv_projection_columns, dedup_output_path, deployment_from_path,
     deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
-    parse_advanced_filter, path_enumerate,
-    reject_duplicate_csv_columns, sync_modified_time,
+    WarningCollector, has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
+    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
+    sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -395,6 +395,7 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
     };
     let pb = ProgressBar::new(media_count.try_into()?);
     configure_progress_bar(&pb);
+    let warnings = WarningCollector::default();
 
     for (index, media) in media_paths.into_iter().enumerate() {
         let xmp_path = working_dir.join(media.with_added_extension("xmp"));
@@ -411,7 +412,7 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
         }
         if xmp_path.exists() && !info {
             pb.inc(1);
-            pb.println(format!("XMP file already exists: {}", xmp_path.display()));
+            pb_status(&pb, format!("XMP file already exists: {}", xmp_path.display()));
             continue;
         }
         let mut media_xmp = XmpFile::new()?;
@@ -488,15 +489,18 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
                 }
             }
             if xmp_path.exists() {
-                pb.println(format!(
-                    "Backing up existing XMP before regenerating: {}",
-                    xmp_path.display()
-                ));
+                warnings.warn(
+                    &pb,
+                    format!(
+                        "Backing up existing XMP before regenerating: {}",
+                        xmp_path.display()
+                    ),
+                );
             }
             write_xmp_with_backup(&xmp_path, &xmp)?;
             pb.inc(1);
         } else {
-            pb.println(format!("Failed to open file: {}", media.display()));
+            warnings.warn(&pb, format!("Failed to open file: {}", media.display()));
             pb.inc(1);
         }
         if let Some(row) = debug_row {
@@ -504,6 +508,7 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
         }
     }
     pb.finish();
+    warnings.summarize();
     if info {
         write_xmp_init_debug_csv(&working_dir, debug_rows)?;
     }
@@ -695,6 +700,7 @@ pub fn get_classifications(
         .iter()
         .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
+    let warnings = WarningCollector::default();
     // Keep resources whose media_type cannot be inferred (e.g. orphan sidecars
     // like orphan.xmp) in the output, with an empty media_type.
     let media_types: Vec<String> = file_paths
@@ -702,10 +708,10 @@ pub fn get_classifications(
         .map(|path| match infer_media_type(path) {
             Ok(media_type) => media_type.to_string(),
             Err(_) => {
-                eprintln!(
-                    "Warning: cannot infer media_type of {}, leaving it empty",
+                warnings.warn_plain(format!(
+                    "cannot infer media_type of {}, leaving it empty",
                     path.display()
-                );
+                ));
                 String::new()
             }
         })
@@ -763,7 +769,7 @@ pub fn get_classifications(
                     )
                 }
                 Err(error) => {
-                    pb.println(format!("{} in {}", error, file_paths[i].display()));
+                    warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     (
                         "".to_string(),
@@ -797,6 +803,7 @@ pub fn get_classifications(
         ratings.push(tag.10);
     }
     pb.finish();
+    warnings.summarize();
     // Analysis
     let s_species = Column::new("species_tags".into(), species_tags);
     let s_individuals = Column::new("individual_tags".into(), individual_tags);
@@ -1187,6 +1194,7 @@ pub fn extract_resources(
     let deploy_path_index = readline?.trim().parse::<usize>()?;
     let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
     configure_progress_bar(&pb);
+    let warnings = WarningCollector::default();
 
     let paths = df_filtered.column("path")?.str()?;
     // Remove dot from tags, as it causes issues when cross-platform
@@ -1225,7 +1233,7 @@ pub fn extract_resources(
             ""
         };
         let Some(path_str) = path else {
-            pb.println("Missing path value, skipping.");
+            warnings.warn(&pb, "Missing path value in tags CSV, skipping.");
             pb.inc(1);
             continue;
         };
@@ -1239,9 +1247,10 @@ pub fn extract_resources(
             )
         };
         if !Path::new(&input_path_media).exists() {
-            pb.println(format!(
-                "Skipping {path_str}: media file {input_path_media} does not exist"
-            ));
+            warnings.warn(
+                &pb,
+                format!("Skipping {path_str}: media file {input_path_media} does not exist"),
+            );
             pb.inc(1);
             continue;
         }
@@ -1305,26 +1314,29 @@ pub fn extract_resources(
             )
         };
 
-        pb.println(format!(
-            "Copying to {}",
-            output_path_media.to_string_lossy()
-        ));
+        pb_status(
+            &pb,
+            format!("Copying to {}", output_path_media.to_string_lossy()),
+        );
         fs::create_dir_all(output_path_media.parent().unwrap())?;
         if skip_existing && output_path_media.exists() {
-            pb.println(format!(
-                "Skipping existing {}",
-                output_path_media.to_string_lossy()
-            ));
+            pb_status(
+                &pb,
+                format!("Skipping existing {}", output_path_media.to_string_lossy()),
+            );
             pb.inc(1);
             continue;
         }
         // check if the file exists, if so, rename it
         if output_path_media.exists() {
             let output_path_media_renamed = dedup_output_path(output_path_media);
-            pb.println(format!(
-                "Renamed to {}",
-                output_path_media_renamed.to_string_lossy()
-            ));
+            warnings.warn(
+                &pb,
+                format!(
+                    "Renamed to {} (destination already exists)",
+                    output_path_media_renamed.to_string_lossy()
+                ),
+            );
             output_path_xmp = PathBuf::from(format!(
                 "{}.xmp",
                 output_path_media_renamed.to_string_lossy()
@@ -1335,7 +1347,12 @@ pub fn extract_resources(
         fs::copy(input_path_media.clone(), output_path_media.clone())?;
         if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
             if err.kind() == std::io::ErrorKind::NotFound {
-                pb.println("Missing XMP file, tag info for certain video files may be lost.");
+                warnings.warn(
+                    &pb,
+                    format!(
+                        "Missing XMP file for {input_path_media}, tag info for certain video files may be lost."
+                    ),
+                );
             } else {
                 return Err(anyhow::anyhow!("Failed to copy XMP file: {err}"));
             }
@@ -1345,6 +1362,7 @@ pub fn extract_resources(
         pb.inc(1);
     }
     pb.finish_with_message("done");
+    warnings.summarize();
     Ok(())
 }
 
@@ -1821,7 +1839,7 @@ fn update_xmp(
     }
 
     if old_value.is_empty() {
-        pb.println(format!("Inserting new {tag_type} tag: {new_value}"));
+        pb_status(pb, format!("Inserting new {tag_type} tag: {new_value}"));
 
         let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
         let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
@@ -1835,9 +1853,10 @@ fn update_xmp(
         insert_tag(&mut xmp, DIGIKAM_NS, DIGIKAM_TAGSLIST, new_tag_digikam)?;
         insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
     } else {
-        pb.println(format!(
-            "Updating {tag_type} tag from '{old_value}' to '{new_value}'"
-        ));
+        pb_status(
+            pb,
+            format!("Updating {tag_type} tag from '{old_value}' to '{new_value}'"),
+        );
         // adobe hierarchical subject
         let adobe_matches = update_tag_array(
             &mut xmp,
@@ -1894,11 +1913,12 @@ fn update_xmp_rating(
     }
 
     if old_value.is_empty() {
-        pb.println(format!("Setting Rating to '{new_value}'"));
+        pb_status(pb, format!("Setting Rating to '{new_value}'"));
     } else {
-        pb.println(format!(
-            "Updating Rating from '{old_value}' to '{new_value}'"
-        ));
+        pb_status(
+            pb,
+            format!("Updating Rating from '{old_value}' to '{new_value}'"),
+        );
     }
 
     xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.to_string()))?;
@@ -1963,6 +1983,7 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     let pb = ProgressBar::new(num_updates as u64);
     configure_progress_bar(&pb);
     pb.set_message("Processing XMP updates...");
+    let warnings = WarningCollector::default();
 
     let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
     let xmp_update_col = df_filtered.column(XMP_UPDATE_COLUMN)?.str()?;
@@ -1983,18 +2004,18 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
                 // Check if the file has .xmp extension
                 if let Some(ext) = current_path.extension() {
                     if ext != "xmp" {
-                        pb.println(format!("Skipping non-XMP file: {path_str}"));
+                        warnings.warn(&pb, format!("Skipping non-XMP file: {path_str}"));
                         pb.inc(1);
                         continue;
                     }
                 } else {
-                    pb.println(format!("Skipping file without extension: {path_str}"));
+                    warnings.warn(&pb, format!("Skipping file without extension: {path_str}"));
                     pb.inc(1);
                     continue;
                 }
 
                 let tag_original = tag_original.unwrap_or("");
-                pb.println(format!("Processing: {path_str}"));
+                pb_status(&pb, format!("Processing: {path_str}"));
                 update_xmp(
                     current_path.clone(),
                     tag_original.to_string(),
@@ -2004,12 +2025,13 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
                 )?;
             }
         } else {
-            pb.println("Missing xmp path, skipping.");
+            warnings.warn(&pb, "Missing xmp path, skipping.");
         }
         pb.inc(1);
     }
 
     pb.finish_with_message("Finished processing all XMP updates");
+    warnings.summarize();
     Ok(())
 }
 
@@ -2056,6 +2078,7 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let pb = ProgressBar::new(num_updates as u64);
     configure_progress_bar(&pb);
     pb.set_message("Processing XMP datetime updates...");
+    let warnings = WarningCollector::default();
 
     let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
     let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?.datetime()?;
@@ -2071,28 +2094,30 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
                 // Check if the file has .xmp extension
                 if let Some(ext) = current_path.extension() {
                     if ext != "xmp" {
-                        pb.println(format!("Skipping non-XMP file: {path_str}"));
+                        warnings.warn(&pb, format!("Skipping non-XMP file: {path_str}"));
                         pb.inc(1);
                         continue;
                     }
                 } else {
-                    pb.println(format!("Skipping file without extension: {path_str}"));
+                    warnings.warn(&pb, format!("Skipping file without extension: {path_str}"));
                     pb.inc(1);
                     continue;
                 }
 
-                pb.println(format!(
-                    "Processing datetime update: {path_str} -> {datetime_str}"
-                ));
+                pb_status(
+                    &pb,
+                    format!("Processing datetime update: {path_str} -> {datetime_str}"),
+                );
                 update_xmp_datetime(current_path.clone(), datetime_str.to_string())?;
             }
         } else {
-            pb.println("Missing xmp path, skipping.");
+            warnings.warn(&pb, "Missing xmp path, skipping.");
         }
         pb.inc(1);
     }
 
     pb.finish_with_message("Finished processing all XMP datetime updates");
+    warnings.summarize();
     Ok(())
 }
 

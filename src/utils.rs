@@ -516,7 +516,9 @@ fn is_ignored(entry: &DirEntry) -> bool {
 // Serval bar style
 pub fn serval_pb_style() -> ProgressStyle {
     ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {wide_msg}",
+        )
         .unwrap()
         .progress_chars("=> ")
 }
@@ -524,6 +526,54 @@ pub fn serval_pb_style() -> ProgressStyle {
 pub fn configure_progress_bar(pb: &ProgressBar) {
     pb.set_style(serval_pb_style());
     pb.enable_steady_tick(std::time::Duration::from_secs(1));
+}
+
+/// Show transient per-file status in the progress bar. When the bar is hidden
+/// (non-TTY output), print a plain line instead so logs keep the information.
+pub fn pb_status(pb: &ProgressBar, message: impl Into<String>) {
+    let message = message.into();
+    if pb.is_hidden() {
+        println!("{message}");
+    } else {
+        pb.set_message(message);
+    }
+}
+
+/// Prints warnings above the progress bar as they happen and, after the bar
+/// finishes, a count line so they are not overlooked.
+#[derive(Default)]
+pub struct WarningCollector {
+    count: std::sync::atomic::AtomicUsize,
+}
+
+impl WarningCollector {
+    /// Print the warning above the progress bar (or as a plain line when the
+    /// bar is hidden) and count it for the final notice.
+    pub fn warn(&self, pb: &ProgressBar, message: impl Into<String>) {
+        let message = message.into();
+        if pb.is_hidden() {
+            eprintln!("Warning: {message}");
+        } else {
+            pb.println(format!("Warning: {message}"));
+        }
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Print the warning without a progress bar and count it for the final notice.
+    pub fn warn_plain(&self, message: impl Into<String>) {
+        let message = message.into();
+        eprintln!("Warning: {message}");
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn summarize(&self) {
+        let count = self.count.load(std::sync::atomic::Ordering::Relaxed);
+        if count > 0 {
+            eprintln!("{count} warning(s) occurred, see messages above.");
+        }
+    }
 }
 
 // workaround for https://github.com/rust-lang/rust/issues/42869
