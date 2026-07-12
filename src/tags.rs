@@ -547,7 +547,14 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
     let mut rating = String::new();
 
     if debug_mode {
-        let file_metadata = fs::metadata(file_path)?;
+        // Sidecar mtimes are rewritten by serval itself; use the underlying
+        // media file's mtime, falling back to the resource for orphan sidecars.
+        let media_path = underlying_media_path(file_path);
+        let file_metadata = if media_path.exists() {
+            fs::metadata(&media_path)?
+        } else {
+            fs::metadata(file_path)?
+        };
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
@@ -647,6 +654,21 @@ pub fn get_classifications(
 
     let file_paths = path_enumerate(file_dir.clone(), resource_type);
     fs::create_dir_all(output_dir.clone())?;
+    // Debug mode doubles as the info-table workflow (cf. xmp init --info):
+    // ask which path level is the deployment so raw.csv gains a deployment column.
+    let deploy_path_index = if debug_mode && !file_paths.is_empty() {
+        let mut rl = Editor::new()?;
+        rl.bind_sequence(
+            Event::Any,
+            EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+        );
+        Some(prompt_deployment_path_index(
+            &mut rl,
+            file_paths[0].to_string_lossy().into_owned(),
+        )?)
+    } else {
+        None
+    };
     // Determine output filename based on parameters
     let output_suffix = if volunteer_mode {
         String::new()
@@ -900,6 +922,16 @@ pub fn get_classifications(
     println!("{df_split:?}");
 
     if debug_mode {
+        if let Some(deploy_path_index) = deploy_path_index {
+            df_raw = df_raw
+                .lazy()
+                .with_columns([
+                    deployment_from_path_expr(col(PATH_COLUMN), deploy_path_index)
+                        .alias("deployment"),
+                    lit("").alias(XMP_UPDATE_DATETIME_COLUMN),
+                ])
+                .collect()?;
+        }
         println!("{df_raw}");
         let debug_csv_path = output_dir.join(format!("raw{output_suffix}"));
         let mut file = std::fs::File::create(debug_csv_path.clone())?;

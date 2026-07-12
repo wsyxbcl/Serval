@@ -246,7 +246,8 @@ enum Commands {
         /// Image only
         #[arg(long)]
         image: bool,
-        /// Debug mode
+        /// Debug mode: also write raw.csv with deployment (prompted) and
+        /// media modified time, usable as input for `xmp update --datetime`
         #[arg(short, long)]
         debug: bool,
     },
