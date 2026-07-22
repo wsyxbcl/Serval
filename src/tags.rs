@@ -1500,33 +1500,31 @@ pub fn get_temporal_independence(
         // 1 week
         println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
     }
-    // Read delta_time_compared_to
+    // Read delta_time_compared_to (default: last record). Empty input accepts the default.
     let h = NumericSelectValidator {
         min: 1,
         max: 2,
-        allow_empty: false,
+        allow_empty: true,
     };
     rl.set_helper(Some(h));
     let readline = rl.readline(
-        "\nThe Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
-    let delta_time_compared_to = match readline?.trim().parse()? {
-        1 => "LastIndependentRecord",
-        2 => "LastRecord",
-        _ => "LastIndependentRecord",
+        "\nThe Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection [default 2]: ");
+    let delta_time_compared_to = match readline?.trim().parse() {
+        Ok(1) => "LastIndependentRecord",
+        _ => "LastRecord", // "2" or empty default
     };
-    // Get target (species/individual)
+    // Get target (species/individual, default: species). Empty input accepts the default.
     let h = NumericSelectValidator {
         min: 1,
         max: 2,
-        allow_empty: false,
+        allow_empty: true,
     };
     rl.set_helper(Some(h));
     let readline =
-        rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection: ");
-    let target = match readline?.trim().parse()? {
-        1 => TagType::Species,
-        2 => TagType::Individual,
-        _ => TagType::Species,
+        rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection [default 1]: ");
+    let target = match readline?.trim().parse() {
+        Ok(2) => TagType::Individual,
+        _ => TagType::Species, // "1" or empty default
     };
     // Find deployment
     let deploy_path_index = if camtrap_dp {
