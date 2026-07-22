@@ -227,9 +227,10 @@ fn prompt_deployment_path_index(
     let readline = rl.readline(&prompt)?;
     let trimmed = readline.trim();
     if trimmed.is_empty()
-        && let Some(n) = default {
-            return Ok(n);
-        }
+        && let Some(n) = default
+    {
+        return Ok(n);
+    }
     Ok(trimmed.parse::<i32>()?)
 }
 
@@ -1487,7 +1488,8 @@ pub fn get_temporal_independence(
     };
     rl.set_helper(Some(h));
     let readline = rl.readline(
-        "Input the Minimum Time Difference (when considering records as independent) in minutes [default 30]: ");
+        "Minimum time gap in minutes for two records to count as independent [default 30]: ",
+    );
     let trimmed = readline?.trim().to_string();
     let min_delta_time: i32 = if trimmed.is_empty() {
         DEFAULT_MIN_DELTA_TIME
@@ -1508,7 +1510,7 @@ pub fn get_temporal_independence(
     };
     rl.set_helper(Some(h));
     let readline = rl.readline(
-        "\nThe Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection [default 2]: ");
+        "\nMeasure that time gap from the previous:\n  1) independent record  - the timer resets only at records already kept as independent\n  2) record (default)    - the timer resets at every record\nEnter 1 or 2 [default 2]: ");
     let delta_time_compared_to = match readline?.trim().parse() {
         Ok(1) => "LastIndependentRecord",
         _ => "LastRecord", // "2" or empty default
@@ -1520,8 +1522,8 @@ pub fn get_temporal_independence(
         allow_empty: true,
     };
     rl.set_helper(Some(h));
-    let readline =
-        rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection [default 1]: ");
+    let readline = rl.readline(
+        "\nAnalyze independence by:\n  1) species (default)\n  2) individual ID\nEnter 1 or 2 [default 1]: ");
     let target = match readline?.trim().parse() {
         Ok(2) => TagType::Individual,
         _ => TagType::Species, // "1" or empty default
