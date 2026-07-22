@@ -1477,18 +1477,25 @@ pub fn get_temporal_independence(
         Event::Any,
         EventHandler::Conditional(Box::new(NumericFilteringHandler)), // Force numerical input
     );
-    // Read min_delta_time
+    // Read min_delta_time. Empty input accepts the default; the validator
+    // otherwise requires a positive number, matching the other prompts.
+    const DEFAULT_MIN_DELTA_TIME: i32 = 30;
+    let h = NumericSelectValidator {
+        min: 1,
+        max: i32::MAX,
+        allow_empty: true,
+    };
+    rl.set_helper(Some(h));
     let readline = rl.readline(
-        "Input the Minimum Time Difference (when considering records as independent) in minutes (e.g. 30): ");
-    let min_delta_time: i32 = readline?
-        .trim()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?;
-    if min_delta_time <= 0 {
-        return Err(anyhow::anyhow!(
-            "Invalid time difference: must be greater than 0"
-        ));
-    }
+        "Input the Minimum Time Difference (when considering records as independent) in minutes [default 30]: ");
+    let trimmed = readline?.trim().to_string();
+    let min_delta_time: i32 = if trimmed.is_empty() {
+        DEFAULT_MIN_DELTA_TIME
+    } else {
+        trimmed
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?
+    };
     if min_delta_time > 10080 {
         // 1 week
         println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
