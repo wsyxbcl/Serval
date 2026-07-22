@@ -553,7 +553,10 @@ pub fn init_run_log(command: &str, log_dir: Option<&Path>) {
                 env::args().collect::<Vec<_>>().join(" ")
             ));
         }
-        Err(err) => eprintln!("Warning: failed to create run log in {}: {err}", log_dir.display()),
+        Err(err) => eprintln!(
+            "Warning: failed to create run log in {}: {err}",
+            log_dir.display()
+        ),
     }
 }
 
@@ -668,7 +671,9 @@ pub fn dedup_output_path(path: PathBuf) -> PathBuf {
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let extension = path.extension().map(|ext| ext.to_string_lossy().into_owned());
+    let extension = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned());
     let mut i = 1;
     loop {
         let file_name = match &extension {
@@ -740,7 +745,7 @@ pub fn resources_flatten(
         if prefix_deploy_id_in_name {
             name_parts.push(deploy_id.to_os_string());
         }
-        name_parts.extend(relative_parts.into_iter());
+        name_parts.extend(relative_parts);
         let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
 
         let output_path = output_dir.join(resource_name);
@@ -812,9 +817,8 @@ pub fn deployments_align(
     let pb = indicatif::ProgressBar::new(num_iter as u64);
     configure_progress_bar(&pb);
     for deploy_id in deploy_iter {
-        let deploy_id = deploy_id.ok_or_else(|| {
-            anyhow::anyhow!("Empty deploymentID found in the deployments table")
-        })?;
+        let deploy_id = deploy_id
+            .ok_or_else(|| anyhow::anyhow!("Empty deploymentID found in the deployments table"))?;
         let (_, collection_name) = deploy_id.rsplit_once('_').ok_or_else(|| {
             anyhow::anyhow!(
                 "Invalid deploymentID '{deploy_id}': expected '<deployment_name>_<collection_name>'"
@@ -1136,8 +1140,8 @@ fn normalize_path_separators(path: &str) -> String {
 }
 
 // Guess which path level is the deployment, top-down: skip the levels shared by
-// all paths (the common prefix), then based on assumption that: 
-// the first diverging level is usually the collection or the deployment, 
+// all paths (the common prefix), then based on assumption that:
+// the first diverging level is usually the collection or the deployment,
 // and #deployments is usually larger than #collections.
 pub fn detect_deployment_path_index<I, S>(paths: I) -> Option<i32>
 where
@@ -1316,7 +1320,10 @@ mod tests {
         assert_eq!(strip("2023-12-08T10:47:39-08:00"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08T10:47:39Z"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08T10:47:39"), "2023-12-08T10:47:39");
-        assert_eq!(strip("2023-12-08T10:47:39.123+08:00"), "2023-12-08T10:47:39");
+        assert_eq!(
+            strip("2023-12-08T10:47:39.123+08:00"),
+            "2023-12-08T10:47:39"
+        );
         assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
     }
 

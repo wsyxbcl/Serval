@@ -5,12 +5,12 @@ use crate::schema::{
     canonicalize_observe_tags_df, infer_media_type, underlying_media_path,
 };
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
-    configure_progress_bar, csv_projection_columns, dedup_output_path, deployment_from_path,
-    deployment_from_path_expr, detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
-    WarningCollector, has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
-    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
-    sync_modified_time,
+    ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
+    absolute_path, configure_progress_bar, csv_projection_columns, dedup_output_path,
+    deployment_from_path, deployment_from_path_expr, detect_deployment_path_index,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, pb_status,
+    reject_duplicate_csv_columns, sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -226,11 +226,10 @@ fn prompt_deployment_path_index(
     };
     let readline = rl.readline(&prompt)?;
     let trimmed = readline.trim();
-    if trimmed.is_empty() {
-        if let Some(n) = default {
+    if trimmed.is_empty()
+        && let Some(n) = default {
             return Ok(n);
         }
-    }
     Ok(trimmed.parse::<i32>()?)
 }
 
@@ -439,7 +438,10 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
         }
         if xmp_path.exists() && !info {
             pb.inc(1);
-            pb_status(&pb, format!("XMP file already exists: {}", xmp_path.display()));
+            pb_status(
+                &pb,
+                format!("XMP file already exists: {}", xmp_path.display()),
+            );
             continue;
         }
         let mut media_xmp = XmpFile::new()?;
@@ -1297,12 +1299,16 @@ pub fn extract_resources(
             let xmp_name = Path::new(&input_path_xmp).file_name().unwrap();
             let media_name = Path::new(&input_path_media).file_name().unwrap();
             (
-                output_dir
-                    .join(subdir)
-                    .join(format!("{}{}", filename_prefix, xmp_name.to_string_lossy())),
-                output_dir
-                    .join(subdir)
-                    .join(format!("{}{}", filename_prefix, media_name.to_string_lossy())),
+                output_dir.join(subdir).join(format!(
+                    "{}{}",
+                    filename_prefix,
+                    xmp_name.to_string_lossy()
+                )),
+                output_dir.join(subdir).join(format!(
+                    "{}{}",
+                    filename_prefix,
+                    media_name.to_string_lossy()
+                )),
             )
         } else {
             let path_strip = Path::new(&input_path_media)
@@ -1694,9 +1700,11 @@ pub fn get_temporal_independence(
         // Get temporal independent records
         let mut capture_independent = Vec::with_capacity(df_sorted.height());
         let mut last_indep: Option<(i64, &str, &str)> = None;
-        for (time, species, deployment) in
-            izip!(time_col.physical().iter(), target_col.iter(), deploy_col.iter())
-        {
+        for (time, species, deployment) in izip!(
+            time_col.physical().iter(),
+            target_col.iter(),
+            deploy_col.iter()
+        ) {
             let (time, species, deployment) = (
                 time.ok_or_else(|| anyhow::anyhow!("Unexpected null time value"))?,
                 species.ok_or_else(|| anyhow::anyhow!("Unexpected null target tag"))?,
