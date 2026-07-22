@@ -7,7 +7,7 @@ use crate::schema::{
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path,
     configure_progress_bar, csv_projection_columns, dedup_output_path, deployment_from_path,
-    deployment_from_path_expr, filter_expr_to_polars, get_path_levels,
+    deployment_from_path_expr, detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
     WarningCollector, has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
     parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
     sync_modified_time,
@@ -68,10 +68,15 @@ impl ConditionalEventHandler for NumericFilteringHandler {
 struct NumericSelectValidator {
     min: i32,
     max: i32,
+    // When true, empty input is accepted (the caller substitutes a default value).
+    allow_empty: bool,
 }
 impl Validator for NumericSelectValidator {
     fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
         use ValidationResult::{Invalid, Valid};
+        if self.allow_empty && ctx.input().trim().is_empty() {
+            return Ok(Valid(None));
+        }
         let input: i32 = match ctx.input().trim().parse() {
             Ok(input) => input,
             Err(_) => {
@@ -188,6 +193,7 @@ fn extract_xmp_gps_coordinates(xmp: &XmpMeta) -> (Option<String>, Option<String>
 fn prompt_deployment_path_index(
     rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
     path_sample: String,
+    detected_index: Option<i32>,
 ) -> anyhow::Result<i32> {
     println!("\nHere is a sample of the file path ({path_sample})");
     let path_levels = get_path_levels(path_sample);
@@ -196,16 +202,36 @@ fn prompt_deployment_path_index(
             "Cannot infer deployment from path: expected at least one directory level before the file name."
         ));
     }
+    let max = path_levels.len().try_into()?;
+    // Auto-detected level, if the guess is within the listed range.
+    let default = detected_index.filter(|i| (1..=max).contains(i));
     for (i, entry) in path_levels.iter().enumerate() {
-        println!("{}): {}", i + 1, entry);
+        let n = i as i32 + 1;
+        if Some(n) == default {
+            println!("{n}): {entry}  <- auto-detected");
+        } else {
+            println!("{n}): {entry}");
+        }
     }
     let h = NumericSelectValidator {
         min: 1,
-        max: path_levels.len().try_into()?,
+        max,
+        allow_empty: default.is_some(),
     };
     rl.set_helper(Some(h));
-    let readline = rl.readline("Select the number corresponding to the deployment: ");
-    Ok(readline?.trim().parse::<i32>()?)
+
+    let prompt = match default {
+        Some(n) => format!("Select the number corresponding to the deployment [default {n}]: "),
+        None => "Select the number corresponding to the deployment: ".to_string(),
+    };
+    let readline = rl.readline(&prompt)?;
+    let trimmed = readline.trim();
+    if trimmed.is_empty() {
+        if let Some(n) = default {
+            return Ok(n);
+        }
+    }
+    Ok(trimmed.parse::<i32>()?)
 }
 
 pub fn write_taglist(
@@ -372,6 +398,7 @@ pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
             Some(prompt_deployment_path_index(
                 &mut rl,
                 media_paths[0].to_string_lossy().into_owned(),
+                detect_deployment_path_index(media_paths.iter().map(|p| p.to_string_lossy())),
             )?)
         } else {
             None
@@ -670,6 +697,7 @@ pub fn get_classifications(
         Some(prompt_deployment_path_index(
             &mut rl,
             file_paths[0].to_string_lossy().into_owned(),
+            detect_deployment_path_index(file_paths.iter().map(|p| p.to_string_lossy())),
         )?)
     } else {
         None
@@ -1188,6 +1216,7 @@ pub fn extract_resources(
     let h = NumericSelectValidator {
         min: 0,
         max: num_option,
+        allow_empty: false,
     };
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
@@ -1459,7 +1488,11 @@ pub fn get_temporal_independence(
         println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
     }
     // Read delta_time_compared_to
-    let h = NumericSelectValidator { min: 1, max: 2 };
+    let h = NumericSelectValidator {
+        min: 1,
+        max: 2,
+        allow_empty: false,
+    };
     rl.set_helper(Some(h));
     let readline = rl.readline(
         "\nThe Minimum Time Difference should be compared with?\n1) Last independent record 2) Last record\nEnter a selection (e.g. 1): ");
@@ -1469,7 +1502,11 @@ pub fn get_temporal_independence(
         _ => "LastIndependentRecord",
     };
     // Get target (species/individual)
-    let h = NumericSelectValidator { min: 1, max: 2 };
+    let h = NumericSelectValidator {
+        min: 1,
+        max: 2,
+        allow_empty: false,
+    };
     rl.set_helper(Some(h));
     let readline =
         rl.readline("\nPerform analysis on\n1) species 2) individual\nEnter a selection: ");
@@ -1488,7 +1525,13 @@ pub fn get_temporal_independence(
             .get(0)
             .ok_or_else(|| anyhow::anyhow!("Missing path value in the first record"))?
             .to_string();
-        Some(prompt_deployment_path_index(&mut rl, path_sample)?)
+        let detected_index =
+            detect_deployment_path_index(df.column("path")?.str()?.iter().flatten());
+        Some(prompt_deployment_path_index(
+            &mut rl,
+            path_sample,
+            detected_index,
+        )?)
     };
 
     let mut exclude_expr = lit(false);

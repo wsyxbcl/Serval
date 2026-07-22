@@ -1135,6 +1135,52 @@ fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+// Guess which path level is the deployment, top-down: skip the levels shared by
+// all paths (the common prefix), then based on assumption that: 
+// the first diverging level is usually the collection or the deployment, 
+// and #deployments is usually larger than #collections.
+pub fn detect_deployment_path_index<I, S>(paths: I) -> Option<i32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut level_names: Vec<HashSet<String>> = Vec::new();
+    let mut depth = None;
+    for path in paths {
+        let normalized = normalize_path_separators(path.as_ref());
+        let components: Vec<&str> = normalized.split('/').collect();
+        // Same exclusions as get_path_levels: root/prefix and file name.
+        if components.len() < 3 {
+            return None;
+        }
+        match depth {
+            None => {
+                depth = Some(components.len());
+                level_names = vec![HashSet::new(); components.len() - 2];
+            }
+            // Mixed depths make a single global index ill-defined; let the user decide.
+            Some(depth) if depth != components.len() => return None,
+            Some(_) => {}
+        }
+        for (level, name) in components[1..components.len() - 1].iter().enumerate() {
+            if !level_names[level].contains(*name) {
+                level_names[level].insert((*name).to_string());
+            }
+        }
+    }
+    // All levels shared by every path (e.g. a single deployment): nothing to infer.
+    let diverge_level = level_names.iter().position(|names| names.len() > 1)?;
+    let deploy_level = if diverge_level + 1 < level_names.len()
+        && level_names[diverge_level + 1].len() > level_names[diverge_level].len()
+    {
+        diverge_level + 1
+    } else {
+        diverge_level
+    };
+    // +1 converts back to the split index (level_names[0] is split component 1).
+    (deploy_level + 1).try_into().ok()
+}
+
 pub fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
     let normalized_path = normalize_path_separators(&path.to_string_lossy());
     normalized_path
@@ -1272,6 +1318,56 @@ mod tests {
         assert_eq!(strip("2023-12-08T10:47:39"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08T10:47:39.123+08:00"), "2023-12-08T10:47:39");
         assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
+    }
+
+    #[test]
+    fn detect_deployment_path_index_top_down() {
+        // collection diverges first, deployments outnumber collections
+        assert_eq!(
+            detect_deployment_path_index([
+                "project/col_a/dep1_col_a/IMG_0001.jpg",
+                "project/col_a/dep2_col_a/IMG_0001.jpg",
+                "project/col_b/dep3_col_b/IMG_0002.jpg",
+            ]),
+            Some(2)
+        );
+        // camera subfolders below the deployment share names -> not more distinct
+        assert_eq!(
+            detect_deployment_path_index([
+                "project/col_a/dep1/100MEDIA/IMG_0001.jpg",
+                "project/col_a/dep2/100MEDIA/IMG_0001.jpg",
+            ]),
+            Some(2)
+        );
+        // divergence at the last directory level
+        assert_eq!(
+            detect_deployment_path_index(["data/dep1/IMG_0001.jpg", "data/dep2/IMG_0001.jpg"]),
+            Some(1)
+        );
+        // backslash paths are normalized
+        assert_eq!(
+            detect_deployment_path_index([
+                r"project\col_a\dep1\IMG_0001.jpg",
+                r"project\col_a\dep2\IMG_0001.jpg",
+            ]),
+            Some(2)
+        );
+        // single deployment: every level is common, nothing to infer
+        assert_eq!(
+            detect_deployment_path_index(["project/col_a/dep1/a.jpg", "project/col_a/dep1/b.jpg"]),
+            None
+        );
+        // mixed depths: a single global index is ill-defined
+        assert_eq!(
+            detect_deployment_path_index([
+                "project/col_a/dep1/a.jpg",
+                "project/col_a/dep2/100MEDIA/b.jpg",
+            ]),
+            None
+        );
+        // no directory level between root and file name
+        assert_eq!(detect_deployment_path_index(["dep1/a.jpg"]), None);
+        assert_eq!(detect_deployment_path_index(Vec::<String>::new()), None);
     }
 
     #[test]
