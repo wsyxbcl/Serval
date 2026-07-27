@@ -528,6 +528,10 @@ pub fn configure_progress_bar(pb: &ProgressBar) {
     pb.enable_steady_tick(std::time::Duration::from_secs(1));
 }
 
+/// Name of serval's own output directory, created under the working directory.
+/// Directory walkers must never treat it as camera-trap data.
+pub const SERVAL_OUTPUT_DIR: &str = "serval_output";
+
 static RUN_LOG: std::sync::OnceLock<(PathBuf, std::sync::Mutex<File>)> = std::sync::OnceLock::new();
 
 /// Best-effort creation of the run log for file-operation commands. Written to
@@ -537,7 +541,7 @@ static RUN_LOG: std::sync::OnceLock<(PathBuf, std::sync::Mutex<File>)> = std::sy
 pub fn init_run_log(command: &str, log_dir: Option<&Path>) {
     let log_dir = log_dir
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("./serval_output/logs"));
+        .unwrap_or_else(|| PathBuf::from(format!("./{SERVAL_OUTPUT_DIR}/logs")));
     let init = || -> anyhow::Result<(PathBuf, std::sync::Mutex<File>)> {
         fs::create_dir_all(&log_dir)?;
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -848,6 +852,10 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            // Skip serval's own output tree.
+            if path.file_name().and_then(|name| name.to_str()) == Some(SERVAL_OUTPUT_DIR) {
+                continue;
+            }
             let mut collection_dir = path;
             let original_collection_name = collection_dir
                 .file_name()
