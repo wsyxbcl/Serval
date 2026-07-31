@@ -39,7 +39,9 @@ fn run(command: Commands) -> anyhow::Result<()> {
             move_mode,
             keep_first_subdir,
         } => {
-            init_run_log("align", Some(&output));
+            if !dryrun {
+                init_run_log("align", Some(&output));
+            }
             if let Some(deploy_table) = deploy_table {
                 println!("Aligning deployments in {}", path.display());
                 deployments_align(
@@ -97,7 +99,9 @@ fn run(command: Commands) -> anyhow::Result<()> {
             project_dir,
             dryrun,
         } => {
-            init_run_log("rename", None);
+            if !dryrun {
+                init_run_log("rename", None);
+            }
             deployments_rename(absolute_path(project_dir)?, dryrun)?;
         }
         Commands::Tags2img {
