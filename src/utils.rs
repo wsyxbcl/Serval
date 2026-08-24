@@ -509,7 +509,7 @@ fn is_ignored(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map(|s| s.starts_with('.') || s.contains("精选")) // ignore 精选 and .dtrash
+        .map(|s| s.starts_with('.') || s.contains("精选") || s.contains("digikamtempfile")) // ignore 精选, .dtrash and digiKam temp files
         .unwrap_or(false)
 }
 
