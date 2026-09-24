@@ -654,15 +654,18 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
     Ok(path_buf)
 }
 
+/// Resource paths under `root_dir`, sorted so that runs over the same input
+/// are reproducible (e.g. which of two colliding names gets the "_1" suffix).
 pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
-    WalkDir::new(root_dir)
+    let mut paths: Vec<PathBuf> = WalkDir::new(root_dir)
         .into_iter()
         .filter_entry(|e| !is_ignored(e))
-        .par_bridge()
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
         .map(|e| e.into_path())
-        .collect()
+        .collect();
+    paths.sort();
+    paths
 }
 
 /// Return a path that does not exist yet by appending "_1", "_2", ... to the
@@ -1383,6 +1386,35 @@ mod tests {
         // no directory level between root and file name
         assert_eq!(detect_deployment_path_index(["dep1/a.jpg"]), None);
         assert_eq!(detect_deployment_path_index(Vec::<String>::new()), None);
+    }
+
+    #[test]
+    fn flatten_collision_naming_is_deterministic() {
+        // a/b-c.jpg and a-b/c.jpg both flatten to a-b-c.jpg; the first path in
+        // sorted order must always keep the plain name.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("a")).unwrap();
+        fs::create_dir_all(src.join("a-b")).unwrap();
+        for i in 0..20 {
+            fs::write(src.join(format!("a/b-c{i}.jpg")), "from a").unwrap();
+            fs::write(src.join(format!("a-b/c{i}.jpg")), "from a-b").unwrap();
+        }
+        let out = dir.path().join("out");
+        resources_flatten(
+            src,
+            out.clone(),
+            ResourceType::Media,
+            false,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        for i in 0..20 {
+            let plain = fs::read_to_string(out.join(format!("src/a-b-c{i}.jpg"))).unwrap();
+            assert_eq!(plain, "from a");
+        }
     }
 
     #[test]

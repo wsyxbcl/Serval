@@ -48,3 +48,6 @@ path = "bin/serval-xmp-extract.rs"
 [[bin]]
 name = "serval-check"
 path = "bin/serval-check.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"
