@@ -24,6 +24,7 @@ use rustyline::{
 };
 use std::{
     fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -1988,18 +1989,55 @@ fn update_xmp_rating(
 fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta) -> anyhow::Result<()> {
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
-
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let temp_path = format!("{}.{}.tmp", file_path.display(), timestamp);
+    write_with_backup(file_path, &modified_xmp, &timestamp)
+}
 
+/// Replace `file_path` with `content` via a temp file and rename. An existing
+/// file is first copied to `<file>.<timestamp>.backup`; backups never replace
+/// an earlier one, so several writes within one second each keep theirs.
+fn write_with_backup(file_path: &Path, content: &str, timestamp: &str) -> anyhow::Result<()> {
     if file_path.exists() {
-        let backup_path = format!("{}.{}.backup", file_path.display(), timestamp);
-        fs::copy(file_path, &backup_path)?;
+        let (mut backup, _) = create_new_sibling(file_path, timestamp, "backup")?;
+        io::copy(&mut fs::File::open(file_path)?, &mut backup)?;
     }
-    fs::write(&temp_path, &modified_xmp)?;
-    fs::rename(&temp_path, file_path)?;
-
+    let (mut temp, temp_path) = create_new_sibling(file_path, timestamp, "tmp")?;
+    let result = temp.write_all(content.as_bytes()).and_then(|()| {
+        drop(temp);
+        fs::rename(&temp_path, file_path)
+    });
+    if let Err(err) = result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(anyhow::anyhow!(
+            "Failed to write {}: {err}",
+            file_path.display()
+        ));
+    }
     Ok(())
+}
+
+/// Create `<path>.<timestamp>.<ext>` (or `<path>.<timestamp>_1.<ext>`, ... if
+/// taken) without ever replacing an existing file.
+fn create_new_sibling(path: &Path, timestamp: &str, ext: &str) -> io::Result<(fs::File, PathBuf)> {
+    let mut i = 0;
+    loop {
+        let mut name = path.as_os_str().to_owned();
+        if i == 0 {
+            name.push(format!(".{timestamp}.{ext}"));
+        } else {
+            name.push(format!(".{timestamp}_{i}.{ext}"));
+        }
+        let candidate = PathBuf::from(name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((file, candidate)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => i += 1,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
@@ -2187,4 +2225,25 @@ fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::
     set_xmp_datetime_fields(&mut xmp, &iso8601_datetime)?;
 
     write_xmp_with_backup(&file_path, &xmp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backups_within_one_second_do_not_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.jpg.xmp");
+        fs::write(&file, "original").unwrap();
+        write_with_backup(&file, "first", "20260930_120000").unwrap();
+        write_with_backup(&file, "second", "20260930_120000").unwrap();
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "second");
+        let backup = |name: &str| fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(backup("a.jpg.xmp.20260930_120000.backup"), "original");
+        assert_eq!(backup("a.jpg.xmp.20260930_120000_1.backup"), "first");
+        // no temp files left behind
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
 }
