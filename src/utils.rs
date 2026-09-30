@@ -1056,18 +1056,23 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_filtered = df
+    let df_unique = df
         .lazy()
-        .filter(col("path").is_not_null())
-        .filter(col("path").str().ends_with(lit(".xmp")))
-        .select([col("path")])
-        .unique(
-            Some(cols(vec!["path".to_string()])),
-            UniqueKeepStrategy::First,
-        )
+        .filter(col(PATH_COLUMN).is_not_null())
+        .select([col(PATH_COLUMN)])
+        .unique_stable(None, UniqueKeepStrategy::First)
         .collect()?;
+    // Extension check in Rust so that ".XMP" counts too.
+    let xmp_paths: Vec<PathBuf> = df_unique
+        .column(PATH_COLUMN)?
+        .str()?
+        .iter()
+        .flatten()
+        .map(PathBuf::from)
+        .filter(|path| resource_extension(path).as_deref() == Some("xmp"))
+        .collect();
 
-    let num_files = df_filtered.height();
+    let num_files = xmp_paths.len();
     if num_files == 0 {
         println!("No XMP files found in CSV");
         return Ok(());
@@ -1079,13 +1084,10 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Syncing XMP files in CSV...");
 
-    let path_col = df_filtered.column("path")?.str()?;
-
-    let results: Vec<anyhow::Result<BatchOutcome>> = path_col
+    let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
         .par_iter()
-        .filter_map(|path| path.map(PathBuf::from))
         .map(|xmp_path| {
-            let result = sync_xmp_to_media(&xmp_path);
+            let result = sync_xmp_to_media(xmp_path);
             pb.inc(1);
             result
         })
