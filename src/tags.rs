@@ -7,10 +7,10 @@ use crate::schema::{
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
-    absolute_path, configure_progress_bar, csv_projection_columns, deployment_from_path,
-    deployment_from_path_expr, detect_deployment_path_index, filter_expr_to_polars,
-    get_path_levels, has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
-    log_line, parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
+    absolute_path, configure_progress_bar, csv_projection_columns, deployment_from_path_expr,
+    detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format, log_line,
+    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -268,282 +268,197 @@ pub fn write_taglist(
     Ok(())
 }
 
-#[derive(Clone, Default)]
-struct XmpInitDebugRow {
+/// One row of the `xmp init` table (input for Caracal and `xmp update --datetime`).
+#[derive(Default)]
+struct InitRow {
     path: String,
-    deployment: String,
     media_type: String,
-    embedded_datetime_original_raw: String,
-    embedded_create_date_raw: String,
-    file_modified_time: String,
     datetime: String,
     latitude: String,
     longitude: String,
-    xmp_update_datetime: String,
+    xmp_status: &'static str,
+    embedded_datetime_original_raw: String,
+    embedded_create_date_raw: String,
+    file_modified_time: String,
 }
 
-impl XmpInitDebugRow {
-    fn new(path: &Path) -> Self {
-        Self {
-            path: path.to_string_lossy().into_owned(),
-            ..Default::default()
+fn csv_datetime(value: &XmpDateTime) -> anyhow::Result<String> {
+    Ok(iso_datetime_to_csv_format(&ignore_timezone(
+        value.to_string(),
+    )?))
+}
+
+/// Create the sidecar of `media` if it has none. Existing sidecars are only
+/// read, since they may hold corrected times or tags.
+fn init_one(media: &Path) -> anyhow::Result<InitRow> {
+    let existing = ["xmp", "XMP"]
+        .into_iter()
+        .map(|ext| media.with_added_extension(ext))
+        .find(|path| path.exists());
+    let xmp_path = existing
+        .clone()
+        .unwrap_or_else(|| media.with_added_extension("xmp"));
+    let mut row = InitRow {
+        path: xmp_path.to_string_lossy().into_owned(),
+        media_type: infer_media_type(media)?.to_string(),
+        ..Default::default()
+    };
+    let media_modified_time = fs::metadata(media)
+        .and_then(|metadata| metadata.modified())
+        .map(|time| {
+            DateTime::<Local>::from(time)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        });
+    if let Ok(time) = &media_modified_time {
+        row.file_modified_time = iso_datetime_to_csv_format(time);
+    }
+
+    if existing.is_some() {
+        let xmp = read_xmp(&xmp_path)?;
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            row.datetime = csv_datetime(&value.value)?;
+        }
+        let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
+        row.latitude = latitude.unwrap_or_default();
+        row.longitude = longitude.unwrap_or_default();
+        row.xmp_status = "existing";
+        return Ok(row);
+    }
+
+    let mut media_xmp = XmpFile::new()?;
+    media_xmp
+        .open_file(media, OpenFileOptions::default())
+        .map_err(|err| anyhow::anyhow!("Failed to open file: {err}"))?;
+    let xmp_result = (|| -> anyhow::Result<XmpMeta> {
+        let mut xmp = media_xmp.xmp().unwrap_or_default();
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            row.embedded_datetime_original_raw = csv_datetime(&value.value)?;
+            row.datetime = row.embedded_datetime_original_raw.clone();
+        }
+        if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+            row.embedded_create_date_raw = csv_datetime(&value.value)?;
+        }
+        let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
+        row.latitude = latitude.unwrap_or_default();
+        row.longitude = longitude.unwrap_or_default();
+        // Workaround for Exiv2 not recognizing this EXIF field in sidecars.
+        xmp.delete_property(xmp_ns::EXIF, "DeviceSettingDescription")
+            .map_err(anyhow::Error::from)?;
+        Ok(xmp)
+    })();
+    let mut xmp = finalize_xmp_file(&mut media_xmp, xmp_result)?;
+
+    let has_datetime_original = xmp.property(xmp_ns::EXIF, "DateTimeOriginal").is_some();
+    let has_metadata_date = xmp.property(xmp_ns::XMP, "MetadataDate").is_some();
+    if !has_datetime_original && !has_metadata_date {
+        let create_date = xmp.property(xmp_ns::XMP, "CreateDate");
+        let use_create_date = create_date.as_ref().is_some_and(|value| {
+            !value.value.starts_with("1904-01-01") && !value.value.starts_with("1970-01-01")
+        });
+        if use_create_date {
+            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+            // And timezone is ignored for they write UTC-8 time but label as UTC
+            // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
+            // and skip the 0 timestamp if manufacturer write it
+            row.datetime = match create_date.as_ref() {
+                Some(value) if row.embedded_create_date_raw.is_empty() => {
+                    iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
+                }
+                _ => row.embedded_create_date_raw.clone(),
+            };
+            set_xmp_datetime_fields(&mut xmp, &row.datetime.replace(' ', "T"))?;
+            strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
+            strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
+        } else if let Ok(time) = &media_modified_time {
+            // Fall back to the modified time of the file
+            row.datetime = iso_datetime_to_csv_format(time);
+            set_xmp_datetime_fields(&mut xmp, time)?;
         }
     }
+    write_xmp_with_backup(&xmp_path, &xmp)?;
+    log_line(&format!("Created {}", xmp_path.display()));
+    row.xmp_status = "created";
+    Ok(row)
 }
 
-fn write_xmp_init_debug_csv(
-    output_dir: &Path,
-    debug_rows: Vec<XmpInitDebugRow>,
-) -> anyhow::Result<()> {
-    let timestamp = Local::now().format("%Y%m%d%H%M%S");
-    let debug_csv_path = output_dir.join(format!("xmp_init_debug_{timestamp}.csv"));
+/// Create missing sidecars for the media under `working_dir` and write a table
+/// of every media file's datetime and GPS to `output_dir` (for review in
+/// Caracal, and as input for `xmp update --datetime`).
+pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media, None);
+    let pb = ProgressBar::new(media_paths.len() as u64);
+    configure_progress_bar(&pb);
+    let warnings = WarningCollector::default();
+    // Files are independent; parallel reads pay off on NAS.
+    let rows: Vec<InitRow> = media_paths
+        .par_iter()
+        .map(|media| {
+            let row = init_one(media).unwrap_or_else(|err| {
+                warnings.warn(&pb, format!("{}: {err}", media.display()));
+                InitRow {
+                    path: media
+                        .with_added_extension("xmp")
+                        .to_string_lossy()
+                        .into_owned(),
+                    media_type: infer_media_type(media).unwrap_or_default().to_string(),
+                    xmp_status: "failed",
+                    ..Default::default()
+                }
+            });
+            pb.inc(1);
+            row
+        })
+        .collect();
+    pb.finish_and_clear();
+    warnings.summarize();
+
+    let count = |status: &str| rows.iter().filter(|row| row.xmp_status == status).count();
+    let summary = format!(
+        "{} XMP file(s) created, {} already existed, {} failed",
+        count("created"),
+        count("existing"),
+        count("failed")
+    );
+    log_line(&summary);
+    println!("{summary}");
+    write_init_table(&working_dir, &output_dir, &rows)
+}
+
+fn write_init_table(working_dir: &Path, output_dir: &Path, rows: &[InitRow]) -> anyhow::Result<()> {
+    let column = |name: &str, value: fn(&InitRow) -> &str| {
+        Column::new(name.into(), rows.iter().map(value).collect::<Vec<_>>())
+    };
     let mut df = DataFrame::new(
-        debug_rows.len(),
+        rows.len(),
         vec![
-            Column::new(
-                PATH_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.path.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                "deployment".into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.deployment.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                MEDIA_TYPE_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.media_type.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                "embedded_datetime_original_raw".into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.embedded_datetime_original_raw.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                "embedded_create_date_raw".into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.embedded_create_date_raw.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                "file_modified_time".into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.file_modified_time.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                LATITUDE_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.latitude.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                LONGITUDE_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.longitude.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                DATETIME_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.datetime.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-            Column::new(
-                XMP_UPDATE_DATETIME_COLUMN.into(),
-                debug_rows
-                    .iter()
-                    .map(|row| row.xmp_update_datetime.as_str())
-                    .collect::<Vec<_>>(),
-            ),
+            column(PATH_COLUMN, |row| &row.path),
+            column(MEDIA_TYPE_COLUMN, |row| &row.media_type),
+            column(DATETIME_COLUMN, |row| &row.datetime),
+            column(LATITUDE_COLUMN, |row| &row.latitude),
+            column(LONGITUDE_COLUMN, |row| &row.longitude),
+            column(XMP_UPDATE_DATETIME_COLUMN, |_| ""),
+            column("xmp_status", |row| row.xmp_status),
+            column("embedded_datetime_original_raw", |row| {
+                &row.embedded_datetime_original_raw
+            }),
+            column("embedded_create_date_raw", |row| {
+                &row.embedded_create_date_raw
+            }),
+            column("file_modified_time", |row| &row.file_modified_time),
         ],
     )?;
-    df = df.sort([PATH_COLUMN], SortMultipleOptions::default())?;
-    let mut file = std::fs::File::create(debug_csv_path.clone())?;
+    fs::create_dir_all(output_dir)?;
+    let dir_name = working_dir
+        .file_name()
+        .map_or("unk".into(), |name| name.to_string_lossy());
+    let timestamp = Local::now().format("%Y%m%d%H%M%S");
+    let csv_path = output_dir.join(format!("xmp_init_{dir_name}_{timestamp}.csv"));
+    let mut file = std::fs::File::create(&csv_path)?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df)?;
-    println!("Saved debug CSV to {}", debug_csv_path.to_string_lossy());
-    Ok(())
-}
-
-pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
-    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media, None);
-    let media_count = media_paths.len();
-
-    let mut debug_rows = if info {
-        Vec::with_capacity(media_count)
-    } else {
-        Vec::new()
-    };
-    let debug_row_init = if info {
-        let deploy_path_index = if media_count > 0 {
-            let mut rl = Editor::new()?;
-            rl.bind_sequence(
-                Event::Any,
-                EventHandler::Conditional(Box::new(NumericFilteringHandler)),
-            );
-            Some(prompt_deployment_path_index(
-                &mut rl,
-                media_paths[0].to_string_lossy().into_owned(),
-                detect_deployment_path_index(media_paths.iter().map(|p| p.to_string_lossy())),
-            )?)
-        } else {
-            None
-        };
-        Some(
-            media_paths
-                .iter()
-                .map(|media| {
-                    let xmp_path = working_dir.join(media.with_added_extension("xmp"));
-                    let mut row = XmpInitDebugRow::new(&xmp_path);
-                    if let Some(deploy_path_index) = deploy_path_index {
-                        row.deployment = deployment_from_path(media, deploy_path_index)?;
-                    }
-                    row.media_type = infer_media_type(media)?.to_string();
-                    Ok(row)
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-    let pb = ProgressBar::new(media_count.try_into()?);
-    configure_progress_bar(&pb);
-    let warnings = WarningCollector::default();
-
-    for (index, media) in media_paths.into_iter().enumerate() {
-        let xmp_path = working_dir.join(media.with_added_extension("xmp"));
-        let mut debug_row = debug_row_init
-            .as_ref()
-            .and_then(|rows| rows.get(index).cloned());
-        if let Some(row) = debug_row.as_mut()
-            && let Ok(metadata) = fs::metadata(&media)
-            && let Ok(modified_time) = metadata.modified()
-        {
-            let datetime: DateTime<Local> = DateTime::from(modified_time);
-            row.file_modified_time =
-                iso_datetime_to_csv_format(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
-        }
-        if xmp_path.exists() && !info {
-            pb.inc(1);
-            pb_status(
-                &pb,
-                format!("XMP file already exists: {}", xmp_path.display()),
-            );
-            continue;
-        }
-        let mut media_xmp = XmpFile::new()?;
-        if media_xmp
-            .open_file(media.clone(), OpenFileOptions::default())
-            .is_ok()
-        {
-            let xmp_result = (|| -> anyhow::Result<XmpMeta> {
-                let mut xmp = media_xmp.xmp().unwrap_or_default();
-                if let Some(row) = debug_row.as_mut() {
-                    if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-                        row.embedded_datetime_original_raw =
-                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
-                        row.datetime = row.embedded_datetime_original_raw.clone();
-                    }
-                    if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                        row.embedded_create_date_raw =
-                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?);
-                    }
-                    let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
-                    row.latitude = latitude.unwrap_or_default();
-                    row.longitude = longitude.unwrap_or_default();
-                }
-                // Workaround for Exiv2 not recognizing this EXIF field in sidecars.
-                xmp.delete_property(xmp_ns::EXIF, "DeviceSettingDescription")
-                    .map_err(anyhow::Error::from)?;
-                Ok(xmp)
-            })();
-            let mut xmp = finalize_xmp_file(&mut media_xmp, xmp_result)?;
-
-            let has_datetime_original = xmp.property(xmp_ns::EXIF, "DateTimeOriginal").is_some();
-            let has_metadata_date = xmp.property(xmp_ns::XMP, "MetadataDate").is_some();
-            if !has_datetime_original && !has_metadata_date {
-                let create_date = xmp.property(xmp_ns::XMP, "CreateDate");
-                let use_create_date = create_date.as_ref().is_some_and(|value| {
-                    !value.value.starts_with("1904-01-01") && !value.value.starts_with("1970-01-01")
-                });
-                if use_create_date {
-                    let chosen_datetime = if let Some(row) = debug_row.as_ref() {
-                        if !row.embedded_create_date_raw.is_empty() {
-                            row.embedded_create_date_raw.clone()
-                        } else if let Some(value) = create_date.as_ref() {
-                            iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
-                        } else {
-                            String::new()
-                        }
-                    } else if let Some(value) = create_date.as_ref() {
-                        iso_datetime_to_csv_format(&ignore_timezone(value.value.to_string())?)
-                    } else {
-                        String::new()
-                    };
-                    if let Some(row) = debug_row.as_mut() {
-                        row.datetime = chosen_datetime.clone();
-                    }
-                    // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-                    // And timezone is ignored for they write UTC-8 time but label as UTC
-                    // i.e. strip the timezone info in xmp:CreateDate and xmp:ModifyDate if there is
-                    // and skip the 0 timestamp if manufacturer write it
-                    set_xmp_datetime_fields(&mut xmp, &chosen_datetime.replace(' ', "T"))?;
-                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
-                    strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
-                } else {
-                    // Get the modified time of the file
-                    if let Ok(metadata) = fs::metadata(media)
-                        && let Ok(modified_time) = metadata.modified()
-                    {
-                        let datetime: DateTime<Local> = DateTime::from(modified_time);
-                        let datetime_str = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
-                        if let Some(row) = debug_row.as_mut() {
-                            row.datetime = iso_datetime_to_csv_format(&datetime_str);
-                        }
-                        set_xmp_datetime_fields(&mut xmp, &datetime_str)?;
-                    }
-                }
-            }
-            if xmp_path.exists() {
-                warnings.warn(
-                    &pb,
-                    format!(
-                        "Backing up existing XMP before regenerating: {}",
-                        xmp_path.display()
-                    ),
-                );
-            }
-            write_xmp_with_backup(&xmp_path, &xmp)?;
-            pb.inc(1);
-        } else {
-            warnings.warn(&pb, format!("Failed to open file: {}", media.display()));
-            pb.inc(1);
-        }
-        if let Some(row) = debug_row {
-            debug_rows.push(row);
-        }
-    }
-    pb.finish();
-    warnings.summarize();
-    if info {
-        write_xmp_init_debug_csv(&working_dir, debug_rows)?;
-    }
+    println!("Saved to {}", csv_path.display());
     Ok(())
 }
 

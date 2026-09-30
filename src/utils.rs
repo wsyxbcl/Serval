@@ -1196,21 +1196,6 @@ where
     (deploy_level + 1).try_into().ok()
 }
 
-pub fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
-    let normalized_path = normalize_path_separators(&path.to_string_lossy());
-    normalized_path
-        .split('/')
-        .nth(deploy_path_index.try_into()?)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Cannot extract deployment from path '{}' with index {}.",
-                path.display(),
-                deploy_path_index
-            )
-        })
-}
-
 pub fn deployment_from_path_expr(path_expr: Expr, deploy_path_index: i32) -> Expr {
     path_expr
         .str()

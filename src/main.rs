@@ -160,9 +160,16 @@ fn run(command: Commands) -> anyhow::Result<()> {
                 init_run_log("xmp_copy", Some(&output_dir));
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
-            XmpCommands::Init { source_dir, info } => {
+            XmpCommands::Init {
+                source_dir,
+                output,
+                info,
+            } => {
                 init_run_log("xmp_init", None);
-                init_xmp(absolute_path(source_dir)?, info)?;
+                if info {
+                    println!("Note: --info is no longer needed, the table is always written.");
+                }
+                init_xmp(absolute_path(source_dir)?, output)?;
             }
             XmpCommands::Update {
                 csv_path,
@@ -412,11 +419,21 @@ enum XmpCommands {
         source_dir: PathBuf,
         output_dir: PathBuf,
     },
-    /// Initialize XMP files for media files
+    /// Initialize XMP files for media files, and write a table of every media
+    /// file's datetime and GPS (for review in Caracal, and as input for
+    /// `xmp update --datetime`). Existing XMP files are not changed.
     Init {
         source_dir: PathBuf,
-        /// Enable info mode and write an XMP init datetime CSV
-        #[arg(short, long)]
+        /// Output directory for the table
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_init"
+        )]
+        output: PathBuf,
+        /// No longer needed: the table is always written
+        #[arg(short, long, hide = true)]
         info: bool,
     },
     /// Update XMP files from CSV.
