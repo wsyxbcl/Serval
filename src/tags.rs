@@ -1329,7 +1329,20 @@ pub fn get_temporal_independence(
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
 
-    let mut read_opts = CsvReadOptions::default().with_ignore_errors(false);
+    // IDs such as "001" must stay text rather than be read as numbers.
+    let id_columns = [
+        "path",
+        "species",
+        "individual",
+        DEPLOYMENT_ID_COLUMN,
+        "observationID",
+        "scientificName",
+        "individualID",
+    ]
+    .map(|name| Field::new(name.into(), DataType::String));
+    let mut read_opts = CsvReadOptions::default()
+        .with_ignore_errors(false)
+        .with_schema_overwrite(Some(Arc::new(Schema::from_iter(id_columns))));
     if camtrap_dp {
         read_opts = read_opts
             .with_columns(csv_projection_columns(&[
@@ -1344,11 +1357,11 @@ pub fn get_temporal_independence(
         read_opts =
             read_opts.with_parse_options(CsvParseOptions::default().with_try_parse_dates(true));
     }
-    let mut df = match read_opts
+    let df = match read_opts
         .try_into_reader_with_file_path(Some(csv_path))
         .and_then(|reader| reader.finish())
     {
-        Ok(df) => {
+        Ok(mut df) => {
             reject_duplicate_csv_columns(&df)?;
             if camtrap_dp {
                 let event_col = df.column("eventStart")?;
@@ -1358,6 +1371,10 @@ pub fn get_temporal_independence(
                     ));
                 }
             } else {
+                // Old tags.csv files call the column datetime_original.
+                if df.column(DATETIME_COLUMN).is_err() {
+                    let _ = df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into());
+                }
                 let datetime_col = df.column(DATETIME_COLUMN)?;
                 // Check empty/null values first
                 if datetime_col.null_count() > 0 {
@@ -1377,16 +1394,6 @@ pub fn get_temporal_independence(
         }
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to read or parse CSV file: {e}"));
-        }
-    };
-
-    // Rename datetime_original to datetime, adapts to old tags.csv
-    let df = if camtrap_dp {
-        &mut df
-    } else {
-        match df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into()) {
-            Ok(renamed_df) => renamed_df,
-            Err(_) => &mut df,
         }
     };
 
