@@ -380,7 +380,7 @@ fn write_xmp_init_debug_csv(
 }
 
 pub fn init_xmp(working_dir: PathBuf, info: bool) -> anyhow::Result<()> {
-    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media);
+    let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media, None);
     let media_count = media_paths.len();
 
     let mut debug_rows = if info {
@@ -687,7 +687,7 @@ pub fn get_classifications(
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
 
-    let file_paths = path_enumerate(file_dir.clone(), resource_type);
+    let file_paths = path_enumerate(file_dir.clone(), resource_type, None);
     fs::create_dir_all(output_dir.clone())?;
     // Debug mode doubles as the info-table workflow (cf. xmp init --info):
     // ask which path level is the deployment so raw.csv gains a deployment column.

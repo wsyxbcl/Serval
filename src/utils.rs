@@ -656,16 +656,35 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
 
 /// Resource paths under `root_dir`, sorted so that runs over the same input
 /// are reproducible (e.g. which of two colliding names gets the "_1" suffix).
-pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
+///
+/// `exclude_dir` is the command's own output directory, if it has one. When it
+/// lies inside `root_dir` its subtree is skipped, otherwise a rerun would
+/// process its previous output again. It must already exist to be recognized.
+pub fn path_enumerate(
+    root_dir: PathBuf,
+    resource_type: ResourceType,
+    exclude_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let exclude = exclude_dir.and_then(|dir| nested_dir(&root_dir, dir));
     let mut paths: Vec<PathBuf> = WalkDir::new(root_dir)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e))
+        .filter_entry(|e| !is_ignored(e) && exclude.as_deref() != Some(e.path()))
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
         .map(|e| e.into_path())
         .collect();
     paths.sort();
     paths
+}
+
+/// `dir` expressed under `root_dir` (in the form the walk produces) if it lies
+/// inside it; both are resolved first so relative paths and ".." still match.
+fn nested_dir(root_dir: &Path, dir: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(root_dir).ok()?;
+    let dir = fs::canonicalize(dir).ok()?;
+    dir.strip_prefix(&root)
+        .ok()
+        .map(|relative| root_dir.join(relative))
 }
 
 /// Return a path that does not exist yet by appending "_1", "_2", ... to the
@@ -711,7 +730,7 @@ pub fn resources_flatten(
     let base_output_dir = working_dir.join(deploy_id);
     fs::create_dir_all(base_output_dir.clone())?;
 
-    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
+    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type, Some(&base_output_dir));
     let num_resource = resource_paths.len();
     println!(
         "{} {}(s) found in {}",
@@ -932,7 +951,8 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 
 // copy xmp files to output_dir and keep the directory structure
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    fs::create_dir_all(&output_dir)?;
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, Some(&output_dir));
     let num_xmp = xmp_paths.len();
     println!("{num_xmp} xmp files found");
     let pb = indicatif::ProgressBar::new(num_xmp as u64);
@@ -1017,7 +1037,7 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<BatchOutcome> {
 }
 
 pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, None);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -1101,7 +1121,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
 
 // Remove all XMP files recursively from a directory
 pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, None);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -1415,6 +1435,35 @@ mod tests {
             let plain = fs::read_to_string(out.join(format!("src/a-b-c{i}.jpg"))).unwrap();
             assert_eq!(plain, "from a");
         }
+    }
+
+    #[test]
+    fn flatten_rerun_skips_output_inside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("d")).unwrap();
+        fs::write(src.join("d/a.jpg"), "").unwrap();
+        for _ in 0..2 {
+            resources_flatten(
+                src.clone(),
+                src.join("out"),
+                ResourceType::All,
+                false,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+        }
+        // The second run must not flatten the first run's output again
+        // (which would produce names like "out-src-d-a.jpg").
+        let reprocessed: Vec<_> = WalkDir::new(src.join("out"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("out-"))
+            .map(|e| e.into_path())
+            .collect();
+        assert!(reprocessed.is_empty(), "{reprocessed:?}");
     }
 
     #[test]
