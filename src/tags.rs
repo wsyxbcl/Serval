@@ -1322,6 +1322,7 @@ pub fn extract_resources(
             source: PathBuf::from(&input_path_media),
             sidecar,
             target: output_path_media,
+            sidecar_slot: true,
         });
     }
     warnings.summarize();

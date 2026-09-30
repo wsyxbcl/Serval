@@ -20,6 +20,11 @@ pub struct Transfer {
     pub source: PathBuf,
     pub sidecar: Option<PathBuf>,
     pub target: PathBuf,
+    /// Whether the sidecar next to `target` belongs to this transfer. Then an
+    /// existing sidecar there counts as a conflict even when `sidecar` is None,
+    /// so that an unrelated sidecar is never paired with the new media file.
+    /// Off when sidecars are handled separately (e.g. `align -t media`).
+    pub sidecar_slot: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,6 +56,7 @@ enum Check {
 }
 
 struct Planned {
+    source: PathBuf,
     target: PathBuf,
     check: Check,
 }
@@ -104,8 +110,15 @@ pub fn run_transfers(
             "DRYRUN: {to_write} to write, {done} already in place, {} conflicting",
             planned.len() - to_write - done
         );
-        for p in planned.iter().take(5) {
-            println!("DRYRUN sample: -> {}", p.target.display());
+        let mut sampled = HashSet::new();
+        for p in &planned {
+            if sampled.insert(p.source.parent()) {
+                println!(
+                    "DRYRUN sample: From {} to {}",
+                    p.source.display(),
+                    p.target.display()
+                );
+            }
         }
         return Ok(());
     }
@@ -174,20 +187,28 @@ fn plan(transfers: &[Transfer], avoid_conflicts: bool) -> anyhow::Result<Vec<Pla
                 continue;
             }
             claimed.extend(slots.into_iter().map(|(_, dst)| dst));
-            planned.push(Planned { target, check });
+            planned.push(Planned {
+                source: transfer.source.clone(),
+                target,
+                check,
+            });
             break;
         }
     }
     Ok(planned)
 }
 
-/// (source, destination) pairs a transfer occupies, sidecar first. A media
-/// file always occupies its sidecar slot, even without a sidecar, so that an
-/// unrelated sidecar is never paired with it.
+/// (source, destination) pairs a transfer occupies, sidecar first. The
+/// sidecar keeps the extension case of its source.
 fn slots(transfer: &Transfer, target: &Path) -> Vec<(Option<PathBuf>, PathBuf)> {
     let mut slots = Vec::new();
-    if !is_xmp(&transfer.source) {
-        slots.push((transfer.sidecar.clone(), target.with_added_extension("xmp")));
+    if transfer.sidecar_slot && !is_xmp(&transfer.source) {
+        let ext = transfer
+            .sidecar
+            .as_deref()
+            .and_then(Path::extension)
+            .unwrap_or("xmp".as_ref());
+        slots.push((transfer.sidecar.clone(), target.with_added_extension(ext)));
     }
     slots.push((Some(transfer.source.clone()), target.to_path_buf()));
     slots
@@ -427,6 +448,7 @@ mod tests {
                     source: src.join(cam).join("a.jpg"),
                     sidecar: Some(src.join(cam).join("a.jpg.xmp")),
                     target: out.join("a.jpg"),
+                    sidecar_slot: true,
                 })
                 .into()
         };

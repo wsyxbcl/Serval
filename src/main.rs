@@ -62,7 +62,6 @@ fn run(command: Commands) -> anyhow::Result<()> {
                     type_resource,
                     dryrun,
                     move_mode,
-                    false,
                     keep_first_subdir,
                 )?;
             }

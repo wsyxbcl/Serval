@@ -3,12 +3,13 @@ use crate::schema::{
     IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
     resource_extension, underlying_media_path,
 };
+use crate::transfer::{Mode, Transfer, run_transfers};
 use core::fmt;
 use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
@@ -687,70 +688,59 @@ fn nested_dir(root_dir: &Path, dir: &Path) -> Option<PathBuf> {
         .map(|relative| root_dir.join(relative))
 }
 
-/// Return a path that does not exist yet by appending "_1", "_2", ... to the
-/// file stem when the given path is already taken.
-pub fn dedup_output_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
-        return path;
-    }
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = path
-        .extension()
-        .map(|ext| ext.to_string_lossy().into_owned());
-    let mut i = 1;
-    loop {
-        let file_name = match &extension {
-            Some(ext) => format!("{stem}_{i}.{ext}"),
-            None => format!("{stem}_{i}"),
-        };
-        let candidate = path.with_file_name(file_name);
-        if !candidate.exists() {
-            return candidate;
-        }
-        i += 1;
-    }
-}
-
+/// Flatten `deploy_dir` into `working_dir/<dir name>/` (see `flatten_transfers`).
 pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
-    prefix_deploy_id_in_name: bool,
     keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
+    let transfers = flatten_transfers(
+        &deploy_dir,
+        &working_dir,
+        resource_type,
+        false,
+        keep_first_subdir,
+    )?;
+    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
+}
+
+fn transfer_mode(move_mode: bool) -> Mode {
+    if move_mode { Mode::Move } else { Mode::Copy }
+}
+
+/// Transfers that flatten `deploy_dir` into `working_dir/<dir name>/`: each file
+/// is named after its path below `deploy_dir`, parts joined by "-" (prefixed by
+/// the deployment ID in align mode). With `ResourceType::All`, sidecars travel
+/// with their media file.
+fn flatten_transfers(
+    deploy_dir: &Path,
+    working_dir: &Path,
+    resource_type: ResourceType,
+    prefix_deploy_id_in_name: bool,
+    keep_first_subdir: bool,
+) -> anyhow::Result<Vec<Transfer>> {
     let deploy_id = deploy_dir
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
-
     let base_output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(base_output_dir.clone())?;
 
-    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type, Some(&base_output_dir));
-    let num_resource = resource_paths.len();
+    let resource_paths = path_enumerate(
+        deploy_dir.to_path_buf(),
+        resource_type,
+        Some(&base_output_dir),
+    );
     println!(
         "{} {}(s) found in {}",
-        num_resource,
+        resource_paths.len(),
         resource_type,
         deploy_dir.to_string_lossy()
     );
 
-    let mut visited_path: HashSet<String> = HashSet::new();
-    let pb = if !dry_run {
-        Some(indicatif::ProgressBar::new(num_resource as u64))
-    } else {
-        None
-    };
-    if let Some(pb_ref) = &pb {
-        configure_progress_bar(pb_ref);
-    }
-    for resource in resource_paths {
-        let resource_parent = resource.parent().unwrap();
-        let relative_path = resource.strip_prefix(&deploy_dir).unwrap_or(&resource);
+    let flat_target = |resource: &Path| {
+        let relative_path = resource.strip_prefix(deploy_dir).unwrap_or(resource);
         let mut relative_parts: Vec<OsString> = relative_path
             .iter()
             .map(|part| part.to_os_string())
@@ -758,64 +748,55 @@ pub fn resources_flatten(
         if relative_parts.is_empty() {
             relative_parts.push("unnamed_file".into());
         }
-
         let mut output_dir = base_output_dir.clone();
         if keep_first_subdir && relative_parts.len() > 1 {
             output_dir = output_dir.join(&relative_parts[0]);
-            if !dry_run {
-                fs::create_dir_all(output_dir.clone())?;
-            }
         }
-
         let mut name_parts: Vec<OsString> = Vec::new();
         if prefix_deploy_id_in_name {
             name_parts.push(deploy_id.to_os_string());
         }
         name_parts.extend(relative_parts);
-        let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
+        output_dir.join(name_parts.join(std::ffi::OsStr::new("-")))
+    };
 
-        let output_path = output_dir.join(resource_name);
-
-        if !dry_run {
-            // Different sources can flatten to the same name; never overwrite.
-            let final_output_path = dedup_output_path(output_path.clone());
-            if final_output_path != output_path {
-                let message = format!(
-                    "Renamed to {} to avoid overwriting",
-                    final_output_path.display()
-                );
-                log_line(&message);
-                if let Some(pb_ref) = &pb {
-                    pb_ref.println(message);
-                }
+    let pair = matches!(resource_type, ResourceType::All);
+    let is_xmp = |path: &Path| resource_extension(path).as_deref() == Some("xmp");
+    let mut sidecars: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut transfers = Vec::new();
+    let mut media = Vec::new();
+    for path in resource_paths {
+        if pair && is_xmp(&path) {
+            if let Some(other) = sidecars.insert(underlying_media_path(&path), path) {
+                media.push(other); // a second sidecar for the same file travels alone
             }
-            log_line(&format!(
-                "{} {} -> {}",
-                if move_mode { "Moving" } else { "Copying" },
-                resource.display(),
-                final_output_path.display()
-            ));
-            if move_mode {
-                fs::rename(resource, final_output_path)?;
-            } else {
-                fs::copy(resource, final_output_path)?;
-            }
-            if let Some(pb_ref) = &pb {
-                pb_ref.inc(1);
-            }
-        } else if !visited_path.contains(resource_parent.to_string_lossy().as_ref()) {
-            visited_path.insert(resource_parent.to_string_lossy().to_string());
-            println!(
-                "DRYRUN sample: From {} to {}",
-                resource.display(),
-                output_path.display()
-            );
+        } else {
+            media.push(path);
         }
     }
-    if let Some(pb_ref) = pb {
-        pb_ref.finish();
+    for source in media {
+        let sidecar = if is_xmp(&source) {
+            None
+        } else {
+            sidecars.remove(&source)
+        };
+        transfers.push(Transfer {
+            target: flat_target(&source),
+            sidecar,
+            sidecar_slot: pair && !is_xmp(&source),
+            source,
+        });
     }
-    Ok(())
+    // Sidecars without their media file travel alone.
+    for (_, source) in sidecars {
+        transfers.push(Transfer {
+            target: flat_target(&source),
+            sidecar: None,
+            sidecar_slot: false,
+            source,
+        });
+    }
+    Ok(transfers)
 }
 
 pub fn deployments_align(
@@ -838,11 +819,9 @@ pub fn deployments_align(
         .collect()?;
     let deploy_array = deploy_df[DEPLOYMENT_ID_COLUMN].str()?;
 
-    let deploy_iter = deploy_array.iter();
-    let num_iter = deploy_iter.len();
-    let pb = indicatif::ProgressBar::new(num_iter as u64);
-    configure_progress_bar(&pb);
-    for deploy_id in deploy_iter {
+    // Plan all deployments first, so existing targets are asked about once.
+    let mut transfers = Vec::new();
+    for deploy_id in deploy_array.iter() {
         let deploy_id = deploy_id
             .ok_or_else(|| anyhow::anyhow!("Empty deploymentID found in the deployments table"))?;
         let (_, collection_name) = deploy_id.rsplit_once('_').ok_or_else(|| {
@@ -852,19 +831,15 @@ pub fn deployments_align(
         })?;
         let deploy_dir = project_dir.join(collection_name).join(deploy_id);
         let collection_output_dir = output_dir.join(collection_name);
-        resources_flatten(
-            deploy_dir,
-            collection_output_dir.clone(),
+        transfers.extend(flatten_transfers(
+            &deploy_dir,
+            &collection_output_dir,
             resource_type,
-            dry_run,
-            move_mode,
             true,
             keep_first_subdir,
-        )?;
-        pb.inc(1);
+        )?);
     }
-    pb.finish();
-    Ok(())
+    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
 }
 
 pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
@@ -1411,16 +1386,7 @@ mod tests {
             fs::write(src.join(format!("a-b/c{i}.jpg")), "from a-b").unwrap();
         }
         let out = dir.path().join("out");
-        resources_flatten(
-            src,
-            out.clone(),
-            ResourceType::Media,
-            false,
-            false,
-            false,
-            false,
-        )
-        .unwrap();
+        resources_flatten(src, out.clone(), ResourceType::Media, false, false, false).unwrap();
         for i in 0..20 {
             let plain = fs::read_to_string(out.join(format!("src/a-b-c{i}.jpg"))).unwrap();
             assert_eq!(plain, "from a");
@@ -1438,7 +1404,6 @@ mod tests {
                 src.clone(),
                 src.join("out"),
                 ResourceType::All,
-                false,
                 false,
                 false,
                 false,
