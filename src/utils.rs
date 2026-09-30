@@ -895,21 +895,22 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     .file_name()
                     .and_then(|name| name.to_str())
                     .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory name"))?;
-                if !deploy_name.contains(collection_name) {
+                // The deployment ID is "<deployment>_<collection>" in lower case. A name
+                // that already ends with "_<collection>" only needs lowercasing (a mere
+                // substring match would treat "cam1" in collection "a" as renamed).
+                let deploy_lower = deploy_name.to_lowercase();
+                let suffix = format!("_{}", collection_name.to_lowercase());
+                let deploy_id = if deploy_lower.ends_with(&suffix) {
+                    deploy_lower
+                } else {
+                    format!("{deploy_lower}{suffix}")
+                };
+                if deploy_id != deploy_name {
                     if dry_run {
-                        println!(
-                            "Will rename {} to {}_{}",
-                            deploy_name,
-                            deploy_name.to_lowercase(),
-                            collection_name.to_lowercase()
-                        );
+                        println!("Will rename {deploy_name} to {deploy_id}");
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(format!(
-                            "{}_{}",
-                            deploy_name.to_lowercase(),
-                            collection_name.to_lowercase()
-                        ));
+                        deploy_id_dir.set_file_name(&deploy_id);
                         let message = format!(
                             "Renaming {} to {}",
                             deploy_dir.display(),
