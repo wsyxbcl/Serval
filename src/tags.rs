@@ -1863,21 +1863,12 @@ fn apply_update_ops(
 }
 
 fn apply_rating_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool> {
-    let new_value = &ops[0].new;
-    if let Some(op) = ops.iter().find(|op| &op.new != new_value) {
-        return Err(anyhow::anyhow!(
-            "conflicting Rating updates: row {} sets '{}', row {} sets '{}'",
-            ops[0].row,
-            new_value,
-            op.row,
-            op.new
-        ));
-    }
+    let new_value = single_target(ops, "Rating")?;
     let current = xmp
         .property(xmp_ns::XMP, "Rating")
         .map(|value| value.value)
         .unwrap_or_default();
-    if &current == new_value {
+    if current == new_value {
         return Ok(false);
     }
     if let Some(op) = ops
@@ -1891,7 +1882,7 @@ fn apply_rating_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool>
             current
         ));
     }
-    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.clone()))?;
+    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.to_string()))?;
     Ok(true)
 }
 
@@ -2060,7 +2051,6 @@ fn write_with_backup(file_path: &Path, content: &str, timestamp: &str) -> anyhow
 /// nothing. Files that already show the result are skipped, so rerunning the
 /// same CSV after an interruption finishes the job.
 pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
-    const ROW_COLUMN: &str = "csv_row";
     let tag_column_name = update_type.col_name();
     let df = CsvReadOptions::default()
         .with_infer_schema_length(Some(0))
@@ -2074,7 +2064,6 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    // Line numbers for messages: the header is line 1.
     let df_filtered = df
         .with_row_index(ROW_COLUMN.into(), Some(2))?
         .lazy()
@@ -2088,15 +2077,43 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
         .collect()?;
 
     let warnings = WarningCollector::default();
+    let groups = group_update_rows(
+        izip!(
+            df_filtered.column(ROW_COLUMN)?.idx()?.iter(),
+            df_filtered.column(PATH_COLUMN)?.str()?.iter(),
+            df_filtered.column(tag_column_name)?.str()?.iter(),
+            df_filtered.column(XMP_UPDATE_COLUMN)?.str()?.iter(),
+        ),
+        &warnings,
+    );
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+    apply_xmp_updates(&groups, &warnings, |xmp, ops| {
+        apply_update_ops(xmp, update_type, ops)
+    })
+}
+
+/// CSV line number column; the header is line 1, so data starts at 2.
+const ROW_COLUMN: &str = "csv_row";
+
+/// Group update rows (line, path, old value, new value) by XMP file. Rows
+/// without a new value are ignored; rows not pointing at an XMP file are
+/// skipped with a warning.
+fn group_update_rows<'a>(
+    rows: impl Iterator<
+        Item = (
+            Option<IdxSize>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+        ),
+    >,
+    warnings: &WarningCollector,
+) -> Vec<(PathBuf, Vec<UpdateOp>)> {
     let mut groups: std::collections::BTreeMap<PathBuf, Vec<UpdateOp>> = Default::default();
-    for (row, path, xmp_update, tag_original) in izip!(
-        df_filtered.column(ROW_COLUMN)?.idx()?.iter(),
-        df_filtered.column(PATH_COLUMN)?.str()?.iter(),
-        df_filtered.column(XMP_UPDATE_COLUMN)?.str()?.iter(),
-        df_filtered.column(tag_column_name)?.str()?.iter(),
-    ) {
+    for (row, path, old, new) in rows {
         let row = row.unwrap_or_default() as usize;
-        let new = xmp_update.unwrap_or("");
+        let new = new.unwrap_or("");
         if new.is_empty() {
             continue;
         }
@@ -2111,20 +2128,28 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
         }
         groups.entry(path).or_default().push(UpdateOp {
             row,
-            old: tag_original.unwrap_or("").to_string(),
+            old: old.unwrap_or("").to_string(),
             new: new.to_string(),
         });
     }
-    let groups: Vec<(PathBuf, Vec<UpdateOp>)> = groups.into_iter().collect();
+    let groups: Vec<_> = groups.into_iter().collect();
     let num_rows: usize = groups.iter().map(|(_, ops)| ops.len()).sum();
     println!(
         "Found {num_rows} rows with updates in {} files",
         groups.len()
     );
+    groups
+}
 
-    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
-    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
-
+/// Apply grouped updates with `apply` (which returns whether the file changes).
+/// Every file is checked before any is written, so a bad CSV changes nothing;
+/// files that already show the result are skipped, so rerunning the same CSV
+/// after an interruption finishes the job.
+fn apply_xmp_updates(
+    groups: &[(PathBuf, Vec<UpdateOp>)],
+    warnings: &WarningCollector,
+    apply: impl Fn(&mut XmpMeta, &[UpdateOp]) -> anyhow::Result<bool> + Sync,
+) -> anyhow::Result<()> {
     // Pass 1: check every file in memory, write nothing.
     let pb = ProgressBar::new(groups.len() as u64);
     configure_progress_bar(&pb);
@@ -2132,8 +2157,7 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     let checks: Vec<anyhow::Result<bool>> = groups
         .par_iter()
         .map(|(path, ops)| {
-            let result =
-                read_xmp(path).and_then(|mut xmp| apply_update_ops(&mut xmp, update_type, ops));
+            let result = read_xmp(path).and_then(|mut xmp| apply(&mut xmp, ops));
             pb.inc(1);
             result
         })
@@ -2170,7 +2194,7 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     for (done, (path, ops)) in to_write.iter().enumerate() {
         pb_status(&pb, format!("Updating {}", path.display()));
         let result = read_xmp(path).and_then(|mut xmp| {
-            apply_update_ops(&mut xmp, update_type, ops)?;
+            apply(&mut xmp, ops)?;
             write_xmp_with_backup(path, &xmp)
         });
         if let Err(err) = result {
@@ -2195,6 +2219,8 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     Ok(())
 }
 
+/// Set the datetime of the listed XMP files from `xmp_update_datetime`, with the
+/// same check-first and rerun behavior as `update_tags`.
 pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
         .with_columns(csv_projection_columns(&[
@@ -2207,9 +2233,11 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     reject_duplicate_csv_columns(&df)?;
 
     let df_filtered = df
+        .with_row_index(ROW_COLUMN.into(), Some(2))?
         .lazy()
         .filter(col(XMP_UPDATE_DATETIME_COLUMN).is_not_null())
         .select([
+            col(ROW_COLUMN),
             col(PATH_COLUMN),
             col(XMP_UPDATE_DATETIME_COLUMN)
                 .str()
@@ -2231,64 +2259,47 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
             Hint: Ensure the datetime format in your file matches the pattern 'yyyy-MM-dd HH:mm:ss'."
         ));
     }
+    let datetime_strings = datetime_col.datetime()?.to_string("%Y-%m-%dT%H:%M:%S")?;
 
-    let num_updates = df_filtered.height();
-    println!("Found {num_updates} rows with valid datetime updates");
-
-    let pb = ProgressBar::new(num_updates as u64);
-    configure_progress_bar(&pb);
-    pb.set_message("Processing XMP datetime updates...");
     let warnings = WarningCollector::default();
-
-    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
-    let datetime_col = df_filtered.column(XMP_UPDATE_DATETIME_COLUMN)?.datetime()?;
-    let datetime_strings = datetime_col.to_string("%Y-%m-%dT%H:%M:%S")?;
-
-    let iter = path_col.iter().zip(datetime_strings.iter());
-
-    for (path, datetime) in iter {
-        if let Some(path_str) = path {
-            let current_path = PathBuf::from(path_str);
-
-            if let Some(datetime_str) = datetime {
-                // Check if the file has .xmp extension
-                if let Some(ext) = current_path.extension() {
-                    if ext != "xmp" {
-                        warnings.warn(&pb, format!("Skipping non-XMP file: {path_str}"));
-                        pb.inc(1);
-                        continue;
-                    }
-                } else {
-                    warnings.warn(&pb, format!("Skipping file without extension: {path_str}"));
-                    pb.inc(1);
-                    continue;
-                }
-
-                pb_status(
-                    &pb,
-                    format!("Processing datetime update: {path_str} -> {datetime_str}"),
-                );
-                update_xmp_datetime(current_path.clone(), datetime_str.to_string())?;
-            }
-        } else {
-            warnings.warn(&pb, "Missing xmp path, skipping.");
-        }
-        pb.inc(1);
-    }
-
-    pb.finish_with_message("Finished processing all XMP datetime updates");
-    warnings.summarize();
-    Ok(())
+    let groups = group_update_rows(
+        izip!(
+            df_filtered.column(ROW_COLUMN)?.idx()?.iter(),
+            df_filtered.column(PATH_COLUMN)?.str()?.iter(),
+            std::iter::repeat(None),
+            datetime_strings.iter(),
+        ),
+        &warnings,
+    );
+    apply_xmp_updates(&groups, &warnings, apply_datetime_ops)
 }
 
-fn update_xmp_datetime(file_path: PathBuf, iso8601_datetime: String) -> anyhow::Result<()> {
-    let xmp_content = fs::read_to_string(&file_path)?;
-    let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
+fn apply_datetime_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool> {
+    let new_value = single_target(ops, "datetime")?;
+    let target = naive_datetime_to_xmp(new_value)?.to_string();
+    let current = |ns: &str, name: &str| xmp.property_date(ns, name).map(|v| v.value.to_string());
+    if current(xmp_ns::EXIF, "DateTimeOriginal").as_ref() == Some(&target)
+        && current(xmp_ns::PHOTOSHOP, "DateCreated").as_ref() == Some(&target)
+    {
+        return Ok(false);
+    }
+    set_xmp_datetime_fields(xmp, new_value)?;
+    Ok(true)
+}
 
-    set_xmp_datetime_fields(&mut xmp, &iso8601_datetime)?;
-
-    write_xmp_with_backup(&file_path, &xmp)
+/// The one new value all rows of a file agree on, or an error naming the rows.
+fn single_target<'a>(ops: &'a [UpdateOp], what: &str) -> anyhow::Result<&'a str> {
+    let new_value = &ops[0].new;
+    match ops.iter().find(|op| &op.new != new_value) {
+        Some(op) => Err(anyhow::anyhow!(
+            "conflicting {what} updates: row {} sets '{}', row {} sets '{}'",
+            ops[0].row,
+            new_value,
+            op.row,
+            op.new
+        )),
+        None => Ok(new_value),
+    }
 }
 
 #[cfg(test)]
