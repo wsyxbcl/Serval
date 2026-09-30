@@ -669,7 +669,11 @@ pub fn path_enumerate(
     let exclude = exclude_dir.and_then(|dir| nested_dir(&root_dir, dir));
     let mut paths: Vec<PathBuf> = WalkDir::new(root_dir)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e) && exclude.as_deref() != Some(e.path()))
+        // Ignore rules apply below the root: a root the user passes explicitly
+        // (e.g. ".backup") is walked even if its name would be ignored.
+        .filter_entry(|e| {
+            (e.depth() == 0 || !is_ignored(e)) && exclude.as_deref() != Some(e.path())
+        })
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
         .map(|e| e.into_path())
