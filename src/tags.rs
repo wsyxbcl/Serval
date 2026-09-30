@@ -4,13 +4,13 @@ use crate::schema::{
     SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
     canonicalize_observe_tags_df, infer_media_type, resource_extension, underlying_media_path,
 };
+use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
-    absolute_path, configure_progress_bar, csv_projection_columns, dedup_output_path,
-    deployment_from_path, deployment_from_path_expr, detect_deployment_path_index,
-    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
-    reject_duplicate_csv_columns, sync_modified_time,
+    absolute_path, configure_progress_bar, csv_projection_columns, deployment_from_path,
+    deployment_from_path_expr, detect_deployment_path_index, filter_expr_to_polars,
+    get_path_levels, has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format,
+    log_line, parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -1225,9 +1225,8 @@ pub fn extract_resources(
     rl.set_helper(Some(h));
     let readline = rl.readline("Select the top level directory to keep: ");
     let deploy_path_index = readline?.trim().parse::<usize>()?;
-    let pb = ProgressBar::new(df_filtered["path"].len().try_into()?);
-    configure_progress_bar(&pb);
     let warnings = WarningCollector::default();
+    let mut transfers = Vec::new();
 
     let paths = df_filtered.column("path")?.str()?;
     // Remove dot from tags, as it causes issues when cross-platform
@@ -1266,8 +1265,7 @@ pub fn extract_resources(
             ""
         };
         let Some(path_str) = path else {
-            warnings.warn(&pb, "Missing path value in tags CSV, skipping.");
-            pb.inc(1);
+            warnings.warn_plain("Missing path value in tags CSV, skipping.");
             continue;
         };
         let media_path = underlying_media_path(Path::new(path_str));
@@ -1280,11 +1278,9 @@ pub fn extract_resources(
             )
         };
         if !Path::new(&input_path_media).exists() {
-            warnings.warn(
-                &pb,
-                format!("Skipping {path_str}: media file {input_path_media} does not exist"),
-            );
-            pb.inc(1);
+            warnings.warn_plain(format!(
+                "Skipping {path_str}: media file {input_path_media} does not exist"
+            ));
             continue;
         }
 
@@ -1297,23 +1293,13 @@ pub fn extract_resources(
         } else {
             String::new()
         };
-        let (mut output_path_xmp, mut output_path_media) = if deploy_path_index == 0 {
-            let xmp_name = Path::new(&input_path_xmp).file_name().unwrap();
-            let media_name = Path::new(&input_path_media).file_name().unwrap();
-            (
-                output_dir.join(subdir).join(format!(
-                    "{}{}",
-                    filename_prefix,
-                    xmp_name.to_string_lossy()
-                )),
-                output_dir.join(subdir).join(format!(
-                    "{}{}",
-                    filename_prefix,
-                    media_name.to_string_lossy()
-                )),
-            )
+        // Target folder: the output root, plus the kept part of the source
+        // folders, plus the subdirectory. The sidecar follows the media file.
+        let input_media = Path::new(&input_path_media);
+        let kept_dirs = if deploy_path_index == 0 {
+            Path::new("")
         } else {
-            let path_strip = Path::new(&input_path_media)
+            let path_strip = input_media
                 .ancestors()
                 .nth(deploy_path_index + 1)
                 .ok_or_else(|| {
@@ -1322,85 +1308,33 @@ pub fn extract_resources(
                         input_path_media
                     )
                 })?;
-            let relative_path_output_xmp = Path::new(&input_path_xmp).strip_prefix(path_strip)?;
-            let relative_path_output_media =
-                Path::new(&input_path_media).strip_prefix(path_strip)?;
-            (
-                output_dir
-                    .join(relative_path_output_xmp.parent().unwrap())
-                    .join(subdir)
-                    .join(format!(
-                        "{}{}",
-                        filename_prefix,
-                        relative_path_output_xmp
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                    )),
-                output_dir
-                    .join(relative_path_output_media.parent().unwrap())
-                    .join(subdir)
-                    .join(format!(
-                        "{}{}",
-                        filename_prefix,
-                        relative_path_output_media
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                    )),
-            )
+            input_media.strip_prefix(path_strip)?.parent().unwrap()
         };
+        let media_name = input_media.file_name().unwrap().to_string_lossy();
+        let output_path_media = output_dir
+            .join(kept_dirs)
+            .join(subdir)
+            .join(format!("{filename_prefix}{media_name}"));
 
-        pb_status(
-            &pb,
-            format!("Copying to {}", output_path_media.to_string_lossy()),
-        );
-        fs::create_dir_all(output_path_media.parent().unwrap())?;
-        if skip_existing && output_path_media.exists() {
-            pb_status(
-                &pb,
-                format!("Skipping existing {}", output_path_media.to_string_lossy()),
-            );
-            pb.inc(1);
-            continue;
-        }
-        // check if the file exists, if so, rename it
-        if output_path_media.exists() {
-            let output_path_media_renamed = dedup_output_path(output_path_media);
-            warnings.warn(
-                &pb,
-                format!(
-                    "Renamed to {} (destination already exists)",
-                    output_path_media_renamed.to_string_lossy()
-                ),
-            );
-            output_path_xmp = PathBuf::from(format!(
-                "{}.xmp",
-                output_path_media_renamed.to_string_lossy()
+        let sidecar = Path::new(&input_path_xmp);
+        let sidecar = if sidecar.exists() {
+            Some(sidecar.to_path_buf())
+        } else {
+            warnings.warn_plain(format!(
+                "Missing XMP file for {input_path_media}, tag info for certain video files may be lost."
             ));
-            output_path_media = output_path_media_renamed;
-        }
-
-        fs::copy(input_path_media.clone(), output_path_media.clone())?;
-        if let Err(err) = fs::copy(&input_path_xmp, &output_path_xmp) {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                warnings.warn(
-                    &pb,
-                    format!(
-                        "Missing XMP file for {input_path_media}, tag info for certain video files may be lost."
-                    ),
-                );
-            } else {
-                return Err(anyhow::anyhow!("Failed to copy XMP file: {err}"));
-            }
-        }
-        sync_modified_time(input_path_media.into(), output_path_media)?;
-
-        pb.inc(1);
+            None
+        };
+        transfers.push(Transfer {
+            source: PathBuf::from(&input_path_media),
+            sidecar,
+            target: output_path_media,
+        });
     }
-    pb.finish_with_message("done");
     warnings.summarize();
-    Ok(())
+    // --skip-existing predates the check below; it now just answers its question.
+    let preset = skip_existing.then_some(OnConflict::Skip);
+    run_transfers(transfers, Mode::Copy, preset, false)
 }
 
 pub fn get_temporal_independence(
@@ -2051,30 +1985,6 @@ fn write_with_backup(file_path: &Path, content: &str, timestamp: &str) -> anyhow
         ));
     }
     Ok(())
-}
-
-/// Create `<path>.<timestamp>.<ext>` (or `<path>.<timestamp>_1.<ext>`, ... if
-/// taken) without ever replacing an existing file.
-fn create_new_sibling(path: &Path, timestamp: &str, ext: &str) -> io::Result<(fs::File, PathBuf)> {
-    let mut i = 0;
-    loop {
-        let mut name = path.as_os_str().to_owned();
-        if i == 0 {
-            name.push(format!(".{timestamp}.{ext}"));
-        } else {
-            name.push(format!(".{timestamp}_{i}.{ext}"));
-        }
-        let candidate = PathBuf::from(name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => return Ok((file, candidate)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => i += 1,
-            Err(err) => return Err(err),
-        }
-    }
 }
 
 /// Apply the `xmp_update` column to the listed XMP files. Rows are grouped per

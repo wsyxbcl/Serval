@@ -1,5 +1,6 @@
 mod schema;
 mod tags;
+mod transfer;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -356,8 +357,10 @@ enum Commands {
         /// Enable rename rename mode (including tags in filenames)
         #[arg(long)]
         rename: bool,
-        /// Skip the copy when the destination file already exists (no auto-renaming)
-        #[arg(long, default_value_t = false)]
+        /// Skip targets that already hold a different file, without asking.
+        /// Kept for old commands: finished copies are now recognized and skipped
+        /// anyway, so an interrupted extract can simply be rerun.
+        #[arg(long, default_value_t = false, hide = true)]
         skip_existing: bool,
         /// Use subdirectories to organize resources
         #[arg(long, default_value_t = false)]

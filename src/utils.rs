@@ -10,7 +10,7 @@ use polars::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs::{File, FileTimes};
+use std::fs::File;
 use std::io;
 use std::str::FromStr;
 use std::{
@@ -1254,16 +1254,6 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
 
 pub fn iso_datetime_to_csv_format(time: &str) -> String {
     time.replace('T', " ")
-}
-
-pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
-    let src = fs::metadata(source)?;
-    let dest = File::options().write(true).open(target)?;
-    let times = FileTimes::new()
-        .set_accessed(src.accessed()?)
-        .set_modified(src.modified()?);
-    dest.set_times(times)?;
-    Ok(())
 }
 
 pub fn tags_csv_translate(
