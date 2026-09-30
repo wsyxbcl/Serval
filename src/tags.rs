@@ -2,14 +2,14 @@ use crate::schema::{
     DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
     SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
-    canonicalize_observe_tags_df, infer_media_type, underlying_media_path,
+    canonicalize_observe_tags_df, infer_media_type, resource_extension, underlying_media_path,
 };
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
     absolute_path, configure_progress_bar, csv_projection_columns, dedup_output_path,
     deployment_from_path, deployment_from_path_expr, detect_deployment_path_index,
     filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    iso_datetime_to_csv_format, parse_advanced_filter, path_enumerate, pb_status,
+    iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
     reject_duplicate_csv_columns, sync_modified_time,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
@@ -1832,156 +1832,193 @@ pub fn get_temporal_independence(
     Ok(())
 }
 
-fn update_xmp(
-    file_path: PathBuf,
-    old_value: String,
-    new_value: String,
-    update_type: XmpUpdateType,
-    pb: &ProgressBar,
-) -> anyhow::Result<()> {
-    let xmp_content = fs::read_to_string(&file_path)?;
-    let mut xmp = XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))?;
-
-    if update_type == XmpUpdateType::Rating {
-        update_xmp_rating(&file_path, &mut xmp, &old_value, &new_value, pb)?;
-        return write_xmp_with_backup(&file_path, &xmp);
-    }
-
-    let tag_type = update_type
-        .tag_type()
-        .ok_or_else(|| anyhow::anyhow!("Invalid hierarchical tag update type: {update_type}"))?;
-
-    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
-    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
-
-    fn insert_tag(
-        xmp: &mut XmpMeta,
-        ns: &str,
-        array_name: &str,
-        tag_value: String,
-    ) -> anyhow::Result<()> {
-        let array_name = XmpValue::new(array_name.to_string()).set_is_array(true);
-        let item_value = XmpValue::new(tag_value);
-        xmp.append_array_item(ns, &array_name, &item_value)?;
-        Ok(())
-    }
-
-    fn update_tag_array(
-        xmp: &mut XmpMeta,
-        ns: &str,
-        array_name: &str,
-        old_tag: &str,
-        new_tag: &str,
-    ) -> anyhow::Result<usize> {
-        if xmp.property(ns, array_name).is_none() {
-            return Ok(0);
-        }
-
-        let array_len = xmp.array_len(ns, array_name);
-        let mut match_count = 0;
-        for i in 1..=array_len {
-            let array_item_path = &format!("{array_name}[{i}]");
-            if let Some(prop) = xmp.property(ns, array_item_path) {
-                let value = &prop.value;
-                if value == old_tag {
-                    match_count += 1;
-                    let new_xmp_value = XmpValue::new(new_tag.to_string());
-                    xmp.set_property(ns, array_item_path, &new_xmp_value)
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to update tag {i} in {array_name}: {e:?}")
-                        })?;
-                }
-            }
-        }
-        Ok(match_count)
-    }
-
-    if old_value.is_empty() {
-        pb_status(pb, format!("Inserting new {tag_type} tag: {new_value}"));
-
-        let new_tag_adobe = format!("{}{}", tag_type.adobe_tag_prefix(), new_value);
-        let new_tag_digikam = format!("{}{}", tag_type.digikam_tag_prefix(), new_value);
-
-        insert_tag(
-            &mut xmp,
-            LIGHTROOM_NS,
-            LR_HIERARCHICAL_SUBJECT,
-            new_tag_adobe,
-        )?;
-        insert_tag(&mut xmp, DIGIKAM_NS, DIGIKAM_TAGSLIST, new_tag_digikam)?;
-        insert_tag(&mut xmp, xmp_ns::DC, "subject", new_value.to_string())?;
-    } else {
-        pb_status(
-            pb,
-            format!("Updating {tag_type} tag from '{old_value}' to '{new_value}'"),
-        );
-        // adobe hierarchical subject
-        let adobe_matches = update_tag_array(
-            &mut xmp,
-            LIGHTROOM_NS,
-            LR_HIERARCHICAL_SUBJECT,
-            &format!("{}{}", tag_type.adobe_tag_prefix(), old_value),
-            &format!("{}{}", tag_type.adobe_tag_prefix(), new_value),
-        )?;
-        if adobe_matches == 0 {
-            let expected_tag = format!("{}{}", tag_type.adobe_tag_prefix(), old_value);
-            return Err(anyhow::anyhow!(
-                "Tag mismatch in {}: expected '{}' in {}",
-                file_path.display(),
-                expected_tag,
-                LR_HIERARCHICAL_SUBJECT,
-            ));
-        }
-
-        // digiKam taglist
-        update_tag_array(
-            &mut xmp,
-            DIGIKAM_NS,
-            DIGIKAM_TAGSLIST,
-            &format!("{}{}", tag_type.digikam_tag_prefix(), old_value),
-            &format!("{}{}", tag_type.digikam_tag_prefix(), new_value),
-        )?;
-
-        // subject
-        update_tag_array(&mut xmp, xmp_ns::DC, "subject", &old_value, &new_value)?;
-    }
-
-    write_xmp_with_backup(&file_path, &xmp)
+/// One `xmp_update` row of the CSV: replace `old` with `new` (insert `new`
+/// when `old` is empty). `row` is the CSV line number, for error messages.
+struct UpdateOp {
+    row: usize,
+    old: String,
+    new: String,
 }
 
-fn update_xmp_rating(
-    file_path: &Path,
-    xmp: &mut XmpMeta,
-    old_value: &str,
-    new_value: &str,
-    pb: &ProgressBar,
-) -> anyhow::Result<()> {
-    let current_rating = xmp
-        .property(xmp_ns::XMP, "Rating")
-        .map(|value| value.value.to_string())
-        .unwrap_or_default();
+fn read_xmp(file_path: &Path) -> anyhow::Result<XmpMeta> {
+    let xmp_content = fs::read_to_string(file_path)?;
+    XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
+        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))
+}
 
-    if !old_value.is_empty() && current_rating != old_value {
+/// Apply all update rows of one file to `xmp`, judged against its current
+/// content. Returns `Ok(false)` when the file already shows the result (e.g.
+/// on a rerun after an interrupted update), so there is nothing to write.
+fn apply_update_ops(
+    xmp: &mut XmpMeta,
+    update_type: XmpUpdateType,
+    ops: &[UpdateOp],
+) -> anyhow::Result<bool> {
+    match update_type.tag_type() {
+        Some(tag_type) => apply_tag_ops(xmp, tag_type, ops),
+        None => apply_rating_ops(xmp, ops),
+    }
+}
+
+fn apply_rating_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool> {
+    let new_value = &ops[0].new;
+    if let Some(op) = ops.iter().find(|op| &op.new != new_value) {
         return Err(anyhow::anyhow!(
-            "Rating mismatch in {}: expected '{}', found '{}'",
-            file_path.display(),
-            old_value,
-            current_rating
+            "conflicting Rating updates: row {} sets '{}', row {} sets '{}'",
+            ops[0].row,
+            new_value,
+            op.row,
+            op.new
+        ));
+    }
+    let current = xmp
+        .property(xmp_ns::XMP, "Rating")
+        .map(|value| value.value)
+        .unwrap_or_default();
+    if &current == new_value {
+        return Ok(false);
+    }
+    if let Some(op) = ops
+        .iter()
+        .find(|op| !op.old.is_empty() && op.old != current)
+    {
+        return Err(anyhow::anyhow!(
+            "Rating mismatch (row {}): expected '{}', found '{}'",
+            op.row,
+            op.old,
+            current
+        ));
+    }
+    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.clone()))?;
+    Ok(true)
+}
+
+fn apply_tag_ops(xmp: &mut XmpMeta, tag_type: TagType, ops: &[UpdateOp]) -> anyhow::Result<bool> {
+    // Merge duplicate rows; the same old tag may map to only one new tag.
+    let mut replace: Vec<&UpdateOp> = Vec::new();
+    let mut inserts: Vec<&str> = Vec::new();
+    for op in ops {
+        if op.old.is_empty() {
+            if !inserts.contains(&op.new.as_str()) {
+                inserts.push(&op.new);
+            }
+        } else if op.old != op.new {
+            match replace.iter().find(|r| r.old == op.old) {
+                Some(r) if r.new != op.new => {
+                    return Err(anyhow::anyhow!(
+                        "conflicting updates for '{}': row {} -> '{}', row {} -> '{}'",
+                        op.old,
+                        r.row,
+                        r.new,
+                        op.row,
+                        op.new
+                    ));
+                }
+                Some(_) => {}
+                None => replace.push(op),
+            }
+        }
+    }
+
+    // hierarchicalSubject is the reference: every old tag must be there, unless
+    // the file already shows the whole result.
+    let adobe = |value: &str| format!("{}{value}", tag_type.adobe_tag_prefix());
+    let current: Vec<String> = xmp
+        .property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT)
+        .map(|item| item.value)
+        .collect();
+    let has = |value: &str| current.contains(&adobe(value));
+    let missing: Vec<&&UpdateOp> = replace.iter().filter(|r| !has(&r.old)).collect();
+    if !missing.is_empty() {
+        let is_new =
+            |value: &str| replace.iter().any(|r| r.new == value) || inserts.contains(&value);
+        let already_applied = replace.iter().all(|r| has(&r.new))
+            && inserts.iter().all(|value| has(value))
+            && replace.iter().all(|r| is_new(&r.old) || !has(&r.old));
+        if already_applied {
+            return Ok(false);
+        }
+        let expected: Vec<String> = missing
+            .iter()
+            .map(|r| format!("'{}' (row {})", adobe(&r.old), r.row))
+            .collect();
+        return Err(anyhow::anyhow!(
+            "Tag mismatch: expected {} in {}",
+            expected.join(", "),
+            LR_HIERARCHICAL_SUBJECT
         ));
     }
 
-    if old_value.is_empty() {
-        pb_status(pb, format!("Setting Rating to '{new_value}'"));
-    } else {
-        pb_status(
-            pb,
-            format!("Updating Rating from '{old_value}' to '{new_value}'"),
-        );
+    let mut changed = false;
+    for (ns, array_name, prefix) in [
+        (
+            LIGHTROOM_NS,
+            LR_HIERARCHICAL_SUBJECT,
+            tag_type.adobe_tag_prefix(),
+        ),
+        (DIGIKAM_NS, DIGIKAM_TAGSLIST, tag_type.digikam_tag_prefix()),
+        (xmp_ns::DC, "subject", ""),
+    ] {
+        let replace: Vec<(String, String)> = replace
+            .iter()
+            .map(|r| (format!("{prefix}{}", r.old), format!("{prefix}{}", r.new)))
+            .collect();
+        let inserts: Vec<String> = inserts.iter().map(|v| format!("{prefix}{v}")).collect();
+        changed |= rewrite_tag_array(xmp, ns, array_name, &replace, &inserts)?;
     }
+    Ok(changed)
+}
 
-    xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(new_value.to_string()))?;
-    Ok(())
+/// Rewrite one tag array in place: map every item through `replace` (all
+/// against the original items, so A->B plus B->C gives B, C), drop duplicates
+/// of the resulting new tags, then append missing `inserts`. The array keeps
+/// its type (bag/seq). Returns whether anything changed.
+fn rewrite_tag_array(
+    xmp: &mut XmpMeta,
+    ns: &str,
+    array_name: &str,
+    replace: &[(String, String)],
+    inserts: &[String],
+) -> anyhow::Result<bool> {
+    let is_target = |value: &str| {
+        replace.iter().any(|(_, new)| new == value) || inserts.iter().any(|v| v == value)
+    };
+    let mut changed = false;
+    let mut kept: Vec<String> = Vec::new();
+    let mut len = xmp.array_len(ns, array_name);
+    let mut i = 1;
+    while i <= len {
+        let item_path = format!("{array_name}[{i}]");
+        let Some(value) = xmp.property(ns, &item_path).map(|p| p.value) else {
+            i += 1;
+            continue;
+        };
+        let mapped = replace
+            .iter()
+            .find(|(old, _)| *old == value)
+            .map_or(value.clone(), |(_, new)| new.clone());
+        if is_target(&mapped) && kept.contains(&mapped) {
+            xmp.delete_property(ns, &item_path)?;
+            len -= 1;
+            changed = true;
+            continue;
+        }
+        if mapped != value {
+            xmp.set_property(ns, &item_path, &XmpValue::new(mapped.clone()))?;
+            changed = true;
+        }
+        kept.push(mapped);
+        i += 1;
+    }
+    for value in inserts {
+        if !kept.contains(value) {
+            let array = XmpValue::new(array_name.to_string()).set_is_array(true);
+            xmp.append_array_item(ns, &array, &XmpValue::new(value.clone()))?;
+            kept.push(value.clone());
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 
 /// Serialize `xmp` to `file_path` atomically; an existing file is kept as a
@@ -2040,7 +2077,12 @@ fn create_new_sibling(path: &Path, timestamp: &str, ext: &str) -> io::Result<(fs
     }
 }
 
+/// Apply the `xmp_update` column to the listed XMP files. Rows are grouped per
+/// file and every file is checked before any is written, so a bad CSV changes
+/// nothing. Files that already show the result are skipped, so rerunning the
+/// same CSV after an interruption finishes the job.
 pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Result<()> {
+    const ROW_COLUMN: &str = "csv_row";
     let tag_column_name = update_type.col_name();
     let df = CsvReadOptions::default()
         .with_infer_schema_length(Some(0))
@@ -2054,79 +2096,123 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let mut df_filtered_lazy = df
+    // Line numbers for messages: the header is line 1.
+    let df_filtered = df
+        .with_row_index(ROW_COLUMN.into(), Some(2))?
         .lazy()
         .filter(col(XMP_UPDATE_COLUMN).is_not_null())
         .select([
+            col(ROW_COLUMN),
             col(PATH_COLUMN),
             col(XMP_UPDATE_COLUMN),
             col(tag_column_name),
-        ]);
-    if update_type == XmpUpdateType::Rating {
-        df_filtered_lazy = df_filtered_lazy.unique(
-            Some(cols(vec![
-                PATH_COLUMN.to_string(),
-                tag_column_name.to_string(),
-            ])),
-            UniqueKeepStrategy::First,
-        );
-    }
-    let df_filtered = df_filtered_lazy.collect()?;
+        ])
+        .collect()?;
 
-    let num_updates = df_filtered.height();
-    println!("Found {num_updates} rows with updates");
-
-    let pb = ProgressBar::new(num_updates as u64);
-    configure_progress_bar(&pb);
-    pb.set_message("Processing XMP updates...");
     let warnings = WarningCollector::default();
+    let mut groups: std::collections::BTreeMap<PathBuf, Vec<UpdateOp>> = Default::default();
+    for (row, path, xmp_update, tag_original) in izip!(
+        df_filtered.column(ROW_COLUMN)?.idx()?.iter(),
+        df_filtered.column(PATH_COLUMN)?.str()?.iter(),
+        df_filtered.column(XMP_UPDATE_COLUMN)?.str()?.iter(),
+        df_filtered.column(tag_column_name)?.str()?.iter(),
+    ) {
+        let row = row.unwrap_or_default() as usize;
+        let new = xmp_update.unwrap_or("");
+        if new.is_empty() {
+            continue;
+        }
+        let Some(path_str) = path else {
+            warnings.warn_plain(format!("Missing xmp path (row {row}), skipping."));
+            continue;
+        };
+        let path = PathBuf::from(path_str);
+        if resource_extension(&path).as_deref() != Some("xmp") {
+            warnings.warn_plain(format!("Skipping non-XMP file (row {row}): {path_str}"));
+            continue;
+        }
+        groups.entry(path).or_default().push(UpdateOp {
+            row,
+            old: tag_original.unwrap_or("").to_string(),
+            new: new.to_string(),
+        });
+    }
+    let groups: Vec<(PathBuf, Vec<UpdateOp>)> = groups.into_iter().collect();
+    let num_rows: usize = groups.iter().map(|(_, ops)| ops.len()).sum();
+    println!(
+        "Found {num_rows} rows with updates in {} files",
+        groups.len()
+    );
 
-    let path_col = df_filtered.column(PATH_COLUMN)?.str()?;
-    let xmp_update_col = df_filtered.column(XMP_UPDATE_COLUMN)?.str()?;
-    let tag_original_col = df_filtered.column(tag_column_name)?.str()?;
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
 
-    let iter = path_col
-        .iter()
-        .zip(xmp_update_col.iter())
-        .zip(tag_original_col.iter())
-        .map(|((path, xmp_up), tag_orig)| (path, xmp_up, tag_orig));
+    // Pass 1: check every file in memory, write nothing.
+    let pb = ProgressBar::new(groups.len() as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Checking XMP files...");
+    let checks: Vec<anyhow::Result<bool>> = groups
+        .par_iter()
+        .map(|(path, ops)| {
+            let result =
+                read_xmp(path).and_then(|mut xmp| apply_update_ops(&mut xmp, update_type, ops));
+            pb.inc(1);
+            result
+        })
+        .collect();
+    pb.finish_and_clear();
 
-    for (path, xmp_update, tag_original) in iter {
-        if let Some(path_str) = path {
-            let current_path = PathBuf::from(path_str);
-            let xmp_update = xmp_update.unwrap_or("");
-
-            if !xmp_update.is_empty() {
-                // Check if the file has .xmp extension
-                if let Some(ext) = current_path.extension() {
-                    if ext != "xmp" {
-                        warnings.warn(&pb, format!("Skipping non-XMP file: {path_str}"));
-                        pb.inc(1);
-                        continue;
-                    }
-                } else {
-                    warnings.warn(&pb, format!("Skipping file without extension: {path_str}"));
-                    pb.inc(1);
-                    continue;
-                }
-
-                let tag_original = tag_original.unwrap_or("");
-                pb_status(&pb, format!("Processing: {path_str}"));
-                update_xmp(
-                    current_path.clone(),
-                    tag_original.to_string(),
-                    xmp_update.to_string(),
-                    update_type,
-                    &pb,
-                )?;
+    let mut failed = 0;
+    let mut to_write = Vec::new();
+    for ((path, ops), check) in groups.iter().zip(checks) {
+        match check {
+            Ok(true) => to_write.push((path, ops)),
+            Ok(false) => {}
+            Err(err) => {
+                failed += 1;
+                let message = format!("{}: {err}", path.display());
+                log_line(&format!("Error: {message}"));
+                eprintln!("Error: {message}");
             }
-        } else {
-            warnings.warn(&pb, "Missing xmp path, skipping.");
+        }
+    }
+    if failed > 0 {
+        warnings.summarize();
+        return Err(anyhow::anyhow!(
+            "{failed} file(s) cannot be updated, no file was changed. Fix the CSV and rerun."
+        ));
+    }
+    let already = groups.len() - to_write.len();
+
+    // Pass 2: write. Each file is replaced atomically; if this stops midway,
+    // rerunning the same CSV skips the files already updated.
+    let pb = ProgressBar::new(to_write.len() as u64);
+    configure_progress_bar(&pb);
+    pb.set_message("Updating XMP files...");
+    for (done, (path, ops)) in to_write.iter().enumerate() {
+        pb_status(&pb, format!("Updating {}", path.display()));
+        let result = read_xmp(path).and_then(|mut xmp| {
+            apply_update_ops(&mut xmp, update_type, ops)?;
+            write_xmp_with_backup(path, &xmp)
+        });
+        if let Err(err) = result {
+            pb.abandon();
+            return Err(err.context(format!(
+                "Stopped at {} after updating {done} of {} file(s); rerun the same CSV to finish",
+                path.display(),
+                to_write.len()
+            )));
         }
         pb.inc(1);
     }
+    pb.finish_and_clear();
 
-    pb.finish_with_message("Finished processing all XMP updates");
+    let summary = format!(
+        "{} file(s) updated, {already} already up to date",
+        to_write.len()
+    );
+    log_line(&summary);
+    println!("{summary}");
     warnings.summarize();
     Ok(())
 }
@@ -2245,5 +2331,93 @@ mod tests {
         assert_eq!(backup("a.jpg.xmp.20260930_120000_1.backup"), "first");
         // no temp files left behind
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    fn species_xmp(species: &[&str]) -> XmpMeta {
+        let items = |prefix: &str| {
+            species
+                .iter()
+                .map(|s| format!("<rdf:li>{prefix}{s}</rdf:li>"))
+                .collect::<String>()
+        };
+        XmpMeta::from_str(&format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:lr="{LIGHTROOM_NS}" xmlns:digiKam="{DIGIKAM_NS}" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <lr:hierarchicalSubject><rdf:Bag>{}</rdf:Bag></lr:hierarchicalSubject>
+            <digiKam:TagsList><rdf:Seq>{}</rdf:Seq></digiKam:TagsList>
+            <dc:subject><rdf:Bag>{}</rdf:Bag></dc:subject>
+            </rdf:Description></rdf:RDF></x:xmpmeta>"#,
+            items("Species|"),
+            items("Species/"),
+            items(""),
+        ))
+        .unwrap()
+    }
+
+    fn ops(rows: &[(&str, &str)]) -> Vec<UpdateOp> {
+        rows.iter()
+            .enumerate()
+            .map(|(i, (old, new))| UpdateOp {
+                row: i + 2,
+                old: old.to_string(),
+                new: new.to_string(),
+            })
+            .collect()
+    }
+
+    fn species_of(xmp: &XmpMeta) -> Vec<String> {
+        let values = |ns: &str, name: &str, prefix: &str| -> Vec<String> {
+            xmp.property_array(ns, name)
+                .map(|item| item.value.strip_prefix(prefix).unwrap().to_string())
+                .collect()
+        };
+        let adobe = values(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT, "Species|");
+        assert_eq!(adobe, values(DIGIKAM_NS, DIGIKAM_TAGSLIST, "Species/"));
+        assert_eq!(adobe, values(xmp_ns::DC, "subject", ""));
+        adobe
+    }
+
+    #[test]
+    fn tag_updates_are_grouped_per_file() {
+        let apply = |species: &[&str], rows: &[(&str, &str)]| {
+            let mut xmp = species_xmp(species);
+            apply_tag_ops(&mut xmp, TagType::Species, &ops(rows)).map(|changed| (changed, xmp))
+        };
+        let species = |result: anyhow::Result<(bool, XmpMeta)>| {
+            let (changed, xmp) = result.unwrap();
+            (changed, species_of(&xmp))
+        };
+
+        // duplicate rows (several individuals of one species) apply once
+        assert_eq!(
+            species(apply(&["Fox"], &[("Fox", "Red fox"), ("Fox", "Red fox")])),
+            (true, vec!["Red fox".to_string()])
+        );
+        // replacements are judged against the original tags
+        assert_eq!(
+            species(apply(&["A", "B"], &[("A", "B"), ("B", "C")])),
+            (true, vec!["B".to_string(), "C".to_string()])
+        );
+        // rerun after the update was written: nothing to do
+        assert_eq!(
+            species(apply(&["B", "C"], &[("A", "B"), ("B", "C")])),
+            (false, vec!["B".to_string(), "C".to_string()])
+        );
+        // repeated inserts add one tag, and not again on a rerun
+        assert_eq!(
+            species(apply(&["Fox"], &[("", "Deer"), ("", "Deer")])),
+            (true, vec!["Fox".to_string(), "Deer".to_string()])
+        );
+        assert!(!apply(&["Fox", "Deer"], &[("", "Deer")]).unwrap().0);
+        // conflicting and mismatching rows are errors naming the rows
+        let err = apply(&["Fox"], &[("Fox", "A"), ("Fox", "B")])
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("row 2") && err.to_string().contains("row 3"));
+        let err = apply(&["Fox"], &[("Wolf", "Red fox")]).err().unwrap();
+        assert!(err.to_string().contains("row 2"));
+        // Rating: different targets for one file conflict
+        let mut xmp = species_xmp(&[]);
+        assert!(apply_rating_ops(&mut xmp, &ops(&[("", "3"), ("", "5")])).is_err());
     }
 }
