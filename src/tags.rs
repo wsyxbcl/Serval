@@ -23,6 +23,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use std::{
+    collections::{BTreeSet, HashMap},
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -1083,14 +1084,14 @@ pub fn extract_resources(
         df_lazy = df_lazy.with_columns(missing_columns);
     }
 
-    // Fill null values for columns that will be used for file naming
-    if rename {
-        df_lazy = df_lazy.with_columns([
-            col(TagType::Species.col_name()).fill_null(lit("")),
-            col(TagType::Individual.col_name()).fill_null(lit("")),
-        ]);
-    }
     let df = df_lazy.collect()?;
+    // --rename names each image after all of its tags, including rows the
+    // filter drops, so every row of an image maps to the same file.
+    let rename_prefixes = if rename {
+        rename_prefixes(&df)?
+    } else {
+        HashMap::new()
+    };
 
     let filter_expr = if filter_value == "ALL_VALUES" {
         match filter_type {
@@ -1284,15 +1285,7 @@ pub fn extract_resources(
             continue;
         }
 
-        let filename_prefix = if rename {
-            format!(
-                "{}-{}-",
-                species_tag.unwrap_or("untagged_species"),
-                individual_tag.unwrap_or("untagged_individual")
-            )
-        } else {
-            String::new()
-        };
+        let filename_prefix = rename_prefixes.get(path_str).map_or("", String::as_str);
         // Target folder: the output root, plus the kept part of the source
         // folders, plus the subdirectory. The sidecar follows the media file.
         let input_media = Path::new(&input_path_media);
@@ -1335,6 +1328,80 @@ pub fn extract_resources(
     // --skip-existing predates the check below; it now just answers its question.
     let preset = skip_existing.then_some(OnConflict::Skip);
     run_transfers(transfers, Mode::Copy, preset, false)
+}
+
+/// File name prefix per path for `extract --rename`:
+/// "{species}__{individuals}__", each field the image's tags sorted and joined
+/// by "+"; the individuals field is left out when empty, and an image without
+/// species is "untagged".
+fn rename_prefixes(df: &DataFrame) -> anyhow::Result<HashMap<String, String>> {
+    let mut tags: HashMap<&str, (BTreeSet<String>, BTreeSet<String>)> = HashMap::new();
+    for (path, species, individual) in izip!(
+        df.column(PATH_COLUMN)?.str()?.iter(),
+        df.column(TagType::Species.col_name())?.str()?.iter(),
+        df.column(TagType::Individual.col_name())?.str()?.iter(),
+    ) {
+        let Some(path) = path else { continue };
+        let (species_set, individual_set) = tags.entry(path).or_default();
+        for (set, value) in [(species_set, species), (individual_set, individual)] {
+            if let Some(value) = value.map(file_name_part).filter(|v| !v.is_empty()) {
+                set.insert(value);
+            }
+        }
+    }
+    Ok(tags
+        .into_iter()
+        .map(|(path, (species, individuals))| {
+            let species = join_capped(&species);
+            let mut prefix = if species.is_empty() {
+                "untagged".to_string()
+            } else {
+                species
+            };
+            prefix.push_str("__");
+            let individuals = join_capped(&individuals);
+            if !individuals.is_empty() {
+                prefix.push_str(&individuals);
+                prefix.push_str("__");
+            }
+            (path.to_string(), prefix)
+        })
+        .collect())
+}
+
+/// A tag as part of a file name: no dots (cross-platform issues) and no
+/// characters that some file systems reject.
+fn file_name_part(tag: &str) -> String {
+    tag.chars()
+        .filter(|c| *c != '.')
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Join with "+", ending in "+N more" once the field would pass ~100 bytes
+/// (file names are limited to 255 bytes; CJK tags take 3 bytes per character).
+fn join_capped(values: &BTreeSet<String>) -> String {
+    const MAX_BYTES: usize = 100;
+    let mut joined = String::new();
+    for (i, value) in values.iter().enumerate() {
+        if !joined.is_empty() && joined.len() + 1 + value.len() > MAX_BYTES {
+            joined.push_str(&format!("+{} more", values.len() - i));
+            break;
+        }
+        if !joined.is_empty() {
+            joined.push('+');
+        }
+        joined.push_str(value);
+    }
+    joined
 }
 
 pub fn get_temporal_independence(
@@ -2285,6 +2352,31 @@ mod tests {
         assert_eq!(adobe, values(DIGIKAM_NS, DIGIKAM_TAGSLIST, "Species/"));
         assert_eq!(adobe, values(xmp_ns::DC, "subject", ""));
         adobe
+    }
+
+    #[test]
+    fn rename_prefix_lists_all_tags_of_an_image() {
+        let many: Vec<String> = (0..30).map(|i| format!("Species {i:02}")).collect();
+        let mut paths = vec!["a", "a", "a", "b", "c"];
+        let mut species = vec![Some("Pika"), Some("Fox"), Some("Fox"), None, Some("W/lf.")];
+        let mut individuals = vec![Some("F03"), Some("F01"), None, None, Some("")];
+        for name in &many {
+            paths.push("d");
+            species.push(Some(name.as_str()));
+            individuals.push(None);
+        }
+        let df = df!(
+            PATH_COLUMN => paths,
+            TagType::Species.col_name() => species,
+            TagType::Individual.col_name() => individuals,
+        )
+        .unwrap();
+        let prefixes = rename_prefixes(&df).unwrap();
+        assert_eq!(prefixes["a"], "Fox+Pika__F01+F03__");
+        assert_eq!(prefixes["b"], "untagged__");
+        assert_eq!(prefixes["c"], "W_lf__");
+        assert!(prefixes["d"].starts_with("Species 00+Species 01+"));
+        assert!(prefixes["d"].ends_with(" more__") && prefixes["d"].len() < 120);
     }
 
     #[test]

@@ -354,7 +354,9 @@ enum Commands {
         /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
-        /// Enable rename rename mode (including tags in filenames)
+        /// Name copies after all tags of the image:
+        /// {species}__{individuals}__{original name}, values joined by "+"
+        /// (e.g. Fox+Pika__F03__IMG_0001.JPG)
         #[arg(long)]
         rename: bool,
         /// Skip targets that already hold a different file, without asking.
