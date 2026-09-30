@@ -391,8 +391,10 @@ pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
 ///
 /// # Parameters
 /// * `expr` - The filter expression to convert
-/// * `use_aggregated` - If true, treats species/individual as list columns (for path-level filtering)
-pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow::Result<Expr> {
+/// * `per_image` - If true, each condition holds when any row of the same path
+///   matches it (so "sp:A and sp:B" finds images with both species); all rows of
+///   a matching image are kept.
+pub fn filter_expr_to_polars(expr: &FilterExpr, per_image: bool) -> anyhow::Result<Expr> {
     use crate::utils::TagType;
 
     match expr {
@@ -413,21 +415,13 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
 
             let base_col = col(col_name);
 
-            match &condition.operator {
+            let leaf = match &condition.operator {
                 FilterOperator::Equal => {
                     if condition.filter_type == ExtractFilterType::Path {
                         // Path uses contains for substring matching
                         Ok(base_col
                             .str()
                             .contains_literal(lit(condition.value.clone())))
-                    } else if use_aggregated
-                        && (condition.filter_type == ExtractFilterType::Species
-                            || condition.filter_type == ExtractFilterType::Individual)
-                    {
-                        // For aggregated species/individual, check if list contains the value
-                        Ok(base_col
-                            .list()
-                            .contains(lit(condition.value.clone()), false))
                     } else {
                         Ok(base_col.eq(lit(condition.value.clone())))
                     }
@@ -487,15 +481,20 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                         Err(anyhow::anyhow!("Less operator requires numeric value"))
                     }
                 }
-            }
+            }?;
+            Ok(if per_image {
+                leaf.any(true).over([col(PATH_COLUMN)])?
+            } else {
+                leaf
+            })
         }
         FilterExpr::Logical {
             left,
             operator,
             right,
         } => {
-            let left_expr = filter_expr_to_polars(left, use_aggregated)?;
-            let right_expr = filter_expr_to_polars(right, use_aggregated)?;
+            let left_expr = filter_expr_to_polars(left, per_image)?;
+            let right_expr = filter_expr_to_polars(right, per_image)?;
 
             match operator {
                 LogicalOperator::And => Ok(left_expr.and(right_expr)),
@@ -1409,6 +1408,42 @@ mod tests {
             .map(|e| e.into_path())
             .collect();
         assert!(reprocessed.is_empty(), "{reprocessed:?}");
+    }
+
+    #[test]
+    fn advanced_filter_matches_per_image_with_all_fields() {
+        let df = df!(
+            PATH_COLUMN => ["a", "a", "b", "c", "c"],
+            "species" => ["Fox", "Deer", "Fox", "Fox", "Deer"],
+            EVENT_ID_COLUMN => ["1", "1", "1", "3", "3"],
+        )
+        .unwrap();
+        let matching = |query: &str| {
+            let expr = parse_advanced_filter(query).unwrap();
+            let per_image = has_same_field_and_conditions(&expr);
+            let out = df
+                .clone()
+                .lazy()
+                .filter(filter_expr_to_polars(&expr, per_image).unwrap())
+                .collect()
+                .unwrap();
+            let mut paths: Vec<String> = out
+                .column(PATH_COLUMN)
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(str::to_string)
+                .collect();
+            paths.sort();
+            paths
+        };
+        // all rows of images with both species are kept
+        assert_eq!(matching("sp:Fox and sp:Deer"), ["a", "a", "c", "c"]);
+        // the event column is still there when a field repeats
+        assert_eq!(matching("sp:Fox and sp:Deer and e:1"), ["a", "a"]);
+        assert_eq!(matching("e:>=2 and e:<=3"), ["c", "c"]);
     }
 
     #[test]

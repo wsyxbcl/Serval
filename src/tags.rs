@@ -1061,40 +1061,13 @@ pub fn extract_resources(
                 // Parse the advanced filter expression
                 let advanced_expr = parse_advanced_filter(&filter_value)?;
 
-                // Check if we need path-level aggregation for same-field AND conditions
-                if has_same_field_and_conditions(&advanced_expr) {
-                    println!("Using path-level aggregation for same-field AND conditions");
-
-                    // Aggregate tags by path
-                    let df_agg = df
-                        .clone()
-                        .lazy()
-                        .group_by([col("path")])
-                        .agg([
-                            col(TagType::Species.col_name()).drop_nulls().unique(),
-                            col(TagType::Individual.col_name()).drop_nulls().unique(),
-                            col("rating").first(), // Rating is scalar per path
-                            col("custom").first(), // Custom is scalar per path
-                        ])
-                        .collect()?;
-
-                    // Apply filter to aggregated data
-                    let polars_expr = filter_expr_to_polars(&advanced_expr, true)?;
-                    let df_matched_paths = df_agg.lazy().filter(polars_expr).collect()?;
-
-                    // Get matching paths
-                    let matching_paths = df_matched_paths.column("path")?.str()?;
-                    let path_set: Vec<String> = matching_paths
-                        .iter()
-                        .filter_map(|p| p.map(|s| s.to_string()))
-                        .collect();
-
-                    // Return all rows for matching paths (preserves multi-row structure)
-                    let path_series = Series::new("matching_paths".into(), path_set);
-                    col("path").is_in(lit(path_series), false)
-                } else {
-                    filter_expr_to_polars(&advanced_expr, false)?
+                // Same-field AND ("sp:A and sp:B") can only hold per image, not per
+                // row: then each condition asks whether any row of the image matches.
+                let per_image = has_same_field_and_conditions(&advanced_expr);
+                if per_image {
+                    println!("Matching conditions per image (a field is used twice with AND)");
                 }
+                filter_expr_to_polars(&advanced_expr, per_image)?
             }
         }
     };
