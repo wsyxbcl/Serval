@@ -924,25 +924,24 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
     Ok(())
 }
 
-// copy xmp files to output_dir and keep the directory structure
+/// Copy the XMP files under `source_dir` to `output_dir`, keeping the directory
+/// structure. Unchanged files are skipped; for changed ones the user is asked.
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
-    fs::create_dir_all(&output_dir)?;
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, Some(&output_dir));
-    let num_xmp = xmp_paths.len();
-    println!("{num_xmp} xmp files found");
-    let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    configure_progress_bar(&pb);
-
-    for xmp in xmp_paths {
-        let mut output_path = output_dir.clone();
-        let relative_path = xmp.strip_prefix(&source_dir).unwrap();
-        output_path.push(relative_path);
-        fs::create_dir_all(output_path.parent().unwrap())?;
-        fs::copy(xmp, output_path)?;
-        pb.inc(1);
-    }
-    pb.finish();
-    Ok(())
+    println!("{} xmp files found", xmp_paths.len());
+    let transfers = xmp_paths
+        .into_iter()
+        .map(|xmp| {
+            let relative_path = xmp.strip_prefix(&source_dir).unwrap_or(&xmp);
+            Transfer {
+                target: output_dir.join(relative_path),
+                source: xmp,
+                sidecar: None,
+                sidecar_slot: false,
+            }
+        })
+        .collect();
+    run_transfers(transfers, Mode::Copy, None, false)
 }
 
 /// Outcome of one item in a batch operation: performed, or skipped with a reason.
