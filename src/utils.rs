@@ -1234,13 +1234,37 @@ pub fn tags_csv_translate(
         .finish()?;
     reject_duplicate_csv_columns(&source_df)?;
     let taglist_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .with_columns(csv_projection_columns(&[from, to]))
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
     reject_duplicate_csv_columns(&taglist_df)?;
 
+    // Each `from` value must have one translation; a repeated one would
+    // silently duplicate every matching row in the join below.
+    let taglist_from = taglist_df.column(from)?.str()?;
+    let mut seen = HashSet::new();
+    let mut duplicates: Vec<&str> = taglist_from
+        .iter()
+        .flatten()
+        .filter(|value| !seen.insert(*value))
+        .collect();
+    duplicates.sort_unstable();
+    duplicates.dedup();
+    if !duplicates.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Taglist has repeated '{from}' value(s), each needs exactly one translation: {}",
+            duplicates
+                .iter()
+                .take(20)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
     let joined = source_df.lazy().join(
-        taglist_df.lazy(),
+        taglist_df.clone().lazy(),
         [col(TagType::Species.col_name())],
         [col(from)],
         JoinArgs::new(JoinType::Left),
@@ -1258,18 +1282,24 @@ pub fn tags_csv_translate(
         .unique(None, UniqueKeepStrategy::Any)
         .collect()?;
     if unknown.height() > 0 {
-        let mut sample = Vec::new();
-        if let Ok(col) = unknown.column(TagType::Species.col_name())
-            && let Ok(ca) = col.str()
-        {
-            for v in ca.iter().flatten().take(20) {
-                sample.push(v.to_string());
-            }
+        let unknown = unknown.column(TagType::Species.col_name())?.str()?;
+        let (untranslated, missing): (Vec<&str>, Vec<&str>) =
+            unknown.iter().flatten().partition(|tag| seen.contains(tag));
+        let sample = |tags: &[&str]| tags.iter().take(20).copied().collect::<Vec<_>>().join(", ");
+        let mut message = Vec::new();
+        if !missing.is_empty() {
+            message.push(format!(
+                "Tag(s) not found in taglist column '{from}': {}",
+                sample(&missing)
+            ));
         }
-        return Err(anyhow::anyhow!(
-            "Unknown tag(s) not found in taglist: {}",
-            sample.join(", ")
-        ));
+        if !untranslated.is_empty() {
+            message.push(format!(
+                "Tag(s) with an empty '{to}' value in taglist: {}",
+                sample(&untranslated)
+            ));
+        }
+        return Err(anyhow::anyhow!(message.join("\n")));
     }
 
     let mut result = joined
