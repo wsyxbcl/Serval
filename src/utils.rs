@@ -1230,7 +1230,10 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     let time = time.trim_end_matches('Z');
     // Offsets (+HH:MM / -HH:MM) and fractional seconds can only appear after the
     // time-of-day part, so search after 'T'/' ' to avoid cutting at date separators.
-    let time_start = time.find(['T', ' ']).map_or(0, |i| i + 1);
+    // A date without a time ("2023-12-08") has no offset to strip.
+    let Some(time_start) = time.find(['T', ' ']).map(|i| i + 1) else {
+        return Ok(time.to_string());
+    };
     let tz_start = time[time_start..]
         .find(['+', '-', '.'])
         .map_or(time.len(), |i| time_start + i);
@@ -1361,6 +1364,7 @@ mod tests {
             "2023-12-08T10:47:39"
         );
         assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
+        assert_eq!(strip("2023-12-08"), "2023-12-08");
     }
 
     #[test]
