@@ -1281,14 +1281,19 @@ pub fn extract_resources(
         custom_tags.iter()
     ) {
         let subdir = if use_subdir {
-            match subdir_value {
-                SubdirType::Species => species_tag.unwrap_or("untagged_species"),
-                SubdirType::Individual => individual_tag.unwrap_or("untagged_individual"),
-                SubdirType::Rating => rating_tag.unwrap_or("unrated"),
-                SubdirType::Custom => custom_tag.unwrap_or("no_custom"),
-            }
+            let (tag, fallback) = match subdir_value {
+                SubdirType::Species => (species_tag, "untagged_species"),
+                SubdirType::Individual => (individual_tag, "untagged_individual"),
+                SubdirType::Rating => (rating_tag, "unrated"),
+                SubdirType::Custom => (custom_tag, "no_custom"),
+            };
+            // The tag becomes a folder name: no "/" (nested folders) or
+            // characters some file systems reject.
+            tag.map(file_name_part)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| fallback.to_string())
         } else {
-            ""
+            String::new()
         };
         let Some(path_str) = path else {
             warnings.warn_plain("Missing path value in tags CSV, skipping.");
