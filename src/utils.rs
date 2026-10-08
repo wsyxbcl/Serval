@@ -955,8 +955,12 @@ pub enum BatchOutcome {
 }
 
 /// Print skip warnings, failure errors, and a per-outcome count summary for a
-/// batch operation.
-pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: &str) {
+/// batch operation; an error if any item failed, so the run does not end as a
+/// success (skipped items are not failures).
+pub fn report_batch_results(
+    results: Vec<anyhow::Result<BatchOutcome>>,
+    action: &str,
+) -> anyhow::Result<()> {
     let mut done = 0;
     let mut skipped = Vec::new();
     let mut failures = Vec::new();
@@ -982,6 +986,13 @@ pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: 
     );
     log_line(&summary);
     println!("{summary}");
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} XMP file(s) failed, see the errors above",
+            failures.len()
+        ));
+    }
+    Ok(())
 }
 
 // Sync XMP metadata to corresponding media files
@@ -1043,7 +1054,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    report_batch_results(results, "synced");
+    report_batch_results(results, "synced")?;
 
     Ok(())
 }
@@ -1094,7 +1105,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    report_batch_results(results, "synced");
+    report_batch_results(results, "synced")?;
 
     Ok(())
 }
@@ -1127,7 +1138,7 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    report_batch_results(results, "removed");
+    report_batch_results(results, "removed")?;
     Ok(())
 }
 

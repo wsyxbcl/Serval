@@ -422,7 +422,15 @@ pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()>
     );
     log_line(&summary);
     println!("{summary}");
-    write_init_table(&working_dir, &output_dir, &rows)
+    write_init_table(&working_dir, &output_dir, &rows)?;
+    let failed = count("failed");
+    if failed > 0 {
+        return Err(anyhow::anyhow!(
+            "{failed} media file(s) could not be initialized, see the warnings above \
+             (listed as failed in the table)"
+        ));
+    }
+    Ok(())
 }
 
 fn write_init_table(working_dir: &Path, output_dir: &Path, rows: &[InitRow]) -> anyhow::Result<()> {
