@@ -1662,13 +1662,13 @@ pub fn get_temporal_independence(
             .clone()
             .lazy()
             .drop_nulls(None)
-            .unique(
+            .unique_stable(
                 Some(cols(vec![
                     "deployment".to_string(),
                     "time".to_string(),
                     target.col_name().to_string(),
                 ])),
-                UniqueKeepStrategy::Any,
+                UniqueKeepStrategy::First,
             )
             .collect()?
     } else {
@@ -1677,13 +1677,13 @@ pub fn get_temporal_independence(
             .lazy()
             .drop_nulls(None)
             .filter(exclude_expr.not())
-            .unique(
+            .unique_stable(
                 Some(cols(vec![
                     "deployment".to_string(),
                     "time".to_string(),
                     target.col_name().to_string(),
                 ])),
-                UniqueKeepStrategy::Any,
+                UniqueKeepStrategy::First,
             )
             .collect()?
     };
@@ -1716,8 +1716,8 @@ pub fn get_temporal_independence(
             ])
             .filter(col("count").eq(lit(1)))
             .select([
-                col("deployment"),
                 col(id_col_name),
+                col("deployment"),
                 col("time"),
                 col(target.col_name()),
             ])
@@ -1838,8 +1838,8 @@ pub fn get_temporal_independence(
         .collect()?;
     println!("{df_count_independent}");
 
-    let filename = "count_by_deployment.csv";
-    let mut file = std::fs::File::create(output_dir.join(filename))?;
+    let filename = format!("count_by_deployment{output_suffix}");
+    let mut file = std::fs::File::create(output_dir.join(&filename))?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
@@ -1855,8 +1855,8 @@ pub fn get_temporal_independence(
             .collect()?;
         println!("{df_count_independent_species}");
 
-        let filename = "count_all.csv";
-        let mut file = std::fs::File::create(output_dir.join(filename))?;
+        let filename = format!("count_all{output_suffix}");
+        let mut file = std::fs::File::create(output_dir.join(&filename))?;
         CsvWriter::new(&mut file)
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
