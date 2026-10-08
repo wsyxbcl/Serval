@@ -25,7 +25,7 @@ use rustyline::{
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -859,14 +859,6 @@ pub fn get_classifications(
                 )
                 .dt()
                 .replace_time_zone(None, lit("raise"), NonExistent::Raise),
-            col("species_tags")
-                .str()
-                .split(lit("|"))
-                .alias(TagType::Species.col_name()),
-            col("individual_tags")
-                .str()
-                .split(lit("|"))
-                .alias(TagType::Individual.col_name()),
             col("count_tags").alias(TagType::Count.col_name()),
             col("sex_tags").alias(TagType::Sex.col_name()),
             col("bodypart_tags").alias(TagType::Bodypart.col_name()),
@@ -874,6 +866,11 @@ pub fn get_classifications(
             col(RATING_COLUMN),
         ])
         .collect()?;
+    let df_pairs = species_individual_pairs(
+        df_raw.column(PATH_COLUMN)?.str()?,
+        df_raw.column("species_tags")?.str()?,
+        df_raw.column("individual_tags")?.str()?,
+    )?;
 
     if debug_mode {
         println!("{df_split:?}");
@@ -896,26 +893,23 @@ pub fn get_classifications(
             .finish(&mut df_raw)?;
         println!("Saved to {}", debug_csv_path.to_string_lossy());
     }
-    // For multiple tags in a single image (individual only for two species that won't be in the same image)
-    let df_flatten = df_split
-        .clone()
+    // One row per (species, individual) pair of an image.
+    let df_flatten = df_pairs
         .lazy()
-        .select([col("*")])
-        .explode(
-            cols([TagType::Individual.col_name()]),
-            ExplodeOptions {
-                empty_as_null: false,
-                keep_nulls: true,
+        .join(
+            df_split.with_row_index("image".into(), None)?.lazy(),
+            [col("image")],
+            [col("image")],
+            JoinArgs {
+                maintain_order: MaintainOrderJoin::Left,
+                ..JoinArgs::new(JoinType::Left)
             },
         )
-        .explode(
-            cols([TagType::Species.col_name()]),
-            ExplodeOptions {
-                empty_as_null: false,
-                keep_nulls: true,
-            },
+        .drop(cols(["image"]))
+        .sort(
+            [PATH_COLUMN],
+            SortMultipleOptions::default().with_maintain_order(true),
         )
-        .sort([PATH_COLUMN], SortMultipleOptions::default())
         .collect()?;
     let mut df_flatten = canonicalize_observe_tags_df(df_flatten)?;
     println!("{df_flatten}");
@@ -928,11 +922,16 @@ pub fn get_classifications(
         .finish(&mut df_flatten)?;
     println!("Saved to {}", tags_csv_path.to_string_lossy());
 
+    // Number of images per species (an image with three foxes counts once).
     let mut df_count_species = df_flatten
         .clone()
         .lazy()
-        .select([col(TagType::Species.col_name()).value_counts(true, true, "count", false)])
-        .unnest(cols([TagType::Species.col_name()]), None)
+        .group_by([col(TagType::Species.col_name())])
+        .agg([col(PATH_COLUMN).n_unique().alias("count")])
+        .sort_by_exprs(
+            [col("count"), col(TagType::Species.col_name())],
+            SortMultipleOptions::default().with_order_descending_multi([true, false]),
+        )
         .collect()?;
     println!("{df_count_species:?}");
 
@@ -943,6 +942,136 @@ pub fn get_classifications(
         .finish(&mut df_count_species)?;
     println!("Saved to {}", species_stats_path.to_string_lossy());
     Ok(())
+}
+
+/// The (species, individual) rows of each image, as columns image (index),
+/// species, individual. XMP does not record which individual belongs to which
+/// species, so an image with several species and individuals is ambiguous:
+/// the user is asked which species are individually identified, and in an image
+/// with exactly one of them the individuals go to that species. Otherwise every
+/// individual is paired with every species, as before, with a warning.
+fn species_individual_pairs(
+    paths: &StringChunked,
+    species_tags: &StringChunked,
+    individual_tags: &StringChunked,
+) -> anyhow::Result<DataFrame> {
+    let images: Vec<(&str, Vec<&str>, Vec<&str>)> =
+        izip!(paths.iter(), species_tags.iter(), individual_tags.iter())
+            .map(|(path, species, individuals)| {
+                (
+                    path.unwrap_or_default(),
+                    species.unwrap_or_default().split('|').collect(),
+                    individuals.unwrap_or_default().split('|').collect(),
+                )
+            })
+            .collect();
+    let is_ambiguous = |species: &[&str], individuals: &[&str]| {
+        species.len() > 1 && individuals.iter().any(|i| !i.is_empty())
+    };
+    let ambiguous: Vec<&(&str, Vec<&str>, Vec<&str>)> = images
+        .iter()
+        .filter(|(_, species, individuals)| is_ambiguous(species, individuals))
+        .collect();
+    let id_species = if ambiguous.is_empty() {
+        BTreeSet::new()
+    } else {
+        ask_id_species(&ambiguous)?
+    };
+
+    let (mut image_col, mut species_col, mut individual_col) = (Vec::new(), Vec::new(), Vec::new());
+    let mut unresolved = Vec::new();
+    for (index, (path, species, individuals)) in images.iter().enumerate() {
+        let mut push = |s: &str, i: &str| {
+            image_col.push(index as IdxSize);
+            species_col.push(s.to_string());
+            individual_col.push(i.to_string());
+        };
+        let identified: Vec<&&str> = species
+            .iter()
+            .filter(|s| id_species.contains(**s))
+            .collect();
+        if is_ambiguous(species, individuals) && identified.len() == 1 {
+            for s in species {
+                if s == identified[0] {
+                    individuals.iter().for_each(|i| push(s, i));
+                } else {
+                    push(s, "");
+                }
+            }
+        } else {
+            if is_ambiguous(species, individuals) {
+                unresolved.push(*path);
+            }
+            for i in individuals {
+                species.iter().for_each(|s| push(s, i));
+            }
+        }
+    }
+    if !unresolved.is_empty() {
+        eprintln!(
+            "Warning: {} image(s) with several species and individuals could not be \
+             resolved; every individual is paired with every species there:",
+            unresolved.len()
+        );
+        for path in unresolved.iter().take(5) {
+            eprintln!("  {path}");
+        }
+        if unresolved.len() > 5 {
+            eprintln!("  ... and {} more", unresolved.len() - 5);
+        }
+    }
+    Ok(DataFrame::new(
+        image_col.len(),
+        vec![
+            Column::new("image".into(), image_col),
+            Column::new(TagType::Species.col_name().into(), species_col),
+            Column::new(TagType::Individual.col_name().into(), individual_col),
+        ],
+    )?)
+}
+
+/// Ask which species are individually identified; empty without a terminal.
+fn ask_id_species(ambiguous: &[&(&str, Vec<&str>, Vec<&str>)]) -> anyhow::Result<BTreeSet<String>> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (_, species, _) in ambiguous {
+        for s in species.iter().filter(|s| !s.is_empty()) {
+            *counts.entry(s).or_default() += 1;
+        }
+    }
+    let options: Vec<&str> = counts.keys().copied().collect();
+    println!(
+        "\n{} image(s) have several species and individual IDs (e.g. {}).",
+        ambiguous.len(),
+        ambiguous[0].0
+    );
+    println!("XMP does not record which individual belongs to which species.");
+    println!("Species in these images:");
+    for (n, species) in options.iter().enumerate() {
+        println!("  {}) {species} ({} image(s))", n + 1, counts[species]);
+    }
+    if !io::stdin().is_terminal() {
+        return Ok(BTreeSet::new());
+    }
+    let mut rl = rustyline::DefaultEditor::new()?;
+    loop {
+        let answer = rl.readline(
+            "Which are individually identified? Numbers separated by commas, \
+             empty = pair every individual with every species: ",
+        )?;
+        let chosen: Option<BTreeSet<String>> = answer
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                part.parse::<usize>()
+                    .ok()
+                    .and_then(|n| options.get(n.checked_sub(1)?))
+                    .map(|species| species.to_string())
+            })
+            .collect();
+        if let Some(chosen) = chosen {
+            return Ok(chosen);
+        }
+    }
 }
 
 pub fn extract_resources(
