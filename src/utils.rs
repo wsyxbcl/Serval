@@ -307,7 +307,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
             let filter_type = ExtractFilterType::from_alias(field)
                 .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {field}"))?;
 
-            let (operator, cleaned_value) = parse_value_and_operator(value)?;
+            let (operator, cleaned_value) = parse_value_and_operator(filter_type, value)?;
 
             Ok(FilterExpr::Condition(FilterCondition {
                 filter_type,
@@ -321,9 +321,18 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
 }
 
 /// Parse value and detect operator (>=, <=, range, etc.)
-fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, String)> {
-    // Handle range syntax first (e.g., "1-5", "0.5-4.5")
-    if let Some((min_str, max_str)) = value.split_once('-')
+fn parse_value_and_operator(
+    filter_type: ExtractFilterType,
+    value: &str,
+) -> anyhow::Result<(FilterOperator, String)> {
+    // Handle range syntax first (e.g., "1-5", "0.5-4.5"), only for numeric fields:
+    // "individual:001-002" or "path:2023-01" are plain values.
+    let numeric = matches!(
+        filter_type,
+        ExtractFilterType::Rating | ExtractFilterType::Event
+    );
+    if numeric
+        && let Some((min_str, max_str)) = value.split_once('-')
         && let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
     {
         return Ok((FilterOperator::Range(min, max), value.to_string()));

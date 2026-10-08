@@ -346,6 +346,9 @@ enum Commands {
     # Field Aliases\n\
     species: sp, s  |  individual: ind, i  |  rating: rate, r\n\
     path: p  |  event: e  |  custom: c\n\n\
+    # Quoting\n\
+    Quote values that contain \" and \", \" or \" or a parenthesis:\n\
+    -f advanced -v \"species:'Black and white colobus' or species:Fox\"\n\n\
     # Operators\n\
     Exact match:     species:Fox\n\
     Range:           rating:3-5\n\
