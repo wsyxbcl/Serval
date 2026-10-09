@@ -3,14 +3,15 @@ use crate::schema::{
     IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
     resource_extension, underlying_media_path,
 };
+use crate::transfer::{Mode, Transfer, run_transfers};
 use core::fmt;
 use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
 use polars::prelude::*;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::fs::{File, FileTimes};
+use std::fs::File;
 use std::io;
 use std::str::FromStr;
 use std::{
@@ -306,7 +307,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
             let filter_type = ExtractFilterType::from_alias(field)
                 .ok_or_else(|| anyhow::anyhow!("Unknown filter field: {field}"))?;
 
-            let (operator, cleaned_value) = parse_value_and_operator(value)?;
+            let (operator, cleaned_value) = parse_value_and_operator(filter_type, value)?;
 
             Ok(FilterExpr::Condition(FilterCondition {
                 filter_type,
@@ -320,9 +321,18 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> anyhow::Result<FilterExpr> {
 }
 
 /// Parse value and detect operator (>=, <=, range, etc.)
-fn parse_value_and_operator(value: &str) -> anyhow::Result<(FilterOperator, String)> {
-    // Handle range syntax first (e.g., "1-5", "0.5-4.5")
-    if let Some((min_str, max_str)) = value.split_once('-')
+fn parse_value_and_operator(
+    filter_type: ExtractFilterType,
+    value: &str,
+) -> anyhow::Result<(FilterOperator, String)> {
+    // Handle range syntax first (e.g., "1-5", "0.5-4.5"), only for numeric fields:
+    // "individual:001-002" or "path:2023-01" are plain values.
+    let numeric = matches!(
+        filter_type,
+        ExtractFilterType::Rating | ExtractFilterType::Event
+    );
+    if numeric
+        && let Some((min_str, max_str)) = value.split_once('-')
         && let (Ok(min), Ok(max)) = (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
     {
         return Ok((FilterOperator::Range(min, max), value.to_string()));
@@ -390,8 +400,10 @@ pub fn has_same_field_and_conditions(expr: &FilterExpr) -> bool {
 ///
 /// # Parameters
 /// * `expr` - The filter expression to convert
-/// * `use_aggregated` - If true, treats species/individual as list columns (for path-level filtering)
-pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow::Result<Expr> {
+/// * `per_image` - If true, each condition holds when any row of the same path
+///   matches it (so "sp:A and sp:B" finds images with both species); all rows of
+///   a matching image are kept.
+pub fn filter_expr_to_polars(expr: &FilterExpr, per_image: bool) -> anyhow::Result<Expr> {
     use crate::utils::TagType;
 
     match expr {
@@ -412,21 +424,13 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
 
             let base_col = col(col_name);
 
-            match &condition.operator {
+            let leaf = match &condition.operator {
                 FilterOperator::Equal => {
                     if condition.filter_type == ExtractFilterType::Path {
                         // Path uses contains for substring matching
                         Ok(base_col
                             .str()
                             .contains_literal(lit(condition.value.clone())))
-                    } else if use_aggregated
-                        && (condition.filter_type == ExtractFilterType::Species
-                            || condition.filter_type == ExtractFilterType::Individual)
-                    {
-                        // For aggregated species/individual, check if list contains the value
-                        Ok(base_col
-                            .list()
-                            .contains(lit(condition.value.clone()), false))
                     } else {
                         Ok(base_col.eq(lit(condition.value.clone())))
                     }
@@ -486,15 +490,20 @@ pub fn filter_expr_to_polars(expr: &FilterExpr, use_aggregated: bool) -> anyhow:
                         Err(anyhow::anyhow!("Less operator requires numeric value"))
                     }
                 }
-            }
+            }?;
+            Ok(if per_image {
+                leaf.any(true).over([col(PATH_COLUMN)])?
+            } else {
+                leaf
+            })
         }
         FilterExpr::Logical {
             left,
             operator,
             right,
         } => {
-            let left_expr = filter_expr_to_polars(left, use_aggregated)?;
-            let right_expr = filter_expr_to_polars(right, use_aggregated)?;
+            let left_expr = filter_expr_to_polars(left, per_image)?;
+            let right_expr = filter_expr_to_polars(right, per_image)?;
 
             match operator {
                 LogicalOperator::And => Ok(left_expr.and(right_expr)),
@@ -654,81 +663,96 @@ pub fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
     Ok(path_buf)
 }
 
-pub fn path_enumerate(root_dir: PathBuf, resource_type: ResourceType) -> Vec<PathBuf> {
-    WalkDir::new(root_dir)
+/// Resource paths under `root_dir`, sorted so that runs over the same input
+/// are reproducible (e.g. which of two colliding names gets the "_1" suffix).
+///
+/// `exclude_dir` is the command's own output directory, if it has one. When it
+/// lies inside `root_dir` its subtree is skipped, otherwise a rerun would
+/// process its previous output again. It must already exist to be recognized.
+pub fn path_enumerate(
+    root_dir: PathBuf,
+    resource_type: ResourceType,
+    exclude_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let exclude = exclude_dir.and_then(|dir| nested_dir(&root_dir, dir));
+    let mut paths: Vec<PathBuf> = WalkDir::new(root_dir)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e))
-        .par_bridge()
+        // Ignore rules apply below the root: a root the user passes explicitly
+        // (e.g. ".backup") is walked even if its name would be ignored.
+        .filter_entry(|e| {
+            (e.depth() == 0 || !is_ignored(e)) && exclude.as_deref() != Some(e.path())
+        })
         .filter_map(Result::ok)
         .filter(|e| resource_type.is_resource(e.path()))
         .map(|e| e.into_path())
-        .collect()
+        .collect();
+    paths.sort();
+    paths
 }
 
-/// Return a path that does not exist yet by appending "_1", "_2", ... to the
-/// file stem when the given path is already taken.
-pub fn dedup_output_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
-        return path;
-    }
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = path
-        .extension()
-        .map(|ext| ext.to_string_lossy().into_owned());
-    let mut i = 1;
-    loop {
-        let file_name = match &extension {
-            Some(ext) => format!("{stem}_{i}.{ext}"),
-            None => format!("{stem}_{i}"),
-        };
-        let candidate = path.with_file_name(file_name);
-        if !candidate.exists() {
-            return candidate;
-        }
-        i += 1;
-    }
+/// `dir` expressed under `root_dir` (in the form the walk produces) if it lies
+/// inside it; both are resolved first so relative paths and ".." still match.
+fn nested_dir(root_dir: &Path, dir: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(root_dir).ok()?;
+    let dir = fs::canonicalize(dir).ok()?;
+    dir.strip_prefix(&root)
+        .ok()
+        .map(|relative| root_dir.join(relative))
 }
 
+/// Flatten `deploy_dir` into `working_dir/<dir name>/` (see `flatten_transfers`).
 pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
     resource_type: ResourceType,
     dry_run: bool,
     move_mode: bool,
-    prefix_deploy_id_in_name: bool,
     keep_first_subdir: bool,
 ) -> anyhow::Result<()> {
+    let transfers = flatten_transfers(
+        &deploy_dir,
+        &working_dir,
+        resource_type,
+        false,
+        keep_first_subdir,
+    )?;
+    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
+}
+
+fn transfer_mode(move_mode: bool) -> Mode {
+    if move_mode { Mode::Move } else { Mode::Copy }
+}
+
+/// Transfers that flatten `deploy_dir` into `working_dir/<dir name>/`: each file
+/// is named after its path below `deploy_dir`, parts joined by "-" (prefixed by
+/// the deployment ID in align mode). With `ResourceType::All`, sidecars travel
+/// with their media file.
+fn flatten_transfers(
+    deploy_dir: &Path,
+    working_dir: &Path,
+    resource_type: ResourceType,
+    prefix_deploy_id_in_name: bool,
+    keep_first_subdir: bool,
+) -> anyhow::Result<Vec<Transfer>> {
     let deploy_id = deploy_dir
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory path: no filename"))?;
-
     let base_output_dir = working_dir.join(deploy_id);
-    fs::create_dir_all(base_output_dir.clone())?;
 
-    let resource_paths = path_enumerate(deploy_dir.clone(), resource_type);
-    let num_resource = resource_paths.len();
+    let resource_paths = path_enumerate(
+        deploy_dir.to_path_buf(),
+        resource_type,
+        Some(&base_output_dir),
+    );
     println!(
         "{} {}(s) found in {}",
-        num_resource,
+        resource_paths.len(),
         resource_type,
         deploy_dir.to_string_lossy()
     );
 
-    let mut visited_path: HashSet<String> = HashSet::new();
-    let pb = if !dry_run {
-        Some(indicatif::ProgressBar::new(num_resource as u64))
-    } else {
-        None
-    };
-    if let Some(pb_ref) = &pb {
-        configure_progress_bar(pb_ref);
-    }
-    for resource in resource_paths {
-        let resource_parent = resource.parent().unwrap();
-        let relative_path = resource.strip_prefix(&deploy_dir).unwrap_or(&resource);
+    let flat_target = |resource: &Path| {
+        let relative_path = resource.strip_prefix(deploy_dir).unwrap_or(resource);
         let mut relative_parts: Vec<OsString> = relative_path
             .iter()
             .map(|part| part.to_os_string())
@@ -736,64 +760,55 @@ pub fn resources_flatten(
         if relative_parts.is_empty() {
             relative_parts.push("unnamed_file".into());
         }
-
         let mut output_dir = base_output_dir.clone();
         if keep_first_subdir && relative_parts.len() > 1 {
             output_dir = output_dir.join(&relative_parts[0]);
-            if !dry_run {
-                fs::create_dir_all(output_dir.clone())?;
-            }
         }
-
         let mut name_parts: Vec<OsString> = Vec::new();
         if prefix_deploy_id_in_name {
             name_parts.push(deploy_id.to_os_string());
         }
         name_parts.extend(relative_parts);
-        let resource_name = name_parts.join(std::ffi::OsStr::new("-"));
+        output_dir.join(name_parts.join(std::ffi::OsStr::new("-")))
+    };
 
-        let output_path = output_dir.join(resource_name);
-
-        if !dry_run {
-            // Different sources can flatten to the same name; never overwrite.
-            let final_output_path = dedup_output_path(output_path.clone());
-            if final_output_path != output_path {
-                let message = format!(
-                    "Renamed to {} to avoid overwriting",
-                    final_output_path.display()
-                );
-                log_line(&message);
-                if let Some(pb_ref) = &pb {
-                    pb_ref.println(message);
-                }
+    let pair = matches!(resource_type, ResourceType::All);
+    let is_xmp = |path: &Path| resource_extension(path).as_deref() == Some("xmp");
+    let mut sidecars: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut transfers = Vec::new();
+    let mut media = Vec::new();
+    for path in resource_paths {
+        if pair && is_xmp(&path) {
+            if let Some(other) = sidecars.insert(underlying_media_path(&path), path) {
+                media.push(other); // a second sidecar for the same file travels alone
             }
-            log_line(&format!(
-                "{} {} -> {}",
-                if move_mode { "Moving" } else { "Copying" },
-                resource.display(),
-                final_output_path.display()
-            ));
-            if move_mode {
-                fs::rename(resource, final_output_path)?;
-            } else {
-                fs::copy(resource, final_output_path)?;
-            }
-            if let Some(pb_ref) = &pb {
-                pb_ref.inc(1);
-            }
-        } else if !visited_path.contains(resource_parent.to_string_lossy().as_ref()) {
-            visited_path.insert(resource_parent.to_string_lossy().to_string());
-            println!(
-                "DRYRUN sample: From {} to {}",
-                resource.display(),
-                output_path.display()
-            );
+        } else {
+            media.push(path);
         }
     }
-    if let Some(pb_ref) = pb {
-        pb_ref.finish();
+    for source in media {
+        let sidecar = if is_xmp(&source) {
+            None
+        } else {
+            sidecars.remove(&source)
+        };
+        transfers.push(Transfer {
+            target: flat_target(&source),
+            sidecar,
+            sidecar_slot: pair && !is_xmp(&source),
+            source,
+        });
     }
-    Ok(())
+    // Sidecars without their media file travel alone.
+    for (_, source) in sidecars {
+        transfers.push(Transfer {
+            target: flat_target(&source),
+            sidecar: None,
+            sidecar_slot: false,
+            source,
+        });
+    }
+    Ok(transfers)
 }
 
 pub fn deployments_align(
@@ -816,11 +831,9 @@ pub fn deployments_align(
         .collect()?;
     let deploy_array = deploy_df[DEPLOYMENT_ID_COLUMN].str()?;
 
-    let deploy_iter = deploy_array.iter();
-    let num_iter = deploy_iter.len();
-    let pb = indicatif::ProgressBar::new(num_iter as u64);
-    configure_progress_bar(&pb);
-    for deploy_id in deploy_iter {
+    // Plan all deployments first, so existing targets are asked about once.
+    let mut transfers = Vec::new();
+    for deploy_id in deploy_array.iter() {
         let deploy_id = deploy_id
             .ok_or_else(|| anyhow::anyhow!("Empty deploymentID found in the deployments table"))?;
         let (_, collection_name) = deploy_id.rsplit_once('_').ok_or_else(|| {
@@ -830,19 +843,15 @@ pub fn deployments_align(
         })?;
         let deploy_dir = project_dir.join(collection_name).join(deploy_id);
         let collection_output_dir = output_dir.join(collection_name);
-        resources_flatten(
-            deploy_dir,
-            collection_output_dir.clone(),
+        transfers.extend(flatten_transfers(
+            &deploy_dir,
+            &collection_output_dir,
             resource_type,
-            dry_run,
-            move_mode,
             true,
             keep_first_subdir,
-        )?;
-        pb.inc(1);
+        )?);
     }
-    pb.finish();
-    Ok(())
+    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
 }
 
 pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
@@ -895,21 +904,22 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
                     .file_name()
                     .and_then(|name| name.to_str())
                     .ok_or_else(|| anyhow::anyhow!("Invalid deploy directory name"))?;
-                if !deploy_name.contains(collection_name) {
+                // The deployment ID is "<deployment>_<collection>" in lower case. A name
+                // that already ends with "_<collection>" only needs lowercasing (a mere
+                // substring match would treat "cam1" in collection "a" as renamed).
+                let deploy_lower = deploy_name.to_lowercase();
+                let suffix = format!("_{}", collection_name.to_lowercase());
+                let deploy_id = if deploy_lower.ends_with(&suffix) {
+                    deploy_lower
+                } else {
+                    format!("{deploy_lower}{suffix}")
+                };
+                if deploy_id != deploy_name {
                     if dry_run {
-                        println!(
-                            "Will rename {} to {}_{}",
-                            deploy_name,
-                            deploy_name.to_lowercase(),
-                            collection_name.to_lowercase()
-                        );
+                        println!("Will rename {deploy_name} to {deploy_id}");
                     } else {
                         let mut deploy_id_dir = deploy_dir.clone();
-                        deploy_id_dir.set_file_name(format!(
-                            "{}_{}",
-                            deploy_name.to_lowercase(),
-                            collection_name.to_lowercase()
-                        ));
+                        deploy_id_dir.set_file_name(&deploy_id);
                         let message = format!(
                             "Renaming {} to {}",
                             deploy_dir.display(),
@@ -927,24 +937,24 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
     Ok(())
 }
 
-// copy xmp files to output_dir and keep the directory structure
+/// Copy the XMP files under `source_dir` to `output_dir`, keeping the directory
+/// structure. Unchanged files are skipped; for changed ones the user is asked.
 pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
-    let num_xmp = xmp_paths.len();
-    println!("{num_xmp} xmp files found");
-    let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    configure_progress_bar(&pb);
-
-    for xmp in xmp_paths {
-        let mut output_path = output_dir.clone();
-        let relative_path = xmp.strip_prefix(&source_dir).unwrap();
-        output_path.push(relative_path);
-        fs::create_dir_all(output_path.parent().unwrap())?;
-        fs::copy(xmp, output_path)?;
-        pb.inc(1);
-    }
-    pb.finish();
-    Ok(())
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, Some(&output_dir));
+    println!("{} xmp files found", xmp_paths.len());
+    let transfers = xmp_paths
+        .into_iter()
+        .map(|xmp| {
+            let relative_path = xmp.strip_prefix(&source_dir).unwrap_or(&xmp);
+            Transfer {
+                target: output_dir.join(relative_path),
+                source: xmp,
+                sidecar: None,
+                sidecar_slot: false,
+            }
+        })
+        .collect();
+    run_transfers(transfers, Mode::Copy, None, false)
 }
 
 /// Outcome of one item in a batch operation: performed, or skipped with a reason.
@@ -954,8 +964,12 @@ pub enum BatchOutcome {
 }
 
 /// Print skip warnings, failure errors, and a per-outcome count summary for a
-/// batch operation.
-pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: &str) {
+/// batch operation; an error if any item failed, so the run does not end as a
+/// success (skipped items are not failures).
+pub fn report_batch_results(
+    results: Vec<anyhow::Result<BatchOutcome>>,
+    action: &str,
+) -> anyhow::Result<()> {
     let mut done = 0;
     let mut skipped = Vec::new();
     let mut failures = Vec::new();
@@ -981,6 +995,13 @@ pub fn report_batch_results(results: Vec<anyhow::Result<BatchOutcome>>, action: 
     );
     log_line(&summary);
     println!("{summary}");
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} XMP file(s) failed, see the errors above",
+            failures.len()
+        ));
+    }
+    Ok(())
 }
 
 // Sync XMP metadata to corresponding media files
@@ -1014,7 +1035,7 @@ pub fn sync_xmp_to_media(xmp_path: &Path) -> anyhow::Result<BatchOutcome> {
 }
 
 pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, None);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -1042,7 +1063,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    report_batch_results(results, "synced");
+    report_batch_results(results, "synced")?;
 
     Ok(())
 }
@@ -1055,18 +1076,23 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_filtered = df
+    let df_unique = df
         .lazy()
-        .filter(col("path").is_not_null())
-        .filter(col("path").str().ends_with(lit(".xmp")))
-        .select([col("path")])
-        .unique(
-            Some(cols(vec!["path".to_string()])),
-            UniqueKeepStrategy::First,
-        )
+        .filter(col(PATH_COLUMN).is_not_null())
+        .select([col(PATH_COLUMN)])
+        .unique_stable(None, UniqueKeepStrategy::First)
         .collect()?;
+    // Extension check in Rust so that ".XMP" counts too.
+    let xmp_paths: Vec<PathBuf> = df_unique
+        .column(PATH_COLUMN)?
+        .str()?
+        .iter()
+        .flatten()
+        .map(PathBuf::from)
+        .filter(|path| resource_extension(path).as_deref() == Some("xmp"))
+        .collect();
 
-    let num_files = df_filtered.height();
+    let num_files = xmp_paths.len();
     if num_files == 0 {
         println!("No XMP files found in CSV");
         return Ok(());
@@ -1078,27 +1104,24 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     configure_progress_bar(&pb);
     pb.set_message("Syncing XMP files in CSV...");
 
-    let path_col = df_filtered.column("path")?.str()?;
-
-    let results: Vec<anyhow::Result<BatchOutcome>> = path_col
+    let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
         .par_iter()
-        .filter_map(|path| path.map(PathBuf::from))
         .map(|xmp_path| {
-            let result = sync_xmp_to_media(&xmp_path);
+            let result = sync_xmp_to_media(xmp_path);
             pb.inc(1);
             result
         })
         .collect();
 
     pb.finish();
-    report_batch_results(results, "synced");
+    report_batch_results(results, "synced")?;
 
     Ok(())
 }
 
 // Remove all XMP files recursively from a directory
 pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
-    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp);
+    let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, None);
     let num_xmp = xmp_paths.len();
 
     if num_xmp == 0 {
@@ -1124,7 +1147,7 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
         .collect();
 
     pb.finish();
-    report_batch_results(results, "removed");
+    report_batch_results(results, "removed")?;
     Ok(())
 }
 
@@ -1193,21 +1216,6 @@ where
     (deploy_level + 1).try_into().ok()
 }
 
-pub fn deployment_from_path(path: &Path, deploy_path_index: i32) -> anyhow::Result<String> {
-    let normalized_path = normalize_path_separators(&path.to_string_lossy());
-    normalized_path
-        .split('/')
-        .nth(deploy_path_index.try_into()?)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Cannot extract deployment from path '{}' with index {}.",
-                path.display(),
-                deploy_path_index
-            )
-        })
-}
-
 pub fn deployment_from_path_expr(path_expr: Expr, deploy_path_index: i32) -> Expr {
     path_expr
         .str()
@@ -1222,7 +1230,10 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
     let time = time.trim_end_matches('Z');
     // Offsets (+HH:MM / -HH:MM) and fractional seconds can only appear after the
     // time-of-day part, so search after 'T'/' ' to avoid cutting at date separators.
-    let time_start = time.find(['T', ' ']).map_or(0, |i| i + 1);
+    // A date without a time ("2023-12-08") has no offset to strip.
+    let Some(time_start) = time.find(['T', ' ']).map(|i| i + 1) else {
+        return Ok(time.to_string());
+    };
     let tz_start = time[time_start..]
         .find(['+', '-', '.'])
         .map_or(time.len(), |i| time_start + i);
@@ -1231,16 +1242,6 @@ pub fn ignore_timezone(time: String) -> anyhow::Result<String> {
 
 pub fn iso_datetime_to_csv_format(time: &str) -> String {
     time.replace('T', " ")
-}
-
-pub fn sync_modified_time(source: PathBuf, target: PathBuf) -> anyhow::Result<()> {
-    let src = fs::metadata(source)?;
-    let dest = File::options().write(true).open(target)?;
-    let times = FileTimes::new()
-        .set_accessed(src.accessed()?)
-        .set_modified(src.modified()?);
-    dest.set_times(times)?;
-    Ok(())
 }
 
 pub fn tags_csv_translate(
@@ -1256,13 +1257,37 @@ pub fn tags_csv_translate(
         .finish()?;
     reject_duplicate_csv_columns(&source_df)?;
     let taglist_df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
         .with_columns(csv_projection_columns(&[from, to]))
         .try_into_reader_with_file_path(Some(taglist_csv))?
         .finish()?;
     reject_duplicate_csv_columns(&taglist_df)?;
 
+    // Each `from` value must have one translation; a repeated one would
+    // silently duplicate every matching row in the join below.
+    let taglist_from = taglist_df.column(from)?.str()?;
+    let mut seen = HashSet::new();
+    let mut duplicates: Vec<&str> = taglist_from
+        .iter()
+        .flatten()
+        .filter(|value| !seen.insert(*value))
+        .collect();
+    duplicates.sort_unstable();
+    duplicates.dedup();
+    if !duplicates.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Taglist has repeated '{from}' value(s), each needs exactly one translation: {}",
+            duplicates
+                .iter()
+                .take(20)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
     let joined = source_df.lazy().join(
-        taglist_df.lazy(),
+        taglist_df.clone().lazy(),
         [col(TagType::Species.col_name())],
         [col(from)],
         JoinArgs::new(JoinType::Left),
@@ -1280,18 +1305,24 @@ pub fn tags_csv_translate(
         .unique(None, UniqueKeepStrategy::Any)
         .collect()?;
     if unknown.height() > 0 {
-        let mut sample = Vec::new();
-        if let Ok(col) = unknown.column(TagType::Species.col_name())
-            && let Ok(ca) = col.str()
-        {
-            for v in ca.iter().flatten().take(20) {
-                sample.push(v.to_string());
-            }
+        let unknown = unknown.column(TagType::Species.col_name())?.str()?;
+        let (untranslated, missing): (Vec<&str>, Vec<&str>) =
+            unknown.iter().flatten().partition(|tag| seen.contains(tag));
+        let sample = |tags: &[&str]| tags.iter().take(20).copied().collect::<Vec<_>>().join(", ");
+        let mut message = Vec::new();
+        if !missing.is_empty() {
+            message.push(format!(
+                "Tag(s) not found in taglist column '{from}': {}",
+                sample(&missing)
+            ));
         }
-        return Err(anyhow::anyhow!(
-            "Unknown tag(s) not found in taglist: {}",
-            sample.join(", ")
-        ));
+        if !untranslated.is_empty() {
+            message.push(format!(
+                "Tag(s) with an empty '{to}' value in taglist: {}",
+                sample(&untranslated)
+            ));
+        }
+        return Err(anyhow::anyhow!(message.join("\n")));
     }
 
     let mut result = joined
@@ -1333,6 +1364,7 @@ mod tests {
             "2023-12-08T10:47:39"
         );
         assert_eq!(strip("2023-12-08 10:47:39-0800"), "2023-12-08 10:47:39");
+        assert_eq!(strip("2023-12-08"), "2023-12-08");
     }
 
     #[test]
@@ -1383,6 +1415,90 @@ mod tests {
         // no directory level between root and file name
         assert_eq!(detect_deployment_path_index(["dep1/a.jpg"]), None);
         assert_eq!(detect_deployment_path_index(Vec::<String>::new()), None);
+    }
+
+    #[test]
+    fn flatten_collision_naming_is_deterministic() {
+        // a/b-c.jpg and a-b/c.jpg both flatten to a-b-c.jpg; the first path in
+        // sorted order must always keep the plain name.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("a")).unwrap();
+        fs::create_dir_all(src.join("a-b")).unwrap();
+        for i in 0..20 {
+            fs::write(src.join(format!("a/b-c{i}.jpg")), "from a").unwrap();
+            fs::write(src.join(format!("a-b/c{i}.jpg")), "from a-b").unwrap();
+        }
+        let out = dir.path().join("out");
+        resources_flatten(src, out.clone(), ResourceType::Media, false, false, false).unwrap();
+        for i in 0..20 {
+            let plain = fs::read_to_string(out.join(format!("src/a-b-c{i}.jpg"))).unwrap();
+            assert_eq!(plain, "from a");
+        }
+    }
+
+    #[test]
+    fn flatten_rerun_skips_output_inside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("d")).unwrap();
+        fs::write(src.join("d/a.jpg"), "").unwrap();
+        for _ in 0..2 {
+            resources_flatten(
+                src.clone(),
+                src.join("out"),
+                ResourceType::All,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+        }
+        // The second run must not flatten the first run's output again
+        // (which would produce names like "out-src-d-a.jpg").
+        let reprocessed: Vec<_> = WalkDir::new(src.join("out"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("out-"))
+            .map(|e| e.into_path())
+            .collect();
+        assert!(reprocessed.is_empty(), "{reprocessed:?}");
+    }
+
+    #[test]
+    fn advanced_filter_matches_per_image_with_all_fields() {
+        let df = df!(
+            PATH_COLUMN => ["a", "a", "b", "c", "c"],
+            "species" => ["Fox", "Deer", "Fox", "Fox", "Deer"],
+            EVENT_ID_COLUMN => ["1", "1", "1", "3", "3"],
+        )
+        .unwrap();
+        let matching = |query: &str| {
+            let expr = parse_advanced_filter(query).unwrap();
+            let per_image = has_same_field_and_conditions(&expr);
+            let out = df
+                .clone()
+                .lazy()
+                .filter(filter_expr_to_polars(&expr, per_image).unwrap())
+                .collect()
+                .unwrap();
+            let mut paths: Vec<String> = out
+                .column(PATH_COLUMN)
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(str::to_string)
+                .collect();
+            paths.sort();
+            paths
+        };
+        // all rows of images with both species are kept
+        assert_eq!(matching("sp:Fox and sp:Deer"), ["a", "a", "c", "c"]);
+        // the event column is still there when a field repeats
+        assert_eq!(matching("sp:Fox and sp:Deer and e:1"), ["a", "a"]);
+        assert_eq!(matching("e:>=2 and e:<=3"), ["c", "c"]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod schema;
 mod tags;
+mod transfer;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -61,7 +62,6 @@ fn run(command: Commands) -> anyhow::Result<()> {
                     type_resource,
                     dryrun,
                     move_mode,
-                    false,
                     keep_first_subdir,
                 )?;
             }
@@ -160,9 +160,16 @@ fn run(command: Commands) -> anyhow::Result<()> {
                 init_run_log("xmp_copy", Some(&output_dir));
                 copy_xmp(absolute_path(source_dir)?, output_dir)?;
             }
-            XmpCommands::Init { source_dir, info } => {
+            XmpCommands::Init {
+                source_dir,
+                output,
+                info,
+            } => {
                 init_run_log("xmp_init", None);
-                init_xmp(absolute_path(source_dir)?, info)?;
+                if info {
+                    println!("Note: --info is no longer needed, the table is always written.");
+                }
+                init_xmp(absolute_path(source_dir)?, output)?;
             }
             XmpCommands::Update {
                 csv_path,
@@ -339,6 +346,9 @@ enum Commands {
     # Field Aliases\n\
     species: sp, s  |  individual: ind, i  |  rating: rate, r\n\
     path: p  |  event: e  |  custom: c\n\n\
+    # Quoting\n\
+    Quote values that contain \" and \", \" or \" or a parenthesis:\n\
+    -f advanced -v \"species:'Black and white colobus' or species:Fox\"\n\n\
     # Operators\n\
     Exact match:     species:Fox\n\
     Range:           rating:3-5\n\
@@ -353,11 +363,15 @@ enum Commands {
         /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: String,
-        /// Enable rename rename mode (including tags in filenames)
+        /// Name copies after all tags of the image:
+        /// {species}__{individuals}__{original name}, values joined by "+"
+        /// (e.g. Fox+Pika__F03__IMG_0001.JPG)
         #[arg(long)]
         rename: bool,
-        /// Skip the copy when the destination file already exists (no auto-renaming)
-        #[arg(long, default_value_t = false)]
+        /// Skip targets that already hold a different file, without asking.
+        /// Kept for old commands: finished copies are now recognized and skipped
+        /// anyway, so an interrupted extract can simply be rerun.
+        #[arg(long, default_value_t = false, hide = true)]
         skip_existing: bool,
         /// Use subdirectories to organize resources
         #[arg(long, default_value_t = false)]
@@ -408,11 +422,21 @@ enum XmpCommands {
         source_dir: PathBuf,
         output_dir: PathBuf,
     },
-    /// Initialize XMP files for media files
+    /// Initialize XMP files for media files, and write a table of every media
+    /// file's datetime and GPS (for review in Caracal, and as input for
+    /// `xmp update --datetime`). Existing XMP files are not changed.
     Init {
         source_dir: PathBuf,
-        /// Enable info mode and write an XMP init datetime CSV
-        #[arg(short, long)]
+        /// Output directory for the table
+        #[arg(
+            short,
+            long,
+            value_name = "OUTPUT_DIR",
+            default_value = "./serval_output/serval_init"
+        )]
+        output: PathBuf,
+        /// No longer needed: the table is always written
+        #[arg(short, long, hide = true)]
         info: bool,
     },
     /// Update XMP files from CSV.
