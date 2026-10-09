@@ -1,22 +1,33 @@
 mod schema;
 mod tags;
 mod transfer;
+mod ui;
 mod utils;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    extract_resources, get_classifications, get_temporal_independence, init_xmp, update_datetime,
-    update_tags, write_taglist,
+    CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, extract_resources,
+    get_classifications, get_temporal_independence, init_xmp, update_datetime, update_tags,
+    write_taglist,
 };
+use transfer::OnConflict;
 use utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType, absolute_path, copy_xmp,
-    deployments_align, deployments_rename, init_run_log, log_line, remove_xmp_files,
-    resources_flatten, run_log_path, sync_xmp_directory, sync_xmp_from_csv, tags_csv_translate,
+    AlignOptions, ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType,
+    absolute_path, copy_xmp, deployments_align, deployments_rename, init_run_log, log_line,
+    remove_xmp_files, resources_flatten, run_log_path, sync_xmp_directory, sync_xmp_from_csv,
+    tags_csv_translate,
 };
+
+/// Exit codes: 0 success (possibly with warnings), 1 failed, 2 usage error (clap), 3 stopped for a decision
+/// before writing anything (e.g. existing targets without --on-existing).
+const EXIT_NEEDS_DECISION: i32 = 3;
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
+    if args.progress == ProgressMode::Json {
+        ui::enable_json(args.command.name());
+    }
 
     let result = run(args.command);
     match &result {
@@ -26,7 +37,42 @@ fn main() -> anyhow::Result<()> {
     if let Some(log_path) = run_log_path() {
         println!("Log saved to {}", log_path.display());
     }
+    ui::flush_progress();
+    if let Err(err) = &result {
+        ui::event(serde_json::json!({"serval": "error", "message": format!("{err:#}")}));
+        if err.downcast_ref::<ui::NeedsDecision>().is_some() {
+            eprintln!("Error: {err:#}");
+            std::process::exit(EXIT_NEEDS_DECISION);
+        }
+    }
     result
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+enum ProgressMode {
+    /// Progress bars and plain lines for a person
+    Terminal,
+    /// JSON events on stderr, one per line, for a program such as Waxbill
+    Json,
+}
+
+impl Commands {
+    fn name(&self) -> &'static str {
+        match self {
+            Commands::Align { .. } => "align",
+            Commands::Observe { .. } => "observe",
+            Commands::Rename { .. } => "rename",
+            Commands::Tags2img { .. } => "tags2img",
+            Commands::Capture { .. } => "capture",
+            Commands::Extract { .. } => "extract",
+            Commands::Translate { .. } => "translate",
+            Commands::Xmp(XmpCommands::Copy { .. }) => "xmp copy",
+            Commands::Xmp(XmpCommands::Init { .. }) => "xmp init",
+            Commands::Xmp(XmpCommands::Update { .. }) => "xmp update",
+            Commands::Xmp(XmpCommands::Remove { .. }) => "xmp remove",
+            Commands::Xmp(XmpCommands::Sync { .. }) => "xmp sync",
+        }
+    }
 }
 
 fn run(command: Commands) -> anyhow::Result<()> {
@@ -39,31 +85,27 @@ fn run(command: Commands) -> anyhow::Result<()> {
             dryrun,
             move_mode,
             keep_first_subdir,
+            on_existing,
         } => {
             if !dryrun {
                 init_run_log("align", Some(&output));
             }
+            let options = AlignOptions {
+                resource_type: type_resource,
+                dry_run: dryrun,
+                move_mode,
+                keep_first_subdir,
+                on_existing,
+            };
             if let Some(deploy_table) = deploy_table {
                 println!("Aligning deployments in {}", path.display());
-                deployments_align(
-                    absolute_path(path)?,
-                    output,
-                    deploy_table,
-                    type_resource,
-                    dryrun,
-                    move_mode,
-                    keep_first_subdir,
-                )?;
+                deployments_align(absolute_path(path)?, output.clone(), deploy_table, &options)?;
             } else {
                 println!("Flatten resources in {}", path.display());
-                resources_flatten(
-                    absolute_path(path)?,
-                    output,
-                    type_resource,
-                    dryrun,
-                    move_mode,
-                    keep_first_subdir,
-                )?;
+                resources_flatten(absolute_path(path)?, output.clone(), &options)?;
+            }
+            if !dryrun {
+                ui::output("folder", &output, None);
             }
         }
         Commands::Observe {
@@ -73,6 +115,8 @@ fn run(command: Commands) -> anyhow::Result<()> {
             video,
             image,
             debug,
+            deployment_level,
+            id_species,
         } => {
             let resource_type = if xmp {
                 utils::ResourceType::Xmp
@@ -93,6 +137,8 @@ fn run(command: Commands) -> anyhow::Result<()> {
                 resource_type,
                 debug,
                 false,
+                deployment_level,
+                (!id_species.is_empty()).then_some(id_species),
             )?;
         }
         Commands::Rename {
@@ -121,13 +167,23 @@ fn run(command: Commands) -> anyhow::Result<()> {
             event,
             no_exclude,
             camtrap_dp,
+            min_gap,
+            measure_from,
+            by,
+            deployment_level,
         } => {
             get_temporal_independence(
                 absolute_path(csv_path)?,
                 output,
-                event,
-                no_exclude,
-                camtrap_dp,
+                CaptureOptions {
+                    event,
+                    no_exclude,
+                    camtrap_dp,
+                    min_gap,
+                    measure_from,
+                    by,
+                    deployment_level,
+                },
             )?;
         }
         Commands::Extract {
@@ -139,26 +195,33 @@ fn run(command: Commands) -> anyhow::Result<()> {
             output,
             use_subdir,
             subdir_type,
+            keep_dirs,
+            on_existing,
         } => {
             init_run_log("extract", Some(&output));
             extract_resources(
-                value,
-                filter_type,
-                rename,
-                skip_existing,
                 csv_path,
                 output,
-                use_subdir,
-                subdir_type,
+                ExtractOptions {
+                    filter_type,
+                    filter_value: value,
+                    rename,
+                    skip_existing,
+                    use_subdir,
+                    subdir_type,
+                    keep_dirs,
+                    on_existing,
+                },
             )?;
         }
         Commands::Xmp(xmp_cmd) => match xmp_cmd {
             XmpCommands::Copy {
                 source_dir,
                 output_dir,
+                on_existing,
             } => {
                 init_run_log("xmp_copy", Some(&output_dir));
-                copy_xmp(absolute_path(source_dir)?, output_dir)?;
+                copy_xmp(absolute_path(source_dir)?, output_dir, on_existing)?;
             }
             XmpCommands::Init {
                 source_dir,
@@ -228,6 +291,9 @@ fn run(command: Commands) -> anyhow::Result<()> {
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// How progress and results are reported
+    #[arg(long, global = true, value_enum, default_value = "terminal")]
+    progress: ProgressMode,
 }
 
 #[derive(Debug, Subcommand)]
@@ -255,6 +321,9 @@ enum Commands {
         /// Keep the first subdirectory as an output folder (flatten mode)
         #[arg(long)]
         keep_first_subdir: bool,
+        /// What to do with targets that already hold a different file (asked when not given)
+        #[arg(long, value_enum, value_name = "ACTION")]
+        on_existing: Option<OnConflict>,
     },
     /// Retrieve tags from media metadata
     #[command(arg_required_else_help = true)]
@@ -281,6 +350,13 @@ enum Commands {
         /// media modified time, usable as input for `xmp update --datetime`
         #[arg(short, long)]
         debug: bool,
+        /// Path level of the deployment for the debug table (asked when not given)
+        #[arg(long, value_name = "N")]
+        deployment_level: Option<i32>,
+        /// Individually identified species: in images with several species and
+        /// individual IDs, the IDs go to the one listed species (repeatable)
+        #[arg(long, value_name = "NAME")]
+        id_species: Vec<String>,
     },
     /// Rename a deployment directory from deployment_name to deployment_id
     #[command(arg_required_else_help = true)]
@@ -315,6 +391,18 @@ enum Commands {
         /// Use observation table from camtrap-dp data package
         #[arg(long)]
         camtrap_dp: bool,
+        /// Minimum time gap in minutes for two records to count as independent (asked when not given; default 30)
+        #[arg(long, value_name = "MINUTES")]
+        min_gap: Option<i32>,
+        /// Measure the gap from the previous record or the previous independent record (asked when not given)
+        #[arg(long, value_enum, value_name = "FROM")]
+        measure_from: Option<MeasureFrom>,
+        /// Analyze independence by species or individual ID (asked when not given)
+        #[arg(long, value_enum, value_name = "TARGET")]
+        by: Option<CaptureTarget>,
+        /// Path level of the deployment (asked when not given; detected without a terminal)
+        #[arg(long, value_name = "N")]
+        deployment_level: Option<i32>,
         // TODO custom exclude tags
         /// Output directory
         #[arg(
@@ -379,6 +467,12 @@ enum Commands {
         /// Specify the type used when creating subdirectories
         #[arg(long, default_value_t = SubdirType::Species, value_enum)]
         subdir_type: SubdirType,
+        /// Folders kept above each file in the output, 0 = file only (asked when not given)
+        #[arg(long, value_name = "N")]
+        keep_dirs: Option<usize>,
+        /// What to do with targets that already hold a different file (asked when not given)
+        #[arg(long, value_enum, value_name = "ACTION")]
+        on_existing: Option<OnConflict>,
         /// Set the output directory
         #[arg(
             short,
@@ -421,6 +515,9 @@ enum XmpCommands {
     Copy {
         source_dir: PathBuf,
         output_dir: PathBuf,
+        /// What to do with targets that already hold a different file (asked when not given)
+        #[arg(long, value_enum, value_name = "ACTION")]
+        on_existing: Option<OnConflict>,
     },
     /// Initialize XMP files for media files, and write a table of every media
     /// file's datetime and GPS (for review in Caracal, and as input for

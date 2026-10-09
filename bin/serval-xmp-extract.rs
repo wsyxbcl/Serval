@@ -9,6 +9,6 @@ fn main() -> Result<()> {
     let mut output_dir = source_dir.clone();
     output_dir.push("xmp");
 
-    copy_xmp(source_dir, output_dir)?;
+    copy_xmp(source_dir, output_dir, None)?;
     Ok(())
 }

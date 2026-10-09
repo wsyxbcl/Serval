@@ -7,10 +7,10 @@ use crate::schema::{
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
-    absolute_path, configure_progress_bar, csv_projection_columns, deployment_from_path_expr,
-    detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format, log_line,
-    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
+    absolute_path, csv_projection_columns, deployment_from_path_expr, detect_deployment_path_index,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
+    reject_duplicate_csv_columns,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -192,13 +192,15 @@ fn extract_xmp_gps_coordinates(xmp: &XmpMeta) -> (Option<String>, Option<String>
     (latitude, longitude)
 }
 
+/// The path level of the deployment: `level` when given (`--deployment-level`), otherwise asked on a terminal
+/// with the detected level as default, otherwise the detected level.
 fn prompt_deployment_path_index(
     rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
     path_sample: String,
     detected_index: Option<i32>,
+    level: Option<i32>,
 ) -> anyhow::Result<i32> {
-    println!("\nHere is a sample of the file path ({path_sample})");
-    let path_levels = get_path_levels(path_sample);
+    let path_levels = get_path_levels(path_sample.clone());
     if path_levels.is_empty() {
         return Err(anyhow::anyhow!(
             "Cannot infer deployment from path: expected at least one directory level before the file name."
@@ -207,6 +209,22 @@ fn prompt_deployment_path_index(
     let max = path_levels.len().try_into()?;
     // Auto-detected level, if the guess is within the listed range.
     let default = detected_index.filter(|i| (1..=max).contains(i));
+    if let Some(level) = level {
+        if !(1..=max).contains(&level) {
+            return Err(anyhow::anyhow!(
+                "--deployment-level {level} is out of range: {path_sample} has levels 1 to {max}"
+            ));
+        }
+        return Ok(level);
+    }
+    if !crate::ui::can_ask() {
+        return default.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot detect which path level is the deployment; pass --deployment-level N (1 to {max})"
+            )
+        });
+    }
+    println!("\nHere is a sample of the file path ({path_sample})");
     for (i, entry) in path_levels.iter().enumerate() {
         let n = i as i32 + 1;
         if Some(n) == default {
@@ -387,8 +405,7 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
 /// Caracal, and as input for `xmp update --datetime`).
 pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media, None);
-    let pb = ProgressBar::new(media_paths.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(media_paths.len() as u64, "write");
     let warnings = WarningCollector::default();
     // Files are independent; parallel reads pay off on NAS.
     let rows: Vec<InitRow> = media_paths
@@ -422,6 +439,11 @@ pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()>
     );
     log_line(&summary);
     println!("{summary}");
+    crate::ui::summary(serde_json::json!({
+        "created": count("created"),
+        "existing": count("existing"),
+        "failed": count("failed"),
+    }));
     write_init_table(&working_dir, &output_dir, &rows)?;
     let failed = count("failed");
     if failed > 0 {
@@ -466,7 +488,7 @@ fn write_init_table(working_dir: &Path, output_dir: &Path, rows: &[InitRow]) -> 
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df)?;
-    println!("Saved to {}", csv_path.display());
+    crate::ui::output("csv", &csv_path, Some(df.height()));
     Ok(())
 }
 
@@ -608,6 +630,8 @@ pub fn get_classifications(
     resource_type: ResourceType,
     debug_mode: bool,
     volunteer_mode: bool, //TODO: make a mode argument
+    deployment_level: Option<i32>,
+    id_species: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -626,6 +650,7 @@ pub fn get_classifications(
             &mut rl,
             file_paths[0].to_string_lossy().into_owned(),
             detect_deployment_path_index(file_paths.iter().map(|p| p.to_string_lossy())),
+            deployment_level,
         )?)
     } else {
         None
@@ -674,8 +699,7 @@ pub fn get_classifications(
         .collect();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
-    let pb = ProgressBar::new(num_images as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(num_images as u64, "read");
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
@@ -878,6 +902,7 @@ pub fn get_classifications(
         df_raw.column(PATH_COLUMN)?.str()?,
         df_raw.column("species_tags")?.str()?,
         df_raw.column("individual_tags")?.str()?,
+        id_species.as_deref(),
     )?;
 
     if debug_mode {
@@ -899,7 +924,7 @@ pub fn get_classifications(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_raw)?;
-        println!("Saved to {}", debug_csv_path.to_string_lossy());
+        crate::ui::output("csv", &debug_csv_path, Some(df_raw.height()));
     }
     // One row per (species, individual) pair of an image.
     let df_flatten = df_pairs
@@ -928,7 +953,7 @@ pub fn get_classifications(
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .include_bom(true)
         .finish(&mut df_flatten)?;
-    println!("Saved to {}", tags_csv_path.to_string_lossy());
+    crate::ui::output("csv", &tags_csv_path, Some(df_flatten.height()));
 
     // Number of images per species (an image with three foxes counts once).
     let mut df_count_species = df_flatten
@@ -948,7 +973,7 @@ pub fn get_classifications(
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df_count_species)?;
-    println!("Saved to {}", species_stats_path.to_string_lossy());
+    crate::ui::output("csv", &species_stats_path, Some(df_count_species.height()));
     Ok(())
 }
 
@@ -962,6 +987,7 @@ fn species_individual_pairs(
     paths: &StringChunked,
     species_tags: &StringChunked,
     individual_tags: &StringChunked,
+    given_id_species: Option<&[String]>,
 ) -> anyhow::Result<DataFrame> {
     let images: Vec<(&str, Vec<&str>, Vec<&str>)> =
         izip!(paths.iter(), species_tags.iter(), individual_tags.iter())
@@ -980,10 +1006,11 @@ fn species_individual_pairs(
         .iter()
         .filter(|(_, species, individuals)| is_ambiguous(species, individuals))
         .collect();
-    let id_species = if ambiguous.is_empty() {
-        BTreeSet::new()
-    } else {
-        ask_id_species(&ambiguous)?
+    // `--id-species` answers the question; otherwise it is asked only on a terminal.
+    let id_species: BTreeSet<String> = match given_id_species {
+        Some(given) => given.iter().cloned().collect(),
+        None if !ambiguous.is_empty() && crate::ui::can_ask() => ask_id_species(&ambiguous)?,
+        None => BTreeSet::new(),
     };
 
     let (mut image_col, mut species_col, mut individual_col) = (Vec::new(), Vec::new(), Vec::new());
@@ -1008,7 +1035,7 @@ fn species_individual_pairs(
             }
         } else {
             if is_ambiguous(species, individuals) {
-                unresolved.push(*path);
+                unresolved.push((*path, species, individuals));
             }
             for i in individuals {
                 species.iter().for_each(|s| push(s, i));
@@ -1016,17 +1043,7 @@ fn species_individual_pairs(
         }
     }
     if !unresolved.is_empty() {
-        eprintln!(
-            "Warning: {} image(s) with several species and individuals could not be \
-             resolved; every individual is paired with every species there:",
-            unresolved.len()
-        );
-        for path in unresolved.iter().take(5) {
-            eprintln!("  {path}");
-        }
-        if unresolved.len() > 5 {
-            eprintln!("  ... and {} more", unresolved.len() - 5);
-        }
+        report_unresolved(&unresolved);
     }
     Ok(DataFrame::new(
         image_col.len(),
@@ -1036,6 +1053,52 @@ fn species_individual_pairs(
             Column::new(TagType::Individual.col_name().into(), individual_col),
         ],
     )?)
+}
+
+/// Images whose individuals could not be given to one species: a warning for people, an `unresolved` event with
+/// the species involved (image counts and the individual IDs seen with them) for programs.
+fn report_unresolved(unresolved: &[(&str, &Vec<&str>, &Vec<&str>)]) {
+    if crate::ui::json() {
+        let mut species: std::collections::BTreeMap<&str, (usize, BTreeSet<&str>)> =
+            Default::default();
+        for (_, names, individuals) in unresolved {
+            for name in names.iter().filter(|s| !s.is_empty()) {
+                let entry = species.entry(name).or_default();
+                entry.0 += 1;
+                entry.1.extend(individuals.iter().filter(|i| !i.is_empty()));
+            }
+        }
+        let species: Vec<_> = species
+            .into_iter()
+            .map(|(name, (images, individuals))| {
+                serde_json::json!({"name": name, "images": images, "individuals": individuals})
+            })
+            .collect();
+        let paths: Vec<&str> = unresolved
+            .iter()
+            .take(200)
+            .map(|(path, _, _)| *path)
+            .collect();
+        crate::ui::event(serde_json::json!({
+            "serval": "unresolved",
+            "kind": "id-species",
+            "count": unresolved.len(),
+            "species": species,
+            "paths": paths,
+        }));
+        return;
+    }
+    eprintln!(
+        "Warning: {} image(s) with several species and individuals could not be \
+         resolved; every individual is paired with every species there:",
+        unresolved.len()
+    );
+    for (path, _, _) in unresolved.iter().take(5) {
+        eprintln!("  {path}");
+    }
+    if unresolved.len() > 5 {
+        eprintln!("  ... and {} more", unresolved.len() - 5);
+    }
 }
 
 /// Ask which species are individually identified; empty without a terminal.
@@ -1082,16 +1145,34 @@ fn ask_id_species(ambiguous: &[&(&str, Vec<&str>, Vec<&str>)]) -> anyhow::Result
     }
 }
 
+/// Options of `extract`. `keep_dirs` (folders kept above each file) and `on_existing` are asked on a terminal
+/// when absent; without a terminal, a missing `keep_dirs` is an error and conflicts stop the run (exit code 3).
+pub struct ExtractOptions {
+    pub filter_type: ExtractFilterType,
+    pub filter_value: String,
+    pub rename: bool,
+    pub skip_existing: bool,
+    pub use_subdir: bool,
+    pub subdir_type: SubdirType,
+    pub keep_dirs: Option<usize>,
+    pub on_existing: Option<OnConflict>,
+}
+
 pub fn extract_resources(
-    filter_value: String,
-    filter_type: ExtractFilterType,
-    rename: bool,
-    skip_existing: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
-    use_subdir: bool,
-    subdir_value: SubdirType,
+    options: ExtractOptions,
 ) -> anyhow::Result<()> {
+    let ExtractOptions {
+        filter_type,
+        filter_value,
+        rename,
+        skip_existing,
+        use_subdir,
+        subdir_type: subdir_value,
+        keep_dirs,
+        on_existing,
+    } = options;
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
@@ -1218,39 +1299,53 @@ pub fn extract_resources(
 
     println!("Found {} matching records", df_filtered.height());
 
-    // Get the top level directory (to keep)
+    // How many folders above each file to keep: from --keep-dirs, else asked on a terminal.
     let path_sample = df_filtered
         .column("path")?
         .str()?
         .get(0)
         .ok_or_else(|| anyhow::anyhow!("Missing path value in the first filtered record"))?
         .to_string();
-    println!("Here is a sample of the file path ({path_sample}): ");
-    let mut num_option = 0;
-    println!("0): File Only (no directory)");
-    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
+    let sample_dirs: Vec<PathBuf> = absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
         .unwrap()
         .ancestors()
-        .enumerate()
-    {
-        println!("{}): {}", i + 1, entry.to_string_lossy());
-        num_option += 1;
-    }
-
-    let mut rl = Editor::new()?;
-    rl.bind_sequence(
-        Event::Any,
-        EventHandler::Conditional(Box::new(NumericFilteringHandler)),
-    );
-    let h = NumericSelectValidator {
-        min: 0,
-        max: num_option,
-        allow_empty: false,
+        .map(Path::to_path_buf)
+        .collect();
+    let num_option = i32::try_from(sample_dirs.len())?;
+    let deploy_path_index = match keep_dirs {
+        Some(keep) if keep <= sample_dirs.len() => keep,
+        Some(keep) => {
+            return Err(anyhow::anyhow!(
+                "--keep-dirs {keep} is more than the {} folders above {path_sample}",
+                sample_dirs.len()
+            ));
+        }
+        None if crate::ui::can_ask() => {
+            println!("Here is a sample of the file path ({path_sample}): ");
+            println!("0): File Only (no directory)");
+            for (i, entry) in sample_dirs.iter().enumerate() {
+                println!("{}): {}", i + 1, entry.to_string_lossy());
+            }
+            let mut rl = Editor::new()?;
+            rl.bind_sequence(
+                Event::Any,
+                EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+            );
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 0,
+                max: num_option,
+                allow_empty: false,
+            }));
+            let readline = rl.readline("Select the top level directory to keep: ");
+            readline?.trim().parse::<usize>()?
+        }
+        None => {
+            return Err(anyhow::anyhow!(
+                "Pass --keep-dirs N: how many folders above each file to keep (0 = file only)"
+            ));
+        }
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline("Select the top level directory to keep: ");
-    let deploy_path_index = readline?.trim().parse::<usize>()?;
     let warnings = WarningCollector::default();
     let mut transfers = Vec::new();
 
@@ -1357,8 +1452,10 @@ pub fn extract_resources(
     }
     warnings.summarize();
     // --skip-existing predates the check below; it now just answers its question.
-    let preset = skip_existing.then_some(OnConflict::Skip);
-    run_transfers(transfers, Mode::Copy, preset, false)
+    let preset = on_existing.or(skip_existing.then_some(OnConflict::Skip));
+    run_transfers(transfers, Mode::Copy, preset, false)?;
+    crate::ui::output("folder", &output_dir, None);
+    Ok(())
 }
 
 /// File name prefix per path for `extract --rename`:
@@ -1435,14 +1532,49 @@ fn join_capped(values: &BTreeSet<String>) -> String {
     joined
 }
 
+/// Where the independence gap is measured from.
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum MeasureFrom {
+    /// The timer resets at every record (default).
+    LastRecord,
+    /// The timer resets only at records already kept as independent.
+    LastIndependent,
+}
+
+/// What independence is analysed by.
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum CaptureTarget {
+    Species,
+    Individual,
+}
+
+/// Options of `capture`. Each `None` is asked on a terminal, otherwise its default is used
+/// (30 minutes, last record, species, the detected deployment level).
+pub struct CaptureOptions {
+    pub event: bool,
+    pub no_exclude: bool,
+    pub camtrap_dp: bool,
+    pub min_gap: Option<i32>,
+    pub measure_from: Option<MeasureFrom>,
+    pub by: Option<CaptureTarget>,
+    pub deployment_level: Option<i32>,
+}
+
 pub fn get_temporal_independence(
     csv_path: PathBuf,
     output_dir: PathBuf,
-    event: bool,
-    no_exclude: bool,
-    camtrap_dp: bool,
+    options: CaptureOptions,
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
+    let CaptureOptions {
+        event,
+        no_exclude,
+        camtrap_dp,
+        min_gap,
+        measure_from,
+        by,
+        deployment_level,
+    } = options;
 
     // IDs such as "001" must stay text rather than be read as numbers.
     let id_columns = [
@@ -1512,61 +1644,87 @@ pub fn get_temporal_independence(
         }
     };
 
-    // Readlines for parameter setup
+    // Parameters: from the flags, else asked on a terminal, else the defaults.
+    let ask = crate::ui::can_ask();
     let mut rl = Editor::new()?;
     rl.bind_sequence(
         Event::Any,
         EventHandler::Conditional(Box::new(NumericFilteringHandler)), // Force numerical input
     );
-    // Read min_delta_time. Empty input accepts the default; the validator
-    // otherwise requires a positive number, matching the other prompts.
     const DEFAULT_MIN_DELTA_TIME: i32 = 30;
-    let h = NumericSelectValidator {
-        min: 1,
-        max: i32::MAX,
-        allow_empty: true,
-    };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "Minimum time gap in minutes for two records to count as independent [default 30]: ",
-    );
-    let trimmed = readline?.trim().to_string();
-    let min_delta_time: i32 = if trimmed.is_empty() {
-        DEFAULT_MIN_DELTA_TIME
-    } else {
-        trimmed
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?
+    let min_delta_time: i32 = match min_gap {
+        Some(minutes) if minutes >= 1 => minutes,
+        Some(minutes) => {
+            return Err(anyhow::anyhow!(
+                "--min-gap must be at least 1 minute, got {minutes}"
+            ));
+        }
+        None if ask => {
+            // Empty input accepts the default; the validator otherwise requires a positive number.
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: i32::MAX,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "Minimum time gap in minutes for two records to count as independent [default 30]: ",
+            );
+            let trimmed = readline?.trim().to_string();
+            if trimmed.is_empty() {
+                DEFAULT_MIN_DELTA_TIME
+            } else {
+                trimmed
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?
+            }
+        }
+        None => DEFAULT_MIN_DELTA_TIME,
     };
     if min_delta_time > 10080 {
         // 1 week
         println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
     }
-    // Read delta_time_compared_to (default: last record). Empty input accepts the default.
-    let h = NumericSelectValidator {
-        min: 1,
-        max: 2,
-        allow_empty: true,
+    let measure_from = match measure_from {
+        Some(measure_from) => measure_from,
+        None if ask => {
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: 2,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "\nMeasure that time gap from the previous:\n  1) independent record  - the timer resets only at records already kept as independent\n  2) record (default)    - the timer resets at every record\nEnter 1 or 2 [default 2]: ");
+            match readline?.trim().parse() {
+                Ok(1) => MeasureFrom::LastIndependent,
+                _ => MeasureFrom::LastRecord, // "2" or empty default
+            }
+        }
+        None => MeasureFrom::LastRecord,
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "\nMeasure that time gap from the previous:\n  1) independent record  - the timer resets only at records already kept as independent\n  2) record (default)    - the timer resets at every record\nEnter 1 or 2 [default 2]: ");
-    let delta_time_compared_to = match readline?.trim().parse() {
-        Ok(1) => "LastIndependentRecord",
-        _ => "LastRecord", // "2" or empty default
+    let delta_time_compared_to = match measure_from {
+        MeasureFrom::LastIndependent => "LastIndependentRecord",
+        MeasureFrom::LastRecord => "LastRecord",
     };
-    // Get target (species/individual, default: species). Empty input accepts the default.
-    let h = NumericSelectValidator {
-        min: 1,
-        max: 2,
-        allow_empty: true,
+    let by = match by {
+        Some(by) => by,
+        None if ask => {
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: 2,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "\nAnalyze independence by:\n  1) species (default)\n  2) individual ID\nEnter 1 or 2 [default 1]: ");
+            match readline?.trim().parse() {
+                Ok(2) => CaptureTarget::Individual,
+                _ => CaptureTarget::Species, // "1" or empty default
+            }
+        }
+        None => CaptureTarget::Species,
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "\nAnalyze independence by:\n  1) species (default)\n  2) individual ID\nEnter 1 or 2 [default 1]: ");
-    let target = match readline?.trim().parse() {
-        Ok(2) => TagType::Individual,
-        _ => TagType::Species, // "1" or empty default
+    let target = match by {
+        CaptureTarget::Species => TagType::Species,
+        CaptureTarget::Individual => TagType::Individual,
     };
     // Find deployment
     let deploy_path_index = if camtrap_dp {
@@ -1584,6 +1742,7 @@ pub fn get_temporal_independence(
             &mut rl,
             path_sample,
             detected_index,
+            deployment_level,
         )?)
     };
 
@@ -1796,7 +1955,7 @@ pub fn get_temporal_independence(
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_capture_independent)?;
-    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    crate::ui::output("csv", &output_dir.join(&filename), None);
 
     if event {
         let df_events = df_capture_independent.with_row_index("event_id".into(), Some(1))?;
@@ -1832,7 +1991,7 @@ pub fn get_temporal_independence(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_with_events.clone())?;
-        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+        crate::ui::output("csv", &output_dir.join(&filename), None);
     }
 
     let mut df_count_independent = df_capture_independent
@@ -1849,7 +2008,7 @@ pub fn get_temporal_independence(
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_count_independent)?;
-    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    crate::ui::output("csv", &output_dir.join(&filename), None);
 
     if target == TagType::Species {
         let mut df_count_independent_species = df_capture_independent
@@ -1866,7 +2025,7 @@ pub fn get_temporal_independence(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_count_independent_species)?;
-        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+        crate::ui::output("csv", &output_dir.join(&filename), None);
     }
     Ok(())
 }
@@ -2188,8 +2347,7 @@ fn apply_xmp_updates(
     apply: impl Fn(&mut XmpMeta, &[UpdateOp]) -> anyhow::Result<bool> + Sync,
 ) -> anyhow::Result<()> {
     // Pass 1: check every file in memory, write nothing.
-    let pb = ProgressBar::new(groups.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(groups.len() as u64, "plan");
     pb.set_message("Checking XMP files...");
     let checks: Vec<anyhow::Result<bool>> = groups
         .par_iter()
@@ -2211,7 +2369,15 @@ fn apply_xmp_updates(
                 failed += 1;
                 let message = format!("{}: {err}", path.display());
                 log_line(&format!("Error: {message}"));
-                eprintln!("Error: {message}");
+                if crate::ui::json() {
+                    crate::ui::event(serde_json::json!({
+                        "serval": "error",
+                        "path": path.to_string_lossy(),
+                        "message": err.to_string(),
+                    }));
+                } else {
+                    eprintln!("Error: {message}");
+                }
             }
         }
     }
@@ -2225,8 +2391,7 @@ fn apply_xmp_updates(
 
     // Pass 2: write. Each file is replaced atomically; if this stops midway,
     // rerunning the same CSV skips the files already updated.
-    let pb = ProgressBar::new(to_write.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(to_write.len() as u64, "write");
     pb.set_message("Updating XMP files...");
     for (done, (path, ops)) in to_write.iter().enumerate() {
         pb_status(&pb, format!("Updating {}", path.display()));
@@ -2252,6 +2417,11 @@ fn apply_xmp_updates(
     );
     log_line(&summary);
     println!("{summary}");
+    crate::ui::summary(serde_json::json!({
+        "updated": to_write.len(),
+        "already": already,
+        "failed": 0,
+    }));
     warnings.summarize();
     Ok(())
 }

@@ -1475,6 +1475,7 @@ dependencies = [
  "rayon",
  "regex",
  "rustyline",
+ "serde_json",
  "tempfile",
  "walkdir",
  "xmp_toolkit",
