@@ -7,9 +7,9 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, extract_resources,
+    CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField, extract_resources,
     get_classifications, get_temporal_independence, init_xmp, update_datetime, update_tags,
-    write_taglist,
+    write_taglist, write_tags,
 };
 use transfer::OnConflict;
 use utils::{
@@ -69,6 +69,7 @@ impl Commands {
             Commands::Xmp(XmpCommands::Copy { .. }) => "xmp copy",
             Commands::Xmp(XmpCommands::Init { .. }) => "xmp init",
             Commands::Xmp(XmpCommands::Update { .. }) => "xmp update",
+            Commands::Xmp(XmpCommands::Write { .. }) => "xmp write",
             Commands::Xmp(XmpCommands::Remove { .. }) => "xmp remove",
             Commands::Xmp(XmpCommands::Sync { .. }) => "xmp sync",
         }
@@ -247,6 +248,17 @@ fn run(command: Commands) -> anyhow::Result<()> {
                         tag_type.ok_or_else(|| anyhow::anyhow!("Tag type is required"))?;
                     update_tags(absolute_path(csv_path)?, tag_type)?;
                 }
+            }
+            XmpCommands::Write {
+                csv_path,
+                fields,
+                dry_run,
+                create_missing,
+            } => {
+                if !dry_run {
+                    init_run_log("xmp_write", None);
+                }
+                write_tags(absolute_path(csv_path)?, &fields, dry_run, create_missing)?;
             }
             XmpCommands::Remove { source_dir } => {
                 init_run_log("xmp_remove", None);
@@ -547,6 +559,22 @@ enum XmpCommands {
         /// Use datetime mode (reads `xmp_update_datetime` instead of xmp_update).
         #[arg(long)]
         datetime: bool,
+    },
+    /// Write the labels in a table into the XMP files as they are: species, individual,
+    /// rating and datetime in one pass. For each file, each written field becomes exactly
+    /// the table's value (species and individuals from all the file's rows); empty cells
+    /// leave the field unchanged. Use `xmp update` to change old values into new ones.
+    Write {
+        csv_path: PathBuf,
+        /// Only these fields (comma-separated; default: all four)
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "FIELDS")]
+        fields: Vec<WriteField>,
+        /// Check every file and report what would change, without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Create missing sidecars from the media files (as `xmp init` does)
+        #[arg(long)]
+        create_missing: bool,
     },
     /// Remove all XMP files recursively from a directory
     Remove { source_dir: PathBuf },

@@ -321,14 +321,8 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
         media_type: infer_media_type(media)?.to_string(),
         ..Default::default()
     };
-    let media_modified_time = fs::metadata(media)
-        .and_then(|metadata| metadata.modified())
-        .map(|time| {
-            DateTime::<Local>::from(time)
-                .format("%Y-%m-%dT%H:%M:%S")
-                .to_string()
-        });
-    if let Ok(time) = &media_modified_time {
+    let media_modified_time = media_modified_time(media);
+    if let Some(time) = &media_modified_time {
         row.file_modified_time = iso_datetime_to_csv_format(time);
     }
 
@@ -344,6 +338,31 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
         return Ok(row);
     }
 
+    let xmp = sidecar_from_media(media, &mut row, media_modified_time.as_deref())?;
+    write_xmp_with_backup(&xmp_path, &xmp)?;
+    log_line(&format!("Created {}", xmp_path.display()));
+    row.xmp_status = "created";
+    Ok(row)
+}
+
+fn media_modified_time(media: &Path) -> Option<String> {
+    fs::metadata(media)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(|time| {
+            DateTime::<Local>::from(time)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        })
+}
+
+/// The sidecar `xmp init` would create for `media`, in memory: the media file's embedded XMP with the datetime
+/// fields filled (DateTimeOriginal, else a usable CreateDate, else the file's modified time).
+fn sidecar_from_media(
+    media: &Path,
+    row: &mut InitRow,
+    media_modified_time: Option<&str>,
+) -> anyhow::Result<XmpMeta> {
     let mut media_xmp = XmpFile::new()?;
     media_xmp
         .open_file(media, OpenFileOptions::default())
@@ -388,16 +407,13 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
             set_xmp_datetime_fields(&mut xmp, &row.datetime.replace(' ', "T"))?;
             strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
             strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
-        } else if let Ok(time) = &media_modified_time {
+        } else if let Some(time) = media_modified_time {
             // Fall back to the modified time of the file
             row.datetime = iso_datetime_to_csv_format(time);
             set_xmp_datetime_fields(&mut xmp, time)?;
         }
     }
-    write_xmp_with_backup(&xmp_path, &xmp)?;
-    log_line(&format!("Created {}", xmp_path.display()));
-    row.xmp_status = "created";
-    Ok(row)
+    Ok(xmp)
 }
 
 /// Create missing sidecars for the media under `working_dir` and write a table
@@ -2284,9 +2300,11 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     );
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
-    apply_xmp_updates(&groups, &warnings, |xmp, ops| {
+    let counts = apply_xmp_updates(&groups, &warnings, false, read_xmp, |xmp, ops| {
         apply_update_ops(xmp, update_type, ops)
-    })
+    })?;
+    report_updates(&counts);
+    Ok(())
 }
 
 /// CSV line number column; the header is line 1, so data starts at 2.
@@ -2341,18 +2359,29 @@ fn group_update_rows<'a>(
 /// Every file is checked before any is written, so a bad CSV changes nothing;
 /// files that already show the result are skipped, so rerunning the same CSV
 /// after an interruption finishes the job.
-fn apply_xmp_updates(
-    groups: &[(PathBuf, Vec<UpdateOp>)],
+/// Files that `apply_xmp_updates` changed (or would change) and that already showed the result.
+struct UpdateCounts {
+    changed: usize,
+    already: usize,
+}
+
+/// Apply per-file updates with `apply` (which returns whether the file changes) to files read with `load`.
+/// Every file is checked before any is written, so a bad input changes nothing; files that already show the
+/// result are skipped, so rerunning finishes an interrupted run. With `dry_run`, only the check runs.
+fn apply_xmp_updates<T: Sync>(
+    groups: &[(PathBuf, T)],
     warnings: &WarningCollector,
-    apply: impl Fn(&mut XmpMeta, &[UpdateOp]) -> anyhow::Result<bool> + Sync,
-) -> anyhow::Result<()> {
+    dry_run: bool,
+    load: impl Fn(&Path) -> anyhow::Result<XmpMeta> + Sync,
+    apply: impl Fn(&mut XmpMeta, &T) -> anyhow::Result<bool> + Sync,
+) -> anyhow::Result<UpdateCounts> {
     // Pass 1: check every file in memory, write nothing.
     let pb = crate::ui::progress_bar(groups.len() as u64, "plan");
     pb.set_message("Checking XMP files...");
     let checks: Vec<anyhow::Result<bool>> = groups
         .par_iter()
         .map(|(path, ops)| {
-            let result = read_xmp(path).and_then(|mut xmp| apply(&mut xmp, ops));
+            let result = load(path).and_then(|mut xmp| apply(&mut xmp, ops));
             pb.inc(1);
             result
         })
@@ -2388,6 +2417,13 @@ fn apply_xmp_updates(
         ));
     }
     let already = groups.len() - to_write.len();
+    if dry_run {
+        warnings.summarize();
+        return Ok(UpdateCounts {
+            changed: to_write.len(),
+            already,
+        });
+    }
 
     // Pass 2: write. Each file is replaced atomically; if this stops midway,
     // rerunning the same CSV skips the files already updated.
@@ -2395,7 +2431,7 @@ fn apply_xmp_updates(
     pb.set_message("Updating XMP files...");
     for (done, (path, ops)) in to_write.iter().enumerate() {
         pb_status(&pb, format!("Updating {}", path.display()));
-        let result = read_xmp(path).and_then(|mut xmp| {
+        let result = load(path).and_then(|mut xmp| {
             apply(&mut xmp, ops)?;
             write_xmp_with_backup(path, &xmp)
         });
@@ -2410,20 +2446,25 @@ fn apply_xmp_updates(
         pb.inc(1);
     }
     pb.finish_and_clear();
+    warnings.summarize();
+    Ok(UpdateCounts {
+        changed: to_write.len(),
+        already,
+    })
+}
 
+fn report_updates(counts: &UpdateCounts) {
     let summary = format!(
-        "{} file(s) updated, {already} already up to date",
-        to_write.len()
+        "{} file(s) updated, {} already up to date",
+        counts.changed, counts.already
     );
     log_line(&summary);
     println!("{summary}");
     crate::ui::summary(serde_json::json!({
-        "updated": to_write.len(),
-        "already": already,
+        "updated": counts.changed,
+        "already": counts.already,
         "failed": 0,
     }));
-    warnings.summarize();
-    Ok(())
 }
 
 /// Set the datetime of the listed XMP files from `xmp_update_datetime`, with the
@@ -2478,7 +2519,15 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
         ),
         &warnings,
     );
-    apply_xmp_updates(&groups, &warnings, apply_datetime_ops)
+    let counts = apply_xmp_updates(
+        &groups,
+        &warnings,
+        false,
+        read_xmp,
+        |xmp, ops: &Vec<UpdateOp>| apply_datetime_ops(xmp, ops),
+    )?;
+    report_updates(&counts);
+    Ok(())
 }
 
 fn apply_datetime_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool> {
@@ -2507,6 +2556,396 @@ fn single_target<'a>(ops: &'a [UpdateOp], what: &str) -> anyhow::Result<&'a str>
         )),
         None => Ok(new_value),
     }
+}
+
+/// A field `xmp write` can set from a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, clap::ValueEnum)]
+pub enum WriteField {
+    Species,
+    Individual,
+    Rating,
+    Datetime,
+}
+
+impl WriteField {
+    const ALL: [WriteField; 4] = [
+        WriteField::Species,
+        WriteField::Individual,
+        WriteField::Rating,
+        WriteField::Datetime,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            WriteField::Species => "species",
+            WriteField::Individual => "individual",
+            WriteField::Rating => "rating",
+            WriteField::Datetime => "datetime",
+        }
+    }
+}
+
+/// What one file should say after `xmp write`; `None` leaves the field as it is.
+#[derive(Default)]
+struct Desired {
+    index: usize,
+    /// The sidecar does not exist yet (written even if the labels already match the media file's XMP).
+    missing: bool,
+    species: Option<Vec<String>>,
+    individuals: Option<Vec<String>>,
+    rating: Option<String>,
+    datetime: Option<String>,
+}
+
+/// What `xmp write` changed in one file, for the summary.
+#[derive(Default, Clone)]
+struct WriteChange {
+    fields: Vec<WriteField>,
+    removed_values: bool,
+}
+
+/// Write the labels in a table into the sidecars as they are: for every file in the table, each chosen field
+/// becomes exactly the table's value (species and individuals collected from all the file's rows). Empty cells
+/// leave the field unchanged; other tags and metadata are kept.
+pub fn write_tags(
+    csv_path: PathBuf,
+    fields: &[WriteField],
+    dry_run: bool,
+    create_missing: bool,
+) -> anyhow::Result<()> {
+    let fields: BTreeSet<WriteField> = if fields.is_empty() {
+        WriteField::ALL.into_iter().collect()
+    } else {
+        fields.iter().copied().collect()
+    };
+    let mut df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .with_ignore_errors(false)
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+    let has_column =
+        |df: &DataFrame, name: &str| df.get_column_names().iter().any(|c| c.as_str() == name);
+    if !has_column(&df, DATETIME_COLUMN) && has_column(&df, LEGACY_DATETIME_COLUMN) {
+        df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into())?;
+    }
+    if !has_column(&df, PATH_COLUMN) {
+        return Err(anyhow::anyhow!("The table has no 'path' column"));
+    }
+    let column = |name: &str| -> anyhow::Result<Option<StringChunked>> {
+        Ok(if has_column(&df, name) {
+            Some(df.column(name)?.str()?.clone())
+        } else {
+            None
+        })
+    };
+    let pick = |field: WriteField, name: &str| -> anyhow::Result<Option<StringChunked>> {
+        if fields.contains(&field) {
+            column(name)
+        } else {
+            Ok(None)
+        }
+    };
+    let paths = df.column(PATH_COLUMN)?.str()?.clone();
+    let species = pick(WriteField::Species, TagType::Species.col_name())?;
+    let individuals = pick(WriteField::Individual, TagType::Individual.col_name())?;
+    let ratings = pick(WriteField::Rating, RATING_COLUMN)?;
+    let datetimes = pick(WriteField::Datetime, DATETIME_COLUMN)?;
+    let cell = |values: &Option<StringChunked>, i: usize| -> Option<String> {
+        values
+            .as_ref()
+            .and_then(|v| v.get(i))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+
+    // Group rows by sidecar; species/individuals collect, rating/datetime must agree.
+    let warnings = WarningCollector::default();
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut desired: std::collections::HashMap<PathBuf, (Desired, Vec<usize>, Vec<String>)> =
+        Default::default();
+    for i in 0..df.height() {
+        let row = i + 2; // the header is line 1
+        let Some(path) = paths.get(i).map(str::trim).filter(|p| !p.is_empty()) else {
+            warnings.warn_plain(format!("Missing path (row {row}), skipping."));
+            continue;
+        };
+        let path = PathBuf::from(path);
+        let sidecar = if resource_extension(&path).as_deref() == Some("xmp") {
+            path
+        } else {
+            ["xmp", "XMP"]
+                .into_iter()
+                .map(|ext| path.with_added_extension(ext))
+                .find(|p| p.exists())
+                .unwrap_or_else(|| path.with_added_extension("xmp"))
+        };
+        let entry = desired.entry(sidecar.clone()).or_insert_with(|| {
+            order.push(sidecar.clone());
+            (Desired::default(), Vec::new(), Vec::new())
+        });
+        let (want, rows, problems) = entry;
+        rows.push(row);
+        for (list, value) in [
+            (&mut want.species, cell(&species, i)),
+            (&mut want.individuals, cell(&individuals, i)),
+        ] {
+            if let Some(value) = value {
+                let list = list.get_or_insert_with(Vec::new);
+                if !list.contains(&value) {
+                    list.push(value);
+                }
+            }
+        }
+        if let Some(rating) = cell(&ratings, i) {
+            if rating.parse::<i32>().is_err() {
+                problems.push(format!("rating '{rating}' is not a number (row {row})"));
+            } else if want.rating.as_ref().is_some_and(|r| r != &rating) {
+                problems.push(format!("different ratings for the same file (row {row})"));
+            } else {
+                want.rating = Some(rating);
+            }
+        }
+        if let Some(datetime) = cell(&datetimes, i) {
+            let iso = datetime.replace(' ', "T");
+            if NaiveDateTime::parse_from_str(&iso, "%Y-%m-%dT%H:%M:%S").is_err() {
+                problems.push(format!(
+                    "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss (row {row})"
+                ));
+            } else if want.datetime.as_ref().is_some_and(|d| d != &iso) {
+                problems.push(format!("different datetimes for the same file (row {row})"));
+            } else {
+                want.datetime = Some(iso);
+            }
+        }
+    }
+    let mut table_problems = 0;
+    for sidecar in &order {
+        let (_, rows, problems) = &desired[sidecar];
+        if !problems.is_empty() {
+            table_problems += 1;
+            let rows_text = rows
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let message = format!(
+                "{} (rows {rows_text}): {}",
+                sidecar.display(),
+                problems.join("; ")
+            );
+            log_line(&format!("Error: {message}"));
+            if crate::ui::json() {
+                crate::ui::event(serde_json::json!({
+                    "serval": "error",
+                    "path": sidecar.to_string_lossy(),
+                    "rows": rows,
+                    "message": problems.join("; "),
+                }));
+            } else {
+                eprintln!("Error: {message}");
+            }
+        }
+    }
+    if table_problems > 0 {
+        return Err(anyhow::anyhow!(
+            "{table_problems} file(s) have conflicting or invalid values in the table, no file was changed. Fix the table and rerun."
+        ));
+    }
+    let groups: Vec<(PathBuf, Desired)> = order
+        .into_iter()
+        .enumerate()
+        .map(|(index, sidecar)| {
+            let (mut want, _, _) = desired.remove(&sidecar).unwrap();
+            want.index = index;
+            want.missing = !sidecar.exists();
+            (sidecar, want)
+        })
+        .collect();
+    println!("Found {} files in the table", groups.len());
+
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+    let changes: std::sync::Mutex<Vec<Option<WriteChange>>> =
+        std::sync::Mutex::new(vec![None; groups.len()]);
+    let load = |sidecar: &Path| -> anyhow::Result<XmpMeta> {
+        if sidecar.exists() {
+            return read_xmp(sidecar);
+        }
+        if !create_missing {
+            return Err(anyhow::anyhow!(
+                "no XMP sidecar; pass --create-missing to create it from the media file"
+            ));
+        }
+        let media = underlying_media_path(sidecar);
+        sidecar_from_media(
+            &media,
+            &mut InitRow::default(),
+            media_modified_time(&media).as_deref(),
+        )
+    };
+    let apply = |xmp: &mut XmpMeta, want: &Desired| -> anyhow::Result<bool> {
+        let mut change = WriteChange::default();
+        for (field, list, tag_type) in [
+            (WriteField::Species, &want.species, TagType::Species),
+            (
+                WriteField::Individual,
+                &want.individuals,
+                TagType::Individual,
+            ),
+        ] {
+            if let Some(list) = list {
+                let (changed, removed) = set_tag_list(xmp, tag_type, list)?;
+                if changed {
+                    change.fields.push(field);
+                }
+                change.removed_values |= removed;
+            }
+        }
+        if let Some(rating) = &want.rating {
+            let current = xmp.property(xmp_ns::XMP, "Rating").map(|v| v.value);
+            if current.as_deref() != Some(rating.as_str()) {
+                xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(rating.clone()))?;
+                change.fields.push(WriteField::Rating);
+            }
+        }
+        if let Some(datetime) = &want.datetime {
+            // Tables show local time without the offset (as observe reads it), so a matching value that has an
+            // offset is left as it is.
+            let target = naive_datetime_to_xmp(datetime)?.to_string();
+            let matches = |ns: &str, name: &str| {
+                xmp.property_date(ns, name).is_some_and(|v| {
+                    v.value
+                        .to_string()
+                        .strip_prefix(&target)
+                        .is_some_and(|offset| {
+                            offset.is_empty() || offset.starts_with(['+', '-', 'Z'])
+                        })
+                })
+            };
+            if !matches(xmp_ns::EXIF, "DateTimeOriginal")
+                || !matches(xmp_ns::PHOTOSHOP, "DateCreated")
+            {
+                set_xmp_datetime_fields(xmp, datetime)?;
+                change.fields.push(WriteField::Datetime);
+            }
+        }
+        let changed = !change.fields.is_empty();
+        changes.lock().unwrap()[want.index] = Some(change);
+        Ok(changed || want.missing)
+    };
+    let counts = apply_xmp_updates(&groups, &warnings, dry_run, load, apply)?;
+
+    // Per-field summary from the check pass.
+    let changes = changes.into_inner().unwrap();
+    let per_field: Vec<(WriteField, usize)> = WriteField::ALL
+        .into_iter()
+        .filter(|f| fields.contains(f))
+        .map(|f| {
+            let n = changes
+                .iter()
+                .flatten()
+                .filter(|c| c.fields.contains(&f))
+                .count();
+            (f, n)
+        })
+        .collect();
+    let removed = changes
+        .iter()
+        .flatten()
+        .filter(|c| c.removed_values)
+        .count();
+    let created = groups.iter().filter(|(_, want)| want.missing).count();
+    let verb = if dry_run { "would change" } else { "changed" };
+    let fields_text = per_field
+        .iter()
+        .map(|(f, n)| format!("{} {n}", f.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut summary = format!(
+        "{} file(s) {verb} ({fields_text}), {} already up to date",
+        counts.changed, counts.already
+    );
+    if removed > 0 {
+        summary.push_str(&format!(
+            "; {removed} file(s) lose values that are not in the table"
+        ));
+    }
+    if created > 0 {
+        summary.push_str(&format!(
+            "; {created} sidecar(s) {} from the media files",
+            if dry_run {
+                "would be created"
+            } else {
+                "created"
+            }
+        ));
+    }
+    log_line(&summary);
+    println!("{summary}");
+    let mut event = serde_json::json!({
+        "dry_run": dry_run,
+        "changed": counts.changed,
+        "already": counts.already,
+        "removed_values": removed,
+        "created_sidecars": created,
+        "failed": 0,
+    });
+    for (field, n) in per_field {
+        event["fields"][field.name()] = serde_json::json!(n);
+    }
+    crate::ui::summary(event);
+    Ok(())
+}
+
+/// Make the species or individual list of a file exactly `desired`: entries of that field not in `desired` are
+/// removed and missing ones added, in hierarchicalSubject, digiKam's TagsList and dc:subject. hierarchicalSubject
+/// is the reference for what the file says now. Returns (changed, removed some value).
+fn set_tag_list(
+    xmp: &mut XmpMeta,
+    tag_type: TagType,
+    desired: &[String],
+) -> anyhow::Result<(bool, bool)> {
+    let adobe = tag_type.adobe_tag_prefix();
+    let current: Vec<String> = xmp
+        .property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT)
+        .filter_map(|item| item.value.strip_prefix(adobe).map(str::to_string))
+        .collect();
+    let removed: Vec<&String> = current.iter().filter(|v| !desired.contains(v)).collect();
+    let added: Vec<&String> = desired.iter().filter(|v| !current.contains(v)).collect();
+    if removed.is_empty() && added.is_empty() {
+        return Ok((false, false));
+    }
+    for (ns, array_name, prefix) in [
+        (LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT, adobe),
+        (DIGIKAM_NS, DIGIKAM_TAGSLIST, tag_type.digikam_tag_prefix()),
+        (xmp_ns::DC, "subject", ""),
+    ] {
+        let mut i = xmp.array_len(ns, array_name);
+        while i >= 1 {
+            let item_path = format!("{array_name}[{i}]");
+            if let Some(value) = xmp.property(ns, &item_path).map(|p| p.value)
+                && let Some(bare) = value.strip_prefix(prefix)
+                && removed.iter().any(|r| r.as_str() == bare)
+            {
+                xmp.delete_property(ns, &item_path)?;
+            }
+            i -= 1;
+        }
+        let present: Vec<String> = xmp
+            .property_array(ns, array_name)
+            .map(|p| p.value)
+            .collect();
+        for value in &added {
+            let full = format!("{prefix}{value}");
+            if !present.contains(&full) {
+                let array = XmpValue::new(array_name.to_string()).set_is_array(true);
+                xmp.append_array_item(ns, &array, &XmpValue::new(full))?;
+            }
+        }
+    }
+    Ok((true, !removed.is_empty()))
 }
 
 #[cfg(test)]
@@ -2596,6 +3035,22 @@ mod tests {
         assert_eq!(prefixes["c"], "W_lf__");
         assert!(prefixes["d"].starts_with("Species 00+Species 01+"));
         assert!(prefixes["d"].ends_with(" more__") && prefixes["d"].len() < 120);
+    }
+
+    #[test]
+    fn written_tag_list_replaces_the_files_list() {
+        let mut xmp = species_xmp(&["Fox", "Wolf"]);
+        let desired = ["Wolf".to_string(), "Deer".to_string()];
+        assert_eq!(
+            set_tag_list(&mut xmp, TagType::Species, &desired).unwrap(),
+            (true, true)
+        );
+        assert_eq!(species_of(&xmp), desired);
+        // rerun: nothing to do
+        assert_eq!(
+            set_tag_list(&mut xmp, TagType::Species, &desired).unwrap(),
+            (false, false)
+        );
     }
 
     #[test]
