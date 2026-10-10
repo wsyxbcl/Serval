@@ -6,11 +6,13 @@
 //! hold a different file.
 
 use crate::schema::resource_extension;
-use crate::utils::{configure_progress_bar, log_line, pb_status, run_log_path};
+use crate::ui;
+use crate::utils::{log_line, pb_status, run_log_path};
 use indicatif::ProgressBar;
+use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes};
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,7 +36,7 @@ pub enum Mode {
 }
 
 /// What to do with targets that already hold a different file.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug, clap::ValueEnum)]
 pub enum OnConflict {
     Skip,
     Replace,
@@ -50,6 +52,8 @@ enum Check {
     /// `removes` (an unrelated sidecar next to the target).
     Conflict {
         reason: String,
+        /// Machine-readable reasons: file-differs, sidecar-differs, unrelated-sidecar.
+        codes: Vec<&'static str>,
         writes: Vec<(PathBuf, PathBuf)>,
         removes: Vec<PathBuf>,
     },
@@ -89,8 +93,16 @@ pub fn run_transfers(
             None
         } else if let Some(preset) = preset {
             Some(preset)
-        } else {
+        } else if ui::can_ask() {
             Some(ask_on_conflict()?)
+        } else {
+            report_needs_decision(&planned);
+            return Err(ui::NeedsDecision(format!(
+                "{} existing target(s) differ from their sources; nothing was written. \
+                 Choose with --on-existing skip|replace|rename.",
+                conflicts.len()
+            ))
+            .into());
         }
     };
     if choice == Some(OnConflict::Rename) {
@@ -110,6 +122,12 @@ pub fn run_transfers(
             "DRYRUN: {to_write} to write, {done} already in place, {} conflicting",
             planned.len() - to_write - done
         );
+        ui::summary(json!({
+            "dry_run": true,
+            "to_write": to_write,
+            "already": done,
+            "conflicting": planned.len() - to_write - done,
+        }));
         let mut sampled = HashSet::new();
         for p in &planned {
             if sampled.insert(p.source.parent()) {
@@ -123,8 +141,8 @@ pub fn run_transfers(
         return Ok(());
     }
 
-    let pb = ProgressBar::new(planned.len() as u64);
-    configure_progress_bar(&pb);
+    let phase = if mode == Mode::Move { "move" } else { "copy" };
+    let pb = ui::progress_bar(planned.len() as u64, phase);
     let (mut written, mut skipped, mut replaced) = (0, 0, 0);
     for p in &planned {
         match &p.check {
@@ -164,7 +182,49 @@ pub fn run_transfers(
     }
     log_line(&summary);
     println!("{summary}");
+    ui::summary(json!({
+        "written": written,
+        "already": done,
+        "skipped": skipped,
+        "replaced": replaced,
+        "failed": 0,
+    }));
     Ok(())
+}
+
+/// The conflict list as a `needs` event (at most 200 items; `count` is the full number), for a program to ask the
+/// user and run again with `--on-existing`.
+fn report_needs_decision(planned: &[Planned]) {
+    let conflicts: Vec<&Planned> = planned
+        .iter()
+        .filter(|p| matches!(p.check, Check::Conflict { .. }))
+        .collect();
+    let items: Vec<_> = conflicts
+        .iter()
+        .take(200)
+        .filter_map(|p| match &p.check {
+            Check::Conflict { codes, .. } => {
+                Some(json!({"target": p.target.to_string_lossy(), "reasons": codes}))
+            }
+            _ => None,
+        })
+        .collect();
+    let ready = planned
+        .iter()
+        .filter(|p| matches!(p.check, Check::Write(_)))
+        .count();
+    let done = planned
+        .iter()
+        .filter(|p| matches!(p.check, Check::Done))
+        .count();
+    ui::event(json!({
+        "serval": "needs",
+        "kind": "conflicts",
+        "count": conflicts.len(),
+        "ready": ready,
+        "already": done,
+        "items": items,
+    }));
 }
 
 /// Assign every transfer a target. Clashes within the plan get "_1", "_2", ...
@@ -219,6 +279,7 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
     let mut all_writes = Vec::new();
     let mut removes = Vec::new();
     let mut reasons = Vec::new();
+    let mut codes = Vec::new();
     for (source, dst) in slots {
         let exists = dst.symlink_metadata().is_ok();
         match source {
@@ -228,11 +289,17 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
                     writes.push((source.clone(), dst.clone()));
                 } else if !is_same(source, dst)? {
                     reasons.push(format!("{} differs", file_name(dst)));
+                    codes.push(if is_xmp(dst) {
+                        "sidecar-differs"
+                    } else {
+                        "file-differs"
+                    });
                 }
             }
             None if exists => {
                 removes.push(dst.clone());
                 reasons.push(format!("unrelated {}", file_name(dst)));
+                codes.push("unrelated-sidecar");
             }
             None => {}
         }
@@ -240,6 +307,7 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
     Ok(if !reasons.is_empty() {
         Check::Conflict {
             reason: reasons.join(", "),
+            codes,
             writes: all_writes,
             removes,
         }
@@ -383,6 +451,12 @@ fn file_name(path: &Path) -> String {
 
 fn report_conflicts(conflicts: &[(&Path, &str)]) {
     const SHOWN: usize = 10;
+    if ui::json() {
+        for (target, reason) in conflicts {
+            log_line(&format!("Existing target: {} ({reason})", target.display()));
+        }
+        return;
+    }
     eprintln!(
         "{} target(s) already exist with different content:",
         conflicts.len()
@@ -406,12 +480,6 @@ fn report_conflicts(conflicts: &[(&Path, &str)]) {
 }
 
 fn ask_on_conflict() -> anyhow::Result<OnConflict> {
-    if !io::stdin().is_terminal() {
-        return Err(anyhow::anyhow!(
-            "Existing targets differ from their sources; run in a terminal to choose \
-             whether to skip, replace or rename them. Nothing was written."
-        ));
-    }
     let mut rl = rustyline::DefaultEditor::new()?;
     loop {
         let answer =

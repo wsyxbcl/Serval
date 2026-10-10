@@ -35,6 +35,17 @@ path,filename,media_type,datetime,species,individual,count,sex,bodypart,rating,c
 | `xmp_update` | Replacement tag value used by `serval xmp update` tag mode. |
 | `xmp_update_datetime` | Replacement datetime used by `serval xmp update --datetime`. |
 
+## Writing Back to XMP
+
+Two commands write a table into the XMP sidecars:
+
+- `serval xmp write <CSV>` writes the table as it is: for every file in the table, `species`, `individual`,
+  `rating` and `datetime` become exactly the table's values (species and individuals collected from all of the
+  file's rows). Empty cells leave a field unchanged. `--fields species,rating` limits the fields, `--dry-run`
+  shows what would change, `--create-missing` creates missing sidecars as `xmp init` does.
+- `serval xmp update <CSV>` changes old values into new ones (`xmp_update`, `xmp_update_datetime`) and refuses
+  rows whose old value no longer matches the file.
+
 ## Non-Canonical Columns
 
 The following are not part of the canonical base `tags.csv` schema:

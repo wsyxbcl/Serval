@@ -1,3 +1,4 @@
+use crate::protocol::{EditLabels, FileEdit, FileState, Labels, Outcome};
 use crate::schema::{
     DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
@@ -7,10 +8,10 @@ use crate::schema::{
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
     ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
-    absolute_path, configure_progress_bar, csv_projection_columns, deployment_from_path_expr,
-    detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
-    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format, log_line,
-    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
+    absolute_path, csv_projection_columns, deployment_from_path_expr, detect_deployment_path_index,
+    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
+    iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
+    reject_duplicate_csv_columns,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -192,13 +193,15 @@ fn extract_xmp_gps_coordinates(xmp: &XmpMeta) -> (Option<String>, Option<String>
     (latitude, longitude)
 }
 
+/// The path level of the deployment: `level` when given (`--deployment-level`), otherwise asked on a terminal
+/// with the detected level as default, otherwise the detected level.
 fn prompt_deployment_path_index(
     rl: &mut Editor<NumericSelectValidator, rustyline::history::DefaultHistory>,
     path_sample: String,
     detected_index: Option<i32>,
+    level: Option<i32>,
 ) -> anyhow::Result<i32> {
-    println!("\nHere is a sample of the file path ({path_sample})");
-    let path_levels = get_path_levels(path_sample);
+    let path_levels = get_path_levels(path_sample.clone());
     if path_levels.is_empty() {
         return Err(anyhow::anyhow!(
             "Cannot infer deployment from path: expected at least one directory level before the file name."
@@ -207,6 +210,22 @@ fn prompt_deployment_path_index(
     let max = path_levels.len().try_into()?;
     // Auto-detected level, if the guess is within the listed range.
     let default = detected_index.filter(|i| (1..=max).contains(i));
+    if let Some(level) = level {
+        if !(1..=max).contains(&level) {
+            return Err(anyhow::anyhow!(
+                "--deployment-level {level} is out of range: {path_sample} has levels 1 to {max}"
+            ));
+        }
+        return Ok(level);
+    }
+    if !crate::ui::can_ask() {
+        return default.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot detect which path level is the deployment; pass --deployment-level N (1 to {max})"
+            )
+        });
+    }
+    println!("\nHere is a sample of the file path ({path_sample})");
     for (i, entry) in path_levels.iter().enumerate() {
         let n = i as i32 + 1;
         if Some(n) == default {
@@ -303,14 +322,8 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
         media_type: infer_media_type(media)?.to_string(),
         ..Default::default()
     };
-    let media_modified_time = fs::metadata(media)
-        .and_then(|metadata| metadata.modified())
-        .map(|time| {
-            DateTime::<Local>::from(time)
-                .format("%Y-%m-%dT%H:%M:%S")
-                .to_string()
-        });
-    if let Ok(time) = &media_modified_time {
+    let media_modified_time = media_modified_time(media);
+    if let Some(time) = &media_modified_time {
         row.file_modified_time = iso_datetime_to_csv_format(time);
     }
 
@@ -326,6 +339,31 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
         return Ok(row);
     }
 
+    let xmp = sidecar_from_media(media, &mut row, media_modified_time.as_deref())?;
+    write_xmp_with_backup(&xmp_path, &xmp, true)?;
+    log_line(&format!("Created {}", xmp_path.display()));
+    row.xmp_status = "created";
+    Ok(row)
+}
+
+fn media_modified_time(media: &Path) -> Option<String> {
+    fs::metadata(media)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(|time| {
+            DateTime::<Local>::from(time)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        })
+}
+
+/// The sidecar `xmp init` would create for `media`, in memory: the media file's embedded XMP with the datetime
+/// fields filled (DateTimeOriginal, else a usable CreateDate, else the file's modified time).
+fn sidecar_from_media(
+    media: &Path,
+    row: &mut InitRow,
+    media_modified_time: Option<&str>,
+) -> anyhow::Result<XmpMeta> {
     let mut media_xmp = XmpFile::new()?;
     media_xmp
         .open_file(media, OpenFileOptions::default())
@@ -370,16 +408,13 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
             set_xmp_datetime_fields(&mut xmp, &row.datetime.replace(' ', "T"))?;
             strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "CreateDate")?;
             strip_xmp_datetime_timezone(&mut xmp, xmp_ns::XMP, "ModifyDate")?;
-        } else if let Ok(time) = &media_modified_time {
+        } else if let Some(time) = media_modified_time {
             // Fall back to the modified time of the file
             row.datetime = iso_datetime_to_csv_format(time);
             set_xmp_datetime_fields(&mut xmp, time)?;
         }
     }
-    write_xmp_with_backup(&xmp_path, &xmp)?;
-    log_line(&format!("Created {}", xmp_path.display()));
-    row.xmp_status = "created";
-    Ok(row)
+    Ok(xmp)
 }
 
 /// Create missing sidecars for the media under `working_dir` and write a table
@@ -387,8 +422,7 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
 /// Caracal, and as input for `xmp update --datetime`).
 pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
     let media_paths = path_enumerate(working_dir.clone(), ResourceType::Media, None);
-    let pb = ProgressBar::new(media_paths.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(media_paths.len() as u64, "write");
     let warnings = WarningCollector::default();
     // Files are independent; parallel reads pay off on NAS.
     let rows: Vec<InitRow> = media_paths
@@ -422,6 +456,11 @@ pub fn init_xmp(working_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()>
     );
     log_line(&summary);
     println!("{summary}");
+    crate::ui::summary(serde_json::json!({
+        "created": count("created"),
+        "existing": count("existing"),
+        "failed": count("failed"),
+    }));
     write_init_table(&working_dir, &output_dir, &rows)?;
     let failed = count("failed");
     if failed > 0 {
@@ -466,7 +505,7 @@ fn write_init_table(working_dir: &Path, output_dir: &Path, rows: &[InitRow]) -> 
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df)?;
-    println!("Saved to {}", csv_path.display());
+    crate::ui::output("csv", &csv_path, Some(df.height()));
     Ok(())
 }
 
@@ -608,6 +647,8 @@ pub fn get_classifications(
     resource_type: ResourceType,
     debug_mode: bool,
     volunteer_mode: bool, //TODO: make a mode argument
+    deployment_level: Option<i32>,
+    id_species: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     // Get tag info from the old digikam workflow in shanshui
     // by enumerating file_dir and read xmp metadata from resources
@@ -626,6 +667,7 @@ pub fn get_classifications(
             &mut rl,
             file_paths[0].to_string_lossy().into_owned(),
             detect_deployment_path_index(file_paths.iter().map(|p| p.to_string_lossy())),
+            deployment_level,
         )?)
     } else {
         None
@@ -674,8 +716,7 @@ pub fn get_classifications(
         .collect();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
-    let pb = ProgressBar::new(num_images as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(num_images as u64, "read");
 
     let mut species_tags: Vec<String> = Vec::new();
     let mut individual_tags: Vec<String> = Vec::new();
@@ -878,6 +919,7 @@ pub fn get_classifications(
         df_raw.column(PATH_COLUMN)?.str()?,
         df_raw.column("species_tags")?.str()?,
         df_raw.column("individual_tags")?.str()?,
+        id_species.as_deref(),
     )?;
 
     if debug_mode {
@@ -899,7 +941,7 @@ pub fn get_classifications(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_raw)?;
-        println!("Saved to {}", debug_csv_path.to_string_lossy());
+        crate::ui::output("csv", &debug_csv_path, Some(df_raw.height()));
     }
     // One row per (species, individual) pair of an image.
     let df_flatten = df_pairs
@@ -928,7 +970,7 @@ pub fn get_classifications(
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .include_bom(true)
         .finish(&mut df_flatten)?;
-    println!("Saved to {}", tags_csv_path.to_string_lossy());
+    crate::ui::output("csv", &tags_csv_path, Some(df_flatten.height()));
 
     // Number of images per species (an image with three foxes counts once).
     let mut df_count_species = df_flatten
@@ -948,7 +990,7 @@ pub fn get_classifications(
     CsvWriter::new(&mut file)
         .include_bom(true)
         .finish(&mut df_count_species)?;
-    println!("Saved to {}", species_stats_path.to_string_lossy());
+    crate::ui::output("csv", &species_stats_path, Some(df_count_species.height()));
     Ok(())
 }
 
@@ -962,6 +1004,7 @@ fn species_individual_pairs(
     paths: &StringChunked,
     species_tags: &StringChunked,
     individual_tags: &StringChunked,
+    given_id_species: Option<&[String]>,
 ) -> anyhow::Result<DataFrame> {
     let images: Vec<(&str, Vec<&str>, Vec<&str>)> =
         izip!(paths.iter(), species_tags.iter(), individual_tags.iter())
@@ -980,10 +1023,11 @@ fn species_individual_pairs(
         .iter()
         .filter(|(_, species, individuals)| is_ambiguous(species, individuals))
         .collect();
-    let id_species = if ambiguous.is_empty() {
-        BTreeSet::new()
-    } else {
-        ask_id_species(&ambiguous)?
+    // `--id-species` answers the question; otherwise it is asked only on a terminal.
+    let id_species: BTreeSet<String> = match given_id_species {
+        Some(given) => given.iter().cloned().collect(),
+        None if !ambiguous.is_empty() && crate::ui::can_ask() => ask_id_species(&ambiguous)?,
+        None => BTreeSet::new(),
     };
 
     let (mut image_col, mut species_col, mut individual_col) = (Vec::new(), Vec::new(), Vec::new());
@@ -1008,7 +1052,7 @@ fn species_individual_pairs(
             }
         } else {
             if is_ambiguous(species, individuals) {
-                unresolved.push(*path);
+                unresolved.push((*path, species, individuals));
             }
             for i in individuals {
                 species.iter().for_each(|s| push(s, i));
@@ -1016,17 +1060,7 @@ fn species_individual_pairs(
         }
     }
     if !unresolved.is_empty() {
-        eprintln!(
-            "Warning: {} image(s) with several species and individuals could not be \
-             resolved; every individual is paired with every species there:",
-            unresolved.len()
-        );
-        for path in unresolved.iter().take(5) {
-            eprintln!("  {path}");
-        }
-        if unresolved.len() > 5 {
-            eprintln!("  ... and {} more", unresolved.len() - 5);
-        }
+        report_unresolved(&unresolved);
     }
     Ok(DataFrame::new(
         image_col.len(),
@@ -1036,6 +1070,52 @@ fn species_individual_pairs(
             Column::new(TagType::Individual.col_name().into(), individual_col),
         ],
     )?)
+}
+
+/// Images whose individuals could not be given to one species: a warning for people, an `unresolved` event with
+/// the species involved (image counts and the individual IDs seen with them) for programs.
+fn report_unresolved(unresolved: &[(&str, &Vec<&str>, &Vec<&str>)]) {
+    if crate::ui::json() {
+        let mut species: std::collections::BTreeMap<&str, (usize, BTreeSet<&str>)> =
+            Default::default();
+        for (_, names, individuals) in unresolved {
+            for name in names.iter().filter(|s| !s.is_empty()) {
+                let entry = species.entry(name).or_default();
+                entry.0 += 1;
+                entry.1.extend(individuals.iter().filter(|i| !i.is_empty()));
+            }
+        }
+        let species: Vec<_> = species
+            .into_iter()
+            .map(|(name, (images, individuals))| {
+                serde_json::json!({"name": name, "images": images, "individuals": individuals})
+            })
+            .collect();
+        let paths: Vec<&str> = unresolved
+            .iter()
+            .take(200)
+            .map(|(path, _, _)| *path)
+            .collect();
+        crate::ui::event(serde_json::json!({
+            "serval": "unresolved",
+            "kind": "id-species",
+            "count": unresolved.len(),
+            "species": species,
+            "paths": paths,
+        }));
+        return;
+    }
+    eprintln!(
+        "Warning: {} image(s) with several species and individuals could not be \
+         resolved; every individual is paired with every species there:",
+        unresolved.len()
+    );
+    for (path, _, _) in unresolved.iter().take(5) {
+        eprintln!("  {path}");
+    }
+    if unresolved.len() > 5 {
+        eprintln!("  ... and {} more", unresolved.len() - 5);
+    }
 }
 
 /// Ask which species are individually identified; empty without a terminal.
@@ -1082,16 +1162,34 @@ fn ask_id_species(ambiguous: &[&(&str, Vec<&str>, Vec<&str>)]) -> anyhow::Result
     }
 }
 
+/// Options of `extract`. `keep_dirs` (folders kept above each file) and `on_existing` are asked on a terminal
+/// when absent; without a terminal, a missing `keep_dirs` is an error and conflicts stop the run (exit code 3).
+pub struct ExtractOptions {
+    pub filter_type: ExtractFilterType,
+    pub filter_value: String,
+    pub rename: bool,
+    pub skip_existing: bool,
+    pub use_subdir: bool,
+    pub subdir_type: SubdirType,
+    pub keep_dirs: Option<usize>,
+    pub on_existing: Option<OnConflict>,
+}
+
 pub fn extract_resources(
-    filter_value: String,
-    filter_type: ExtractFilterType,
-    rename: bool,
-    skip_existing: bool,
     csv_path: PathBuf,
     output_dir: PathBuf,
-    use_subdir: bool,
-    subdir_value: SubdirType,
+    options: ExtractOptions,
 ) -> anyhow::Result<()> {
+    let ExtractOptions {
+        filter_type,
+        filter_value,
+        rename,
+        skip_existing,
+        use_subdir,
+        subdir_type: subdir_value,
+        keep_dirs,
+        on_existing,
+    } = options;
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
@@ -1218,39 +1316,53 @@ pub fn extract_resources(
 
     println!("Found {} matching records", df_filtered.height());
 
-    // Get the top level directory (to keep)
+    // How many folders above each file to keep: from --keep-dirs, else asked on a terminal.
     let path_sample = df_filtered
         .column("path")?
         .str()?
         .get(0)
         .ok_or_else(|| anyhow::anyhow!("Missing path value in the first filtered record"))?
         .to_string();
-    println!("Here is a sample of the file path ({path_sample}): ");
-    let mut num_option = 0;
-    println!("0): File Only (no directory)");
-    for (i, entry) in absolute_path(Path::new(&path_sample).to_path_buf())?
+    let sample_dirs: Vec<PathBuf> = absolute_path(Path::new(&path_sample).to_path_buf())?
         .parent()
         .unwrap()
         .ancestors()
-        .enumerate()
-    {
-        println!("{}): {}", i + 1, entry.to_string_lossy());
-        num_option += 1;
-    }
-
-    let mut rl = Editor::new()?;
-    rl.bind_sequence(
-        Event::Any,
-        EventHandler::Conditional(Box::new(NumericFilteringHandler)),
-    );
-    let h = NumericSelectValidator {
-        min: 0,
-        max: num_option,
-        allow_empty: false,
+        .map(Path::to_path_buf)
+        .collect();
+    let num_option = i32::try_from(sample_dirs.len())?;
+    let deploy_path_index = match keep_dirs {
+        Some(keep) if keep <= sample_dirs.len() => keep,
+        Some(keep) => {
+            return Err(anyhow::anyhow!(
+                "--keep-dirs {keep} is more than the {} folders above {path_sample}",
+                sample_dirs.len()
+            ));
+        }
+        None if crate::ui::can_ask() => {
+            println!("Here is a sample of the file path ({path_sample}): ");
+            println!("0): File Only (no directory)");
+            for (i, entry) in sample_dirs.iter().enumerate() {
+                println!("{}): {}", i + 1, entry.to_string_lossy());
+            }
+            let mut rl = Editor::new()?;
+            rl.bind_sequence(
+                Event::Any,
+                EventHandler::Conditional(Box::new(NumericFilteringHandler)),
+            );
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 0,
+                max: num_option,
+                allow_empty: false,
+            }));
+            let readline = rl.readline("Select the top level directory to keep: ");
+            readline?.trim().parse::<usize>()?
+        }
+        None => {
+            return Err(anyhow::anyhow!(
+                "Pass --keep-dirs N: how many folders above each file to keep (0 = file only)"
+            ));
+        }
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline("Select the top level directory to keep: ");
-    let deploy_path_index = readline?.trim().parse::<usize>()?;
     let warnings = WarningCollector::default();
     let mut transfers = Vec::new();
 
@@ -1357,8 +1469,10 @@ pub fn extract_resources(
     }
     warnings.summarize();
     // --skip-existing predates the check below; it now just answers its question.
-    let preset = skip_existing.then_some(OnConflict::Skip);
-    run_transfers(transfers, Mode::Copy, preset, false)
+    let preset = on_existing.or(skip_existing.then_some(OnConflict::Skip));
+    run_transfers(transfers, Mode::Copy, preset, false)?;
+    crate::ui::output("folder", &output_dir, None);
+    Ok(())
 }
 
 /// File name prefix per path for `extract --rename`:
@@ -1435,14 +1549,49 @@ fn join_capped(values: &BTreeSet<String>) -> String {
     joined
 }
 
+/// Where the independence gap is measured from.
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum MeasureFrom {
+    /// The timer resets at every record (default).
+    LastRecord,
+    /// The timer resets only at records already kept as independent.
+    LastIndependent,
+}
+
+/// What independence is analysed by.
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum CaptureTarget {
+    Species,
+    Individual,
+}
+
+/// Options of `capture`. Each `None` is asked on a terminal, otherwise its default is used
+/// (30 minutes, last record, species, the detected deployment level).
+pub struct CaptureOptions {
+    pub event: bool,
+    pub no_exclude: bool,
+    pub camtrap_dp: bool,
+    pub min_gap: Option<i32>,
+    pub measure_from: Option<MeasureFrom>,
+    pub by: Option<CaptureTarget>,
+    pub deployment_level: Option<i32>,
+}
+
 pub fn get_temporal_independence(
     csv_path: PathBuf,
     output_dir: PathBuf,
-    event: bool,
-    no_exclude: bool,
-    camtrap_dp: bool,
+    options: CaptureOptions,
 ) -> anyhow::Result<()> {
     // Temporal independence analysis
+    let CaptureOptions {
+        event,
+        no_exclude,
+        camtrap_dp,
+        min_gap,
+        measure_from,
+        by,
+        deployment_level,
+    } = options;
 
     // IDs such as "001" must stay text rather than be read as numbers.
     let id_columns = [
@@ -1512,61 +1661,87 @@ pub fn get_temporal_independence(
         }
     };
 
-    // Readlines for parameter setup
+    // Parameters: from the flags, else asked on a terminal, else the defaults.
+    let ask = crate::ui::can_ask();
     let mut rl = Editor::new()?;
     rl.bind_sequence(
         Event::Any,
         EventHandler::Conditional(Box::new(NumericFilteringHandler)), // Force numerical input
     );
-    // Read min_delta_time. Empty input accepts the default; the validator
-    // otherwise requires a positive number, matching the other prompts.
     const DEFAULT_MIN_DELTA_TIME: i32 = 30;
-    let h = NumericSelectValidator {
-        min: 1,
-        max: i32::MAX,
-        allow_empty: true,
-    };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "Minimum time gap in minutes for two records to count as independent [default 30]: ",
-    );
-    let trimmed = readline?.trim().to_string();
-    let min_delta_time: i32 = if trimmed.is_empty() {
-        DEFAULT_MIN_DELTA_TIME
-    } else {
-        trimmed
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?
+    let min_delta_time: i32 = match min_gap {
+        Some(minutes) if minutes >= 1 => minutes,
+        Some(minutes) => {
+            return Err(anyhow::anyhow!(
+                "--min-gap must be at least 1 minute, got {minutes}"
+            ));
+        }
+        None if ask => {
+            // Empty input accepts the default; the validator otherwise requires a positive number.
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: i32::MAX,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "Minimum time gap in minutes for two records to count as independent [default 30]: ",
+            );
+            let trimmed = readline?.trim().to_string();
+            if trimmed.is_empty() {
+                DEFAULT_MIN_DELTA_TIME
+            } else {
+                trimmed
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid input: please enter a valid number"))?
+            }
+        }
+        None => DEFAULT_MIN_DELTA_TIME,
     };
     if min_delta_time > 10080 {
         // 1 week
         println!("Note: {min_delta_time} minutes is unusually large (> 1 week)",);
     }
-    // Read delta_time_compared_to (default: last record). Empty input accepts the default.
-    let h = NumericSelectValidator {
-        min: 1,
-        max: 2,
-        allow_empty: true,
+    let measure_from = match measure_from {
+        Some(measure_from) => measure_from,
+        None if ask => {
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: 2,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "\nMeasure that time gap from the previous:\n  1) independent record  - the timer resets only at records already kept as independent\n  2) record (default)    - the timer resets at every record\nEnter 1 or 2 [default 2]: ");
+            match readline?.trim().parse() {
+                Ok(1) => MeasureFrom::LastIndependent,
+                _ => MeasureFrom::LastRecord, // "2" or empty default
+            }
+        }
+        None => MeasureFrom::LastRecord,
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "\nMeasure that time gap from the previous:\n  1) independent record  - the timer resets only at records already kept as independent\n  2) record (default)    - the timer resets at every record\nEnter 1 or 2 [default 2]: ");
-    let delta_time_compared_to = match readline?.trim().parse() {
-        Ok(1) => "LastIndependentRecord",
-        _ => "LastRecord", // "2" or empty default
+    let delta_time_compared_to = match measure_from {
+        MeasureFrom::LastIndependent => "LastIndependentRecord",
+        MeasureFrom::LastRecord => "LastRecord",
     };
-    // Get target (species/individual, default: species). Empty input accepts the default.
-    let h = NumericSelectValidator {
-        min: 1,
-        max: 2,
-        allow_empty: true,
+    let by = match by {
+        Some(by) => by,
+        None if ask => {
+            rl.set_helper(Some(NumericSelectValidator {
+                min: 1,
+                max: 2,
+                allow_empty: true,
+            }));
+            let readline = rl.readline(
+                "\nAnalyze independence by:\n  1) species (default)\n  2) individual ID\nEnter 1 or 2 [default 1]: ");
+            match readline?.trim().parse() {
+                Ok(2) => CaptureTarget::Individual,
+                _ => CaptureTarget::Species, // "1" or empty default
+            }
+        }
+        None => CaptureTarget::Species,
     };
-    rl.set_helper(Some(h));
-    let readline = rl.readline(
-        "\nAnalyze independence by:\n  1) species (default)\n  2) individual ID\nEnter 1 or 2 [default 1]: ");
-    let target = match readline?.trim().parse() {
-        Ok(2) => TagType::Individual,
-        _ => TagType::Species, // "1" or empty default
+    let target = match by {
+        CaptureTarget::Species => TagType::Species,
+        CaptureTarget::Individual => TagType::Individual,
     };
     // Find deployment
     let deploy_path_index = if camtrap_dp {
@@ -1584,6 +1759,7 @@ pub fn get_temporal_independence(
             &mut rl,
             path_sample,
             detected_index,
+            deployment_level,
         )?)
     };
 
@@ -1796,7 +1972,7 @@ pub fn get_temporal_independence(
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_capture_independent)?;
-    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    crate::ui::output("csv", &output_dir.join(&filename), None);
 
     if event {
         let df_events = df_capture_independent.with_row_index("event_id".into(), Some(1))?;
@@ -1832,7 +2008,7 @@ pub fn get_temporal_independence(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_with_events.clone())?;
-        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+        crate::ui::output("csv", &output_dir.join(&filename), None);
     }
 
     let mut df_count_independent = df_capture_independent
@@ -1849,7 +2025,7 @@ pub fn get_temporal_independence(
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
         .finish(&mut df_count_independent)?;
-    println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+    crate::ui::output("csv", &output_dir.join(&filename), None);
 
     if target == TagType::Species {
         let mut df_count_independent_species = df_capture_independent
@@ -1866,7 +2042,7 @@ pub fn get_temporal_independence(
             .include_bom(true)
             .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
             .finish(&mut df_count_independent_species)?;
-        println!("Saved to {}", output_dir.join(filename).to_string_lossy());
+        crate::ui::output("csv", &output_dir.join(&filename), None);
     }
     Ok(())
 }
@@ -2051,20 +2227,26 @@ fn rewrite_tag_array(
     Ok(changed)
 }
 
-/// Serialize `xmp` to `file_path` atomically; an existing file is kept as a
-/// timestamped .backup first.
-fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta) -> anyhow::Result<()> {
+/// Serialize `xmp` to `file_path` atomically; with `backup`, an existing file
+/// is kept as a timestamped .backup first.
+fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta, backup: bool) -> anyhow::Result<()> {
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    write_with_backup(file_path, &modified_xmp, &timestamp)
+    write_with_backup(file_path, &modified_xmp, &timestamp, backup)
 }
 
-/// Replace `file_path` with `content` via a temp file and rename. An existing
-/// file is first copied to `<file>.<timestamp>.backup`; backups never replace
-/// an earlier one, so several writes within one second each keep theirs.
-fn write_with_backup(file_path: &Path, content: &str, timestamp: &str) -> anyhow::Result<()> {
-    if file_path.exists() {
+/// Replace `file_path` with `content` via a temp file and rename. With `backup`,
+/// an existing file is first copied to `<file>.<timestamp>.backup`; backups
+/// never replace an earlier one, so several writes within one second each keep
+/// theirs.
+fn write_with_backup(
+    file_path: &Path,
+    content: &str,
+    timestamp: &str,
+    backup: bool,
+) -> anyhow::Result<()> {
+    if backup && file_path.exists() {
         let (mut backup, _) = create_new_sibling(file_path, timestamp, "backup")?;
         io::copy(&mut fs::File::open(file_path)?, &mut backup)?;
     }
@@ -2125,9 +2307,11 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     );
     XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
     XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
-    apply_xmp_updates(&groups, &warnings, |xmp, ops| {
+    let counts = apply_xmp_updates(&groups, &warnings, false, read_xmp, |xmp, ops| {
         apply_update_ops(xmp, update_type, ops)
-    })
+    })?;
+    report_updates(&counts);
+    Ok(())
 }
 
 /// CSV line number column; the header is line 1, so data starts at 2.
@@ -2182,19 +2366,29 @@ fn group_update_rows<'a>(
 /// Every file is checked before any is written, so a bad CSV changes nothing;
 /// files that already show the result are skipped, so rerunning the same CSV
 /// after an interruption finishes the job.
-fn apply_xmp_updates(
-    groups: &[(PathBuf, Vec<UpdateOp>)],
+/// Files that `apply_xmp_updates` changed (or would change) and that already showed the result.
+struct UpdateCounts {
+    changed: usize,
+    already: usize,
+}
+
+/// Apply per-file updates with `apply` (which returns whether the file changes) to files read with `load`.
+/// Every file is checked before any is written, so a bad input changes nothing; files that already show the
+/// result are skipped, so rerunning finishes an interrupted run. With `dry_run`, only the check runs.
+fn apply_xmp_updates<T: Sync>(
+    groups: &[(PathBuf, T)],
     warnings: &WarningCollector,
-    apply: impl Fn(&mut XmpMeta, &[UpdateOp]) -> anyhow::Result<bool> + Sync,
-) -> anyhow::Result<()> {
+    dry_run: bool,
+    load: impl Fn(&Path) -> anyhow::Result<XmpMeta> + Sync,
+    apply: impl Fn(&mut XmpMeta, &T) -> anyhow::Result<bool> + Sync,
+) -> anyhow::Result<UpdateCounts> {
     // Pass 1: check every file in memory, write nothing.
-    let pb = ProgressBar::new(groups.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(groups.len() as u64, "plan");
     pb.set_message("Checking XMP files...");
     let checks: Vec<anyhow::Result<bool>> = groups
         .par_iter()
         .map(|(path, ops)| {
-            let result = read_xmp(path).and_then(|mut xmp| apply(&mut xmp, ops));
+            let result = load(path).and_then(|mut xmp| apply(&mut xmp, ops));
             pb.inc(1);
             result
         })
@@ -2211,7 +2405,15 @@ fn apply_xmp_updates(
                 failed += 1;
                 let message = format!("{}: {err}", path.display());
                 log_line(&format!("Error: {message}"));
-                eprintln!("Error: {message}");
+                if crate::ui::json() {
+                    crate::ui::event(serde_json::json!({
+                        "serval": "error",
+                        "path": path.to_string_lossy(),
+                        "message": err.to_string(),
+                    }));
+                } else {
+                    eprintln!("Error: {message}");
+                }
             }
         }
     }
@@ -2222,17 +2424,23 @@ fn apply_xmp_updates(
         ));
     }
     let already = groups.len() - to_write.len();
+    if dry_run {
+        warnings.summarize();
+        return Ok(UpdateCounts {
+            changed: to_write.len(),
+            already,
+        });
+    }
 
     // Pass 2: write. Each file is replaced atomically; if this stops midway,
     // rerunning the same CSV skips the files already updated.
-    let pb = ProgressBar::new(to_write.len() as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(to_write.len() as u64, "write");
     pb.set_message("Updating XMP files...");
     for (done, (path, ops)) in to_write.iter().enumerate() {
         pb_status(&pb, format!("Updating {}", path.display()));
-        let result = read_xmp(path).and_then(|mut xmp| {
+        let result = load(path).and_then(|mut xmp| {
             apply(&mut xmp, ops)?;
-            write_xmp_with_backup(path, &xmp)
+            write_xmp_with_backup(path, &xmp, true)
         });
         if let Err(err) = result {
             pb.abandon();
@@ -2245,15 +2453,25 @@ fn apply_xmp_updates(
         pb.inc(1);
     }
     pb.finish_and_clear();
+    warnings.summarize();
+    Ok(UpdateCounts {
+        changed: to_write.len(),
+        already,
+    })
+}
 
+fn report_updates(counts: &UpdateCounts) {
     let summary = format!(
-        "{} file(s) updated, {already} already up to date",
-        to_write.len()
+        "{} file(s) updated, {} already up to date",
+        counts.changed, counts.already
     );
     log_line(&summary);
     println!("{summary}");
-    warnings.summarize();
-    Ok(())
+    crate::ui::summary(serde_json::json!({
+        "updated": counts.changed,
+        "already": counts.already,
+        "failed": 0,
+    }));
 }
 
 /// Set the datetime of the listed XMP files from `xmp_update_datetime`, with the
@@ -2308,7 +2526,15 @@ pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
         ),
         &warnings,
     );
-    apply_xmp_updates(&groups, &warnings, apply_datetime_ops)
+    let counts = apply_xmp_updates(
+        &groups,
+        &warnings,
+        false,
+        read_xmp,
+        |xmp, ops: &Vec<UpdateOp>| apply_datetime_ops(xmp, ops),
+    )?;
+    report_updates(&counts);
+    Ok(())
 }
 
 fn apply_datetime_ops(xmp: &mut XmpMeta, ops: &[UpdateOp]) -> anyhow::Result<bool> {
@@ -2339,6 +2565,756 @@ fn single_target<'a>(ops: &'a [UpdateOp], what: &str) -> anyhow::Result<&'a str>
     }
 }
 
+/// A field `xmp write` can set from a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, clap::ValueEnum)]
+pub enum WriteField {
+    Species,
+    Individual,
+    Rating,
+    Datetime,
+}
+
+impl WriteField {
+    const ALL: [WriteField; 4] = [
+        WriteField::Species,
+        WriteField::Individual,
+        WriteField::Rating,
+        WriteField::Datetime,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            WriteField::Species => "species",
+            WriteField::Individual => "individual",
+            WriteField::Rating => "rating",
+            WriteField::Datetime => "datetime",
+        }
+    }
+}
+
+/// What one file should say after `xmp write`; `None` leaves the field as it is.
+#[derive(Default)]
+struct Desired {
+    index: usize,
+    /// The sidecar does not exist yet (written even if the labels already match the media file's XMP).
+    missing: bool,
+    species: Option<Vec<String>>,
+    individuals: Option<Vec<String>>,
+    rating: Option<String>,
+    datetime: Option<String>,
+}
+
+/// What `xmp write` changed in one file, for the summary.
+#[derive(Default, Clone)]
+struct WriteChange {
+    fields: Vec<WriteField>,
+    removed_values: bool,
+}
+
+/// Write the labels in a table into the sidecars as they are: for every file in the table, each chosen field
+/// becomes exactly the table's value (species and individuals collected from all the file's rows). Empty cells
+/// leave the field unchanged; other tags and metadata are kept.
+pub fn write_tags(
+    csv_path: PathBuf,
+    fields: &[WriteField],
+    dry_run: bool,
+    create_missing: bool,
+) -> anyhow::Result<()> {
+    let fields: BTreeSet<WriteField> = if fields.is_empty() {
+        WriteField::ALL.into_iter().collect()
+    } else {
+        fields.iter().copied().collect()
+    };
+    let mut df = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .with_ignore_errors(false)
+        .try_into_reader_with_file_path(Some(csv_path))?
+        .finish()?;
+    reject_duplicate_csv_columns(&df)?;
+    let has_column =
+        |df: &DataFrame, name: &str| df.get_column_names().iter().any(|c| c.as_str() == name);
+    if !has_column(&df, DATETIME_COLUMN) && has_column(&df, LEGACY_DATETIME_COLUMN) {
+        df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into())?;
+    }
+    if !has_column(&df, PATH_COLUMN) {
+        return Err(anyhow::anyhow!("The table has no 'path' column"));
+    }
+    let column = |name: &str| -> anyhow::Result<Option<StringChunked>> {
+        Ok(if has_column(&df, name) {
+            Some(df.column(name)?.str()?.clone())
+        } else {
+            None
+        })
+    };
+    let pick = |field: WriteField, name: &str| -> anyhow::Result<Option<StringChunked>> {
+        if fields.contains(&field) {
+            column(name)
+        } else {
+            Ok(None)
+        }
+    };
+    let paths = df.column(PATH_COLUMN)?.str()?.clone();
+    let species = pick(WriteField::Species, TagType::Species.col_name())?;
+    let individuals = pick(WriteField::Individual, TagType::Individual.col_name())?;
+    let ratings = pick(WriteField::Rating, RATING_COLUMN)?;
+    let datetimes = pick(WriteField::Datetime, DATETIME_COLUMN)?;
+    let cell = |values: &Option<StringChunked>, i: usize| -> Option<String> {
+        values
+            .as_ref()
+            .and_then(|v| v.get(i))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+
+    // Group rows by sidecar; species/individuals collect, rating/datetime must agree.
+    let warnings = WarningCollector::default();
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut desired: std::collections::HashMap<PathBuf, (Desired, Vec<usize>, Vec<String>)> =
+        Default::default();
+    for i in 0..df.height() {
+        let row = i + 2; // the header is line 1
+        let Some(path) = paths.get(i).map(str::trim).filter(|p| !p.is_empty()) else {
+            warnings.warn_plain(format!("Missing path (row {row}), skipping."));
+            continue;
+        };
+        let path = PathBuf::from(path);
+        let sidecar = sidecar_for(path);
+        let entry = desired.entry(sidecar.clone()).or_insert_with(|| {
+            order.push(sidecar.clone());
+            (Desired::default(), Vec::new(), Vec::new())
+        });
+        let (want, rows, problems) = entry;
+        rows.push(row);
+        for (list, value) in [
+            (&mut want.species, cell(&species, i)),
+            (&mut want.individuals, cell(&individuals, i)),
+        ] {
+            if let Some(value) = value {
+                let list = list.get_or_insert_with(Vec::new);
+                if !list.contains(&value) {
+                    list.push(value);
+                }
+            }
+        }
+        if let Some(rating) = cell(&ratings, i) {
+            if rating.parse::<i32>().is_err() {
+                problems.push(format!("rating '{rating}' is not a number (row {row})"));
+            } else if want.rating.as_ref().is_some_and(|r| r != &rating) {
+                problems.push(format!("different ratings for the same file (row {row})"));
+            } else {
+                want.rating = Some(rating);
+            }
+        }
+        if let Some(datetime) = cell(&datetimes, i) {
+            let iso = datetime.replace(' ', "T");
+            if NaiveDateTime::parse_from_str(&iso, "%Y-%m-%dT%H:%M:%S").is_err() {
+                problems.push(format!(
+                    "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss (row {row})"
+                ));
+            } else if want.datetime.as_ref().is_some_and(|d| d != &iso) {
+                problems.push(format!("different datetimes for the same file (row {row})"));
+            } else {
+                want.datetime = Some(iso);
+            }
+        }
+    }
+    let mut table_problems = 0;
+    for sidecar in &order {
+        let (_, rows, problems) = &desired[sidecar];
+        if !problems.is_empty() {
+            table_problems += 1;
+            let rows_text = rows
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let message = format!(
+                "{} (rows {rows_text}): {}",
+                sidecar.display(),
+                problems.join("; ")
+            );
+            log_line(&format!("Error: {message}"));
+            if crate::ui::json() {
+                crate::ui::event(serde_json::json!({
+                    "serval": "error",
+                    "path": sidecar.to_string_lossy(),
+                    "rows": rows,
+                    "message": problems.join("; "),
+                }));
+            } else {
+                eprintln!("Error: {message}");
+            }
+        }
+    }
+    if table_problems > 0 {
+        return Err(anyhow::anyhow!(
+            "{table_problems} file(s) have conflicting or invalid values in the table, no file was changed. Fix the table and rerun."
+        ));
+    }
+    let groups: Vec<(PathBuf, Desired)> = order
+        .into_iter()
+        .enumerate()
+        .map(|(index, sidecar)| {
+            let (mut want, _, _) = desired.remove(&sidecar).unwrap();
+            want.index = index;
+            want.missing = !sidecar.exists();
+            (sidecar, want)
+        })
+        .collect();
+    println!("Found {} files in the table", groups.len());
+
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+    let changes: std::sync::Mutex<Vec<Option<WriteChange>>> =
+        std::sync::Mutex::new(vec![None; groups.len()]);
+    let load = |sidecar: &Path| -> anyhow::Result<XmpMeta> {
+        if sidecar.exists() {
+            return read_xmp(sidecar);
+        }
+        if !create_missing {
+            return Err(anyhow::anyhow!(
+                "no XMP sidecar; pass --create-missing to create it from the media file"
+            ));
+        }
+        let media = underlying_media_path(sidecar);
+        sidecar_from_media(
+            &media,
+            &mut InitRow::default(),
+            media_modified_time(&media).as_deref(),
+        )
+    };
+    let apply = |xmp: &mut XmpMeta, want: &Desired| -> anyhow::Result<bool> {
+        let mut change = WriteChange::default();
+        for (field, list, tag_type) in [
+            (WriteField::Species, &want.species, TagType::Species),
+            (
+                WriteField::Individual,
+                &want.individuals,
+                TagType::Individual,
+            ),
+        ] {
+            if let Some(list) = list {
+                let (changed, removed) = set_tag_list(xmp, tag_type, list)?;
+                if changed {
+                    change.fields.push(field);
+                }
+                change.removed_values |= removed;
+            }
+        }
+        if let Some(rating) = &want.rating {
+            let current = xmp.property(xmp_ns::XMP, "Rating").map(|v| v.value);
+            if current.as_deref() != Some(rating.as_str()) {
+                xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(rating.clone()))?;
+                change.fields.push(WriteField::Rating);
+            }
+        }
+        if let Some(datetime) = &want.datetime {
+            // Tables show local time without the offset (as observe reads it), so a matching value that has an
+            // offset is left as it is.
+            let target = naive_datetime_to_xmp(datetime)?.to_string();
+            let matches = |ns: &str, name: &str| {
+                xmp.property_date(ns, name).is_some_and(|v| {
+                    v.value
+                        .to_string()
+                        .strip_prefix(&target)
+                        .is_some_and(|offset| {
+                            offset.is_empty() || offset.starts_with(['+', '-', 'Z'])
+                        })
+                })
+            };
+            if !matches(xmp_ns::EXIF, "DateTimeOriginal")
+                || !matches(xmp_ns::PHOTOSHOP, "DateCreated")
+            {
+                set_xmp_datetime_fields(xmp, datetime)?;
+                change.fields.push(WriteField::Datetime);
+            }
+        }
+        let changed = !change.fields.is_empty();
+        changes.lock().unwrap()[want.index] = Some(change);
+        Ok(changed || want.missing)
+    };
+    let counts = apply_xmp_updates(&groups, &warnings, dry_run, load, apply)?;
+
+    // Per-field summary from the check pass.
+    let changes = changes.into_inner().unwrap();
+    let per_field: Vec<(WriteField, usize)> = WriteField::ALL
+        .into_iter()
+        .filter(|f| fields.contains(f))
+        .map(|f| {
+            let n = changes
+                .iter()
+                .flatten()
+                .filter(|c| c.fields.contains(&f))
+                .count();
+            (f, n)
+        })
+        .collect();
+    let removed = changes
+        .iter()
+        .flatten()
+        .filter(|c| c.removed_values)
+        .count();
+    let created = groups.iter().filter(|(_, want)| want.missing).count();
+    let verb = if dry_run { "would change" } else { "changed" };
+    let fields_text = per_field
+        .iter()
+        .map(|(f, n)| format!("{} {n}", f.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut summary = format!(
+        "{} file(s) {verb} ({fields_text}), {} already up to date",
+        counts.changed, counts.already
+    );
+    if removed > 0 {
+        summary.push_str(&format!(
+            "; {removed} file(s) lose values that are not in the table"
+        ));
+    }
+    if created > 0 {
+        summary.push_str(&format!(
+            "; {created} sidecar(s) {} from the media files",
+            if dry_run {
+                "would be created"
+            } else {
+                "created"
+            }
+        ));
+    }
+    log_line(&summary);
+    println!("{summary}");
+    let mut event = serde_json::json!({
+        "dry_run": dry_run,
+        "changed": counts.changed,
+        "already": counts.already,
+        "removed_values": removed,
+        "created_sidecars": created,
+        "failed": 0,
+    });
+    for (field, n) in per_field {
+        event["fields"][field.name()] = serde_json::json!(n);
+    }
+    crate::ui::summary(event);
+    Ok(())
+}
+
+/// The sidecar of `path`: the path itself for an .xmp file, else the media file's existing `.xmp`/`.XMP` sidecar,
+/// else where `xmp init` would create it.
+fn sidecar_for(path: PathBuf) -> PathBuf {
+    if resource_extension(&path).as_deref() == Some("xmp") {
+        return path;
+    }
+    ["xmp", "XMP"]
+        .into_iter()
+        .map(|ext| path.with_added_extension(ext))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| path.with_added_extension("xmp"))
+}
+
+/// The species or individual list of a file, from hierarchicalSubject (as observe reads it).
+fn tag_list(xmp: &XmpMeta, tag_type: TagType) -> Vec<String> {
+    let adobe = tag_type.adobe_tag_prefix();
+    xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT)
+        .filter_map(|item| item.value.strip_prefix(adobe).map(str::to_string))
+        .collect()
+}
+
+/// Make the species or individual list of a file exactly `desired`: entries of that field not in `desired` are
+/// removed and missing ones added, in hierarchicalSubject, digiKam's TagsList and dc:subject. hierarchicalSubject
+/// is the reference for what the file says now. Returns (changed, removed some value).
+fn set_tag_list(
+    xmp: &mut XmpMeta,
+    tag_type: TagType,
+    desired: &[String],
+) -> anyhow::Result<(bool, bool)> {
+    let adobe = tag_type.adobe_tag_prefix();
+    let current = tag_list(xmp, tag_type);
+    let removed: Vec<&String> = current.iter().filter(|v| !desired.contains(v)).collect();
+    let added: Vec<&String> = desired.iter().filter(|v| !current.contains(v)).collect();
+    if removed.is_empty() && added.is_empty() {
+        return Ok((false, false));
+    }
+    for (ns, array_name, prefix) in [
+        (LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT, adobe),
+        (DIGIKAM_NS, DIGIKAM_TAGSLIST, tag_type.digikam_tag_prefix()),
+        (xmp_ns::DC, "subject", ""),
+    ] {
+        let mut i = xmp.array_len(ns, array_name);
+        while i >= 1 {
+            let item_path = format!("{array_name}[{i}]");
+            if let Some(value) = xmp.property(ns, &item_path).map(|p| p.value)
+                && let Some(bare) = value.strip_prefix(prefix)
+                && removed.iter().any(|r| r.as_str() == bare)
+            {
+                xmp.delete_property(ns, &item_path)?;
+            }
+            i -= 1;
+        }
+        let present: Vec<String> = xmp
+            .property_array(ns, array_name)
+            .map(|p| p.value)
+            .collect();
+        for value in &added {
+            let full = format!("{prefix}{value}");
+            if !present.contains(&full) {
+                let array = XmpValue::new(array_name.to_string()).set_is_array(true);
+                xmp.append_array_item(ns, &array, &XmpValue::new(full))?;
+            }
+        }
+    }
+    Ok((true, !removed.is_empty()))
+}
+
+/// A file's labels as observe reads them: species and individuals from hierarchicalSubject, rating (0 when
+/// there is none), DateTimeOriginal or else a usable CreateDate.
+fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
+    let date = |ns: &str, name: &str| xmp.property_date(ns, name).map(|v| v.value.to_string());
+    let datetime = date(xmp_ns::EXIF, "DateTimeOriginal").or_else(|| {
+        date(xmp_ns::XMP, "CreateDate")
+            .filter(|value| !value.starts_with("1904") && !value.starts_with("1970"))
+    });
+    let rating = match xmp.property(xmp_ns::XMP, "Rating") {
+        // xmp:Rating is a real number in the XMP specification
+        Some(value) => value
+            .value
+            .parse::<f64>()
+            .map(|r| r.round() as i32)
+            .map_err(|_| anyhow::anyhow!("invalid rating '{}'", value.value))?,
+        None => 0,
+    };
+    Ok(Labels {
+        species: tag_list(xmp, TagType::Species),
+        individuals: tag_list(xmp, TagType::Individual),
+        rating,
+        datetime: match datetime {
+            Some(value) => Some(iso_datetime_to_csv_format(&ignore_timezone(value)?)),
+            None => None,
+        },
+    })
+}
+
+/// Print one JSON line per state on stdout. A path that is not valid UTF-8 cannot be written as JSON and fails
+/// the run, naming the path, rather than being changed.
+fn print_states(states: &[FileState]) -> anyhow::Result<()> {
+    let mut out = io::stdout().lock();
+    for state in states {
+        let line = serde_json::to_string(state)
+            .map_err(|err| anyhow::anyhow!("{}: {err}", state.path.to_string_lossy()))?;
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// `xmp get`: print the labels of each file as one JSON line on stdout, in the order given. `paths` are sidecars
+/// or media files; without paths, they are read from stdin, one per line.
+pub fn get_labels(paths: Vec<PathBuf>) -> anyhow::Result<()> {
+    let paths = if paths.is_empty() {
+        io::stdin()
+            .lines()
+            .map(|line| line.map(|l| PathBuf::from(l.trim())))
+            .filter(|line| !line.as_ref().is_ok_and(|p| p.as_os_str().is_empty()))
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        paths
+    };
+    let pb = crate::ui::progress_bar(paths.len() as u64, "read");
+    let states: Vec<FileState> = paths
+        .into_par_iter()
+        .map(|path| {
+            let sidecar = sidecar_for(path);
+            let mut state = FileState {
+                exists: sidecar.exists(),
+                path: sidecar,
+                result: None,
+                labels: None,
+                modified: None,
+                message: None,
+            };
+            if state.exists {
+                match read_xmp(&state.path).and_then(|xmp| read_labels(&xmp)) {
+                    Ok(labels) => {
+                        state.labels = Some(labels);
+                        state.modified = modified_millis(&state.path);
+                    }
+                    Err(err) => state.message = Some(format!("{err:#}")),
+                }
+            }
+            pb.inc(1);
+            state
+        })
+        .collect();
+    pb.finish_and_clear();
+    print_states(&states)
+}
+
+/// The sidecar's modification time in milliseconds since the Unix epoch, so Waxbill can tell when a file changed.
+fn modified_millis(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Keep only the first backup of each file: files that already have one in their folder.
+#[derive(Default)]
+struct FirstBackups(std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<BTreeSet<String>>>>);
+
+impl FirstBackups {
+    fn has_backup(&self, file: &Path) -> bool {
+        let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let names = self
+            .0
+            .lock()
+            .unwrap()
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                // `<name>.<timestamp>.backup` → `<name>`, listed once per folder
+                let names = fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let stem = name.strip_suffix(".backup")?;
+                        Some(stem.rsplit_once('.')?.0.to_string())
+                    })
+                    .collect();
+                std::sync::Arc::new(names)
+            })
+            .clone();
+        file.file_name()
+            .is_some_and(|name| names.contains(name.to_string_lossy().as_ref()))
+    }
+}
+
+/// How `xmp set` keeps backups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum BackupMode {
+    /// One backup per write (as every other command)
+    Each,
+    /// Only each file's original: no new backup when the file already has one
+    First,
+}
+
+/// `xmp set`: apply edits read as JSON lines from stdin (`FileEdit`), written once per file. Prints one result per
+/// file on stdout (`written`, `unchanged`, `conflict` or `error`) with the labels now on disk. A file whose labels
+/// no longer match `expect` is a conflict and is left untouched. Malformed input stops the run before anything is
+/// written.
+pub fn set_labels(backup: BackupMode, create_missing: bool) -> anyhow::Result<()> {
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut groups: HashMap<PathBuf, Vec<FileEdit>> = HashMap::new();
+    for (i, line) in io::stdin().lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let edit = serde_json::from_str::<FileEdit>(&line)
+            .map_err(anyhow::Error::from)
+            .and_then(|edit| validate_edit(&edit).map(|()| edit))
+            .map_err(|err| anyhow::anyhow!("Edit on line {}: {err}", i + 1))?;
+        let sidecar = sidecar_for(edit.path.clone());
+        groups
+            .entry(sidecar.clone())
+            .or_insert_with(|| {
+                order.push(sidecar.clone());
+                Vec::new()
+            })
+            .push(edit);
+    }
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+    let first_backups = FirstBackups::default();
+    let pb = crate::ui::progress_bar(order.len() as u64, "write");
+    let states: Vec<FileState> = order
+        .par_iter()
+        .map(|sidecar| {
+            let mut state = FileState {
+                path: sidecar.clone(),
+                result: Some(Outcome::Error),
+                exists: sidecar.exists(),
+                labels: None,
+                modified: None,
+                message: None,
+            };
+            match set_one(
+                sidecar,
+                &groups[sidecar],
+                backup,
+                create_missing,
+                &first_backups,
+            ) {
+                Ok((outcome, message, labels)) => {
+                    match (&outcome, &message) {
+                        (Outcome::Written, _) => {
+                            log_line(&format!("Updated {}", sidecar.display()))
+                        }
+                        (_, Some(message)) => {
+                            log_line(&format!("Conflict: {}: {message}", sidecar.display()))
+                        }
+                        _ => {}
+                    }
+                    state.result = Some(outcome);
+                    state.message = message;
+                    state.exists = sidecar.exists();
+                    state.labels = Some(labels);
+                    state.modified = modified_millis(sidecar);
+                }
+                Err(err) => {
+                    log_line(&format!("Error: {}: {err:#}", sidecar.display()));
+                    state.message = Some(format!("{err:#}"));
+                }
+            }
+            pb.inc(1);
+            state
+        })
+        .collect();
+    pb.finish_and_clear();
+    let count = |outcome: Outcome| states.iter().filter(|s| s.result == Some(outcome)).count();
+    crate::ui::summary(serde_json::json!({
+        "written": count(Outcome::Written),
+        "unchanged": count(Outcome::Unchanged),
+        "conflict": count(Outcome::Conflict),
+        "failed": count(Outcome::Error),
+    }));
+    print_states(&states)
+}
+
+/// Values the files can hold: ratings -1–5, datetimes `yyyy-MM-dd HH:mm:ss`, no empty tags.
+fn validate_edit(edit: &FileEdit) -> anyhow::Result<()> {
+    for labels in [&edit.expect, &edit.set] {
+        if let Some(rating) = labels.rating {
+            anyhow::ensure!((-1..=5).contains(&rating), "rating {rating} is not -1–5");
+        }
+        if let Some(datetime) = &labels.datetime {
+            anyhow::ensure!(
+                NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S").is_ok(),
+                "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss"
+            );
+        }
+    }
+    let tags = [&edit.set.species, &edit.set.individuals]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .chain(&edit.add.species)
+        .chain(&edit.add.individuals);
+    for tag in tags {
+        anyhow::ensure!(!tag.trim().is_empty(), "empty species or individual");
+    }
+    Ok(())
+}
+
+/// Whether the file's current labels show what Waxbill expected. Lists compare as sets.
+fn expect_matches(expect: &EditLabels, current: &Labels) -> bool {
+    let same_set = |expected: &Option<Vec<String>>, current: &[String]| {
+        expected.as_ref().is_none_or(|expected| {
+            expected.iter().collect::<BTreeSet<_>>() == current.iter().collect::<BTreeSet<_>>()
+        })
+    };
+    same_set(&expect.species, &current.species)
+        && same_set(&expect.individuals, &current.individuals)
+        && expect.rating.is_none_or(|r| current.rating == r)
+        && expect
+            .datetime
+            .as_ref()
+            .is_none_or(|d| current.datetime.as_ref() == Some(d))
+}
+
+/// Apply one file's edits. Returns the outcome, a message for a conflict, and the labels now on disk.
+fn set_one(
+    sidecar: &Path,
+    edits: &[FileEdit],
+    backup: BackupMode,
+    create_missing: bool,
+    first_backups: &FirstBackups,
+) -> anyhow::Result<(Outcome, Option<String>, Labels)> {
+    let missing = !sidecar.exists();
+    let mut xmp = if !missing {
+        read_xmp(sidecar)?
+    } else if create_missing {
+        let media = underlying_media_path(sidecar);
+        sidecar_from_media(
+            &media,
+            &mut InitRow::default(),
+            media_modified_time(&media).as_deref(),
+        )?
+    } else {
+        anyhow::bail!("no XMP sidecar (create it with --create-missing)");
+    };
+    let before = read_labels(&xmp)?;
+    if !edits
+        .iter()
+        .all(|edit| expect_matches(&edit.expect, &before))
+    {
+        let message = "the file's labels changed since they were shown".to_string();
+        return Ok((Outcome::Conflict, Some(message), before));
+    }
+    let mut after = before.clone();
+    for edit in edits {
+        for (list, set, add, remove) in [
+            (
+                &mut after.species,
+                &edit.set.species,
+                &edit.add.species,
+                &edit.remove.species,
+            ),
+            (
+                &mut after.individuals,
+                &edit.set.individuals,
+                &edit.add.individuals,
+                &edit.remove.individuals,
+            ),
+        ] {
+            if let Some(set) = set {
+                list.clear();
+                add_missing(list, set);
+            }
+            add_missing(list, add);
+            list.retain(|v| !remove.contains(v));
+        }
+        if let Some(rating) = edit.set.rating {
+            after.rating = rating;
+        }
+        if edit.set.datetime.is_some() {
+            after.datetime = edit.set.datetime.clone();
+        }
+    }
+    if after == before && !missing {
+        return Ok((Outcome::Unchanged, None, before));
+    }
+    for (tag_type, list) in [
+        (TagType::Species, &after.species),
+        (TagType::Individual, &after.individuals),
+    ] {
+        set_tag_list(&mut xmp, tag_type, list)?;
+    }
+    if after.rating != before.rating {
+        match after.rating {
+            0 => xmp.delete_property(xmp_ns::XMP, "Rating")?,
+            rating => {
+                xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(rating.to_string()))?
+            }
+        }
+    }
+    if after.datetime != before.datetime
+        && let Some(datetime) = &after.datetime
+    {
+        set_xmp_datetime_fields(&mut xmp, &datetime.replace(' ', "T"))?;
+    }
+    let keep_backup = backup == BackupMode::Each || !first_backups.has_backup(sidecar);
+    write_xmp_with_backup(sidecar, &xmp, keep_backup)?;
+    Ok((Outcome::Written, None, read_labels(&xmp)?))
+}
+
+fn add_missing(list: &mut Vec<String>, values: &[String]) {
+    for v in values {
+        if !list.contains(v) {
+            list.push(v.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2348,8 +3324,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.jpg.xmp");
         fs::write(&file, "original").unwrap();
-        write_with_backup(&file, "first", "20260930_120000").unwrap();
-        write_with_backup(&file, "second", "20260930_120000").unwrap();
+        write_with_backup(&file, "first", "20260930_120000", true).unwrap();
+        write_with_backup(&file, "second", "20260930_120000", true).unwrap();
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "second");
         let backup = |name: &str| fs::read_to_string(dir.path().join(name)).unwrap();
@@ -2426,6 +3402,22 @@ mod tests {
         assert_eq!(prefixes["c"], "W_lf__");
         assert!(prefixes["d"].starts_with("Species 00+Species 01+"));
         assert!(prefixes["d"].ends_with(" more__") && prefixes["d"].len() < 120);
+    }
+
+    #[test]
+    fn written_tag_list_replaces_the_files_list() {
+        let mut xmp = species_xmp(&["Fox", "Wolf"]);
+        let desired = ["Wolf".to_string(), "Deer".to_string()];
+        assert_eq!(
+            set_tag_list(&mut xmp, TagType::Species, &desired).unwrap(),
+            (true, true)
+        );
+        assert_eq!(species_of(&xmp), desired);
+        // rerun: nothing to do
+        assert_eq!(
+            set_tag_list(&mut xmp, TagType::Species, &desired).unwrap(),
+            (false, false)
+        );
     }
 
     #[test]

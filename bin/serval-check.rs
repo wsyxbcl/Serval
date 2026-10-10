@@ -11,6 +11,8 @@ fn main() -> Result<()> {
         ResourceType::Xmp,
         false,
         true,
+        None,
+        None,
     )?;
     Ok(())
 }

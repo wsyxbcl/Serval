@@ -4,7 +4,7 @@ default-run = "serval"
 description = "Serval helps you prepare data for Maze and Trapper"
 repository = "https://github.com/wsyxbcl/Serval"
 authors = ["wsyxbcl <wsyxbcl@gmail.com>"]
-version = "0.7.2"
+version = "0.8.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 keywords = ["camtrap", "camera-trap"]
@@ -25,6 +25,8 @@ polars-io = { version = "0.54.4", default-features = false, features = ["csv"] }
 rayon = "1.12.0"
 regex = "1.12.3"
 rustyline = { version = "18.0.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 walkdir = "2.5.0"
 xmp_toolkit = "1.12.1"
 

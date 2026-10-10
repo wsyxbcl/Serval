@@ -3,7 +3,7 @@ use crate::schema::{
     IMAGE_EXTENSIONS, PATH_COLUMN, RATING_COLUMN, VIDEO_EXTENSIONS, XMP_EXTENSIONS,
     resource_extension, underlying_media_path,
 };
-use crate::transfer::{Mode, Transfer, run_transfers};
+use crate::transfer::{Mode, OnConflict, Transfer, run_transfers};
 use core::fmt;
 use indicatif::{ProgressBar, ProgressStyle};
 use pest_derive::Parser;
@@ -573,6 +573,27 @@ pub fn init_run_log(command: &str, log_dir: Option<&Path>) {
     }
 }
 
+/// Append this run to an existing log (e.g. Waxbill's session log) instead of creating one.
+pub fn init_run_log_file(log_path: &Path) {
+    match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        Ok(file) => {
+            let _ = RUN_LOG.set((log_path.to_path_buf(), std::sync::Mutex::new(file)));
+            log_line(&format!(
+                "Command: {}",
+                env::args().collect::<Vec<_>>().join(" ")
+            ));
+        }
+        Err(err) => eprintln!(
+            "Warning: failed to open run log {}: {err}",
+            log_path.display()
+        ),
+    }
+}
+
 pub fn run_log_path() -> Option<&'static Path> {
     RUN_LOG.get().map(|(path, _)| path.as_path())
 }
@@ -593,7 +614,9 @@ pub fn log_line(message: &str) {
 pub fn pb_status(pb: &ProgressBar, message: impl Into<String>) {
     let message = message.into();
     log_line(&message);
-    if pb.is_hidden() {
+    if crate::ui::json() {
+        // Per-file status stays in the run log; programs follow progress events.
+    } else if pb.is_hidden() {
         println!("{message}");
     } else {
         pb.set_message(message);
@@ -612,10 +635,13 @@ impl WarningCollector {
     /// bar is hidden) and count it for the final notice.
     pub fn warn(&self, pb: &ProgressBar, message: impl Into<String>) {
         let message = message.into();
-        log_line(&format!("Warning: {message}"));
-        if pb.is_hidden() {
+        if crate::ui::json() {
+            crate::ui::warning(&message);
+        } else if pb.is_hidden() {
+            log_line(&format!("Warning: {message}"));
             eprintln!("Warning: {message}");
         } else {
+            log_line(&format!("Warning: {message}"));
             pb.println(format!("Warning: {message}"));
         }
         self.count
@@ -624,9 +650,7 @@ impl WarningCollector {
 
     /// Print the warning without a progress bar and count it for the final notice.
     pub fn warn_plain(&self, message: impl Into<String>) {
-        let message = message.into();
-        log_line(&format!("Warning: {message}"));
-        eprintln!("Warning: {message}");
+        crate::ui::warning(&message.into());
         self.count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -635,7 +659,9 @@ impl WarningCollector {
         let count = self.count.load(std::sync::atomic::Ordering::Relaxed);
         if count > 0 {
             log_line(&format!("{count} warning(s) occurred"));
-            eprintln!("{count} warning(s) occurred, see messages above.");
+            if !crate::ui::json() {
+                eprintln!("{count} warning(s) occurred, see messages above.");
+            }
         }
     }
 }
@@ -701,22 +727,34 @@ fn nested_dir(root_dir: &Path, dir: &Path) -> Option<PathBuf> {
 }
 
 /// Flatten `deploy_dir` into `working_dir/<dir name>/` (see `flatten_transfers`).
+/// Options shared by `align` with and without a deployment table.
+pub struct AlignOptions {
+    pub resource_type: ResourceType,
+    pub dry_run: bool,
+    pub move_mode: bool,
+    pub keep_first_subdir: bool,
+    /// Answer for targets that already hold a different file (asked when absent).
+    pub on_existing: Option<OnConflict>,
+}
+
 pub fn resources_flatten(
     deploy_dir: PathBuf,
     working_dir: PathBuf,
-    resource_type: ResourceType,
-    dry_run: bool,
-    move_mode: bool,
-    keep_first_subdir: bool,
+    options: &AlignOptions,
 ) -> anyhow::Result<()> {
     let transfers = flatten_transfers(
         &deploy_dir,
         &working_dir,
-        resource_type,
+        options.resource_type,
         false,
-        keep_first_subdir,
+        options.keep_first_subdir,
     )?;
-    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
+    run_transfers(
+        transfers,
+        transfer_mode(options.move_mode),
+        options.on_existing,
+        options.dry_run,
+    )
 }
 
 fn transfer_mode(move_mode: bool) -> Mode {
@@ -815,10 +853,7 @@ pub fn deployments_align(
     project_dir: PathBuf,
     output_dir: PathBuf,
     deploy_table: PathBuf,
-    resource_type: ResourceType,
-    dry_run: bool,
-    move_mode: bool,
-    keep_first_subdir: bool,
+    options: &AlignOptions,
 ) -> anyhow::Result<()> {
     let deploy_df = CsvReadOptions::default()
         .with_columns(csv_projection_columns(&[DEPLOYMENT_ID_COLUMN]))
@@ -846,12 +881,17 @@ pub fn deployments_align(
         transfers.extend(flatten_transfers(
             &deploy_dir,
             &collection_output_dir,
-            resource_type,
+            options.resource_type,
             true,
-            keep_first_subdir,
+            options.keep_first_subdir,
         )?);
     }
-    run_transfers(transfers, transfer_mode(move_mode), None, dry_run)
+    run_transfers(
+        transfers,
+        transfer_mode(options.move_mode),
+        options.on_existing,
+        options.dry_run,
+    )
 }
 
 pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
@@ -939,7 +979,11 @@ pub fn deployments_rename(project_dir: PathBuf, dry_run: bool) -> anyhow::Result
 
 /// Copy the XMP files under `source_dir` to `output_dir`, keeping the directory
 /// structure. Unchanged files are skipped; for changed ones the user is asked.
-pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> {
+pub fn copy_xmp(
+    source_dir: PathBuf,
+    output_dir: PathBuf,
+    on_existing: Option<OnConflict>,
+) -> anyhow::Result<()> {
     let xmp_paths = path_enumerate(source_dir.clone(), ResourceType::Xmp, Some(&output_dir));
     println!("{} xmp files found", xmp_paths.len());
     let transfers = xmp_paths
@@ -954,7 +998,7 @@ pub fn copy_xmp(source_dir: PathBuf, output_dir: PathBuf) -> anyhow::Result<()> 
             }
         })
         .collect();
-    run_transfers(transfers, Mode::Copy, None, false)
+    run_transfers(transfers, Mode::Copy, on_existing, false)
 }
 
 /// Outcome of one item in a batch operation: performed, or skipped with a reason.
@@ -981,8 +1025,7 @@ pub fn report_batch_results(
         }
     }
     for reason in &skipped {
-        log_line(&format!("Warning: {reason}"));
-        eprintln!("Warning: {reason}");
+        crate::ui::warning(reason);
     }
     for err in &failures {
         log_line(&format!("Error: {err}"));
@@ -995,6 +1038,11 @@ pub fn report_batch_results(
     );
     log_line(&summary);
     println!("{summary}");
+    crate::ui::summary(serde_json::json!({
+        "done": done,
+        "skipped": skipped.len(),
+        "failed": failures.len(),
+    }));
     if !failures.is_empty() {
         return Err(anyhow::anyhow!(
             "{} XMP file(s) failed, see the errors above",
@@ -1049,8 +1097,7 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
         source_dir.display()
     );
 
-    let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(num_xmp as u64, "write");
     pb.set_message("Syncing XMP metadata to media files...");
 
     let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
@@ -1100,8 +1147,7 @@ pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
 
     println!("Found {num_files} XMP files in CSV to sync");
 
-    let pb = indicatif::ProgressBar::new(num_files as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(num_files as u64, "write");
     pb.set_message("Syncing XMP files in CSV...");
 
     let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
@@ -1131,8 +1177,7 @@ pub fn remove_xmp_files(source_dir: PathBuf) -> anyhow::Result<()> {
 
     println!("Found {} XMP files in {}", num_xmp, source_dir.display());
 
-    let pb = indicatif::ProgressBar::new(num_xmp as u64);
-    configure_progress_bar(&pb);
+    let pb = crate::ui::progress_bar(num_xmp as u64, "remove");
     pb.set_message("Removing XMP files...");
 
     let results: Vec<anyhow::Result<BatchOutcome>> = xmp_paths
@@ -1344,13 +1389,23 @@ pub fn tags_csv_translate(
         .include_bom(true)
         .finish(&mut result)?;
 
-    println!("Saved to {}", output_csv.display());
+    crate::ui::output("csv", &output_csv, Some(result.height()));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_align(resource_type: ResourceType) -> AlignOptions {
+        AlignOptions {
+            resource_type,
+            dry_run: false,
+            move_mode: false,
+            keep_first_subdir: false,
+            on_existing: None,
+        }
+    }
 
     #[test]
     fn ignore_timezone_strips_timezone_suffixes() {
@@ -1430,7 +1485,7 @@ mod tests {
             fs::write(src.join(format!("a-b/c{i}.jpg")), "from a-b").unwrap();
         }
         let out = dir.path().join("out");
-        resources_flatten(src, out.clone(), ResourceType::Media, false, false, false).unwrap();
+        resources_flatten(src, out.clone(), &test_align(ResourceType::Media)).unwrap();
         for i in 0..20 {
             let plain = fs::read_to_string(out.join(format!("src/a-b-c{i}.jpg"))).unwrap();
             assert_eq!(plain, "from a");
@@ -1444,15 +1499,8 @@ mod tests {
         fs::create_dir_all(src.join("d")).unwrap();
         fs::write(src.join("d/a.jpg"), "").unwrap();
         for _ in 0..2 {
-            resources_flatten(
-                src.clone(),
-                src.join("out"),
-                ResourceType::All,
-                false,
-                false,
-                false,
-            )
-            .unwrap();
+            resources_flatten(src.clone(), src.join("out"), &test_align(ResourceType::All))
+                .unwrap();
         }
         // The second run must not flatten the first run's output again
         // (which would produce names like "out-src-d-a.jpg").
