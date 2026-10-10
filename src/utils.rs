@@ -573,6 +573,27 @@ pub fn init_run_log(command: &str, log_dir: Option<&Path>) {
     }
 }
 
+/// Append this run to an existing log (e.g. Waxbill's session log) instead of creating one.
+pub fn init_run_log_file(log_path: &Path) {
+    match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        Ok(file) => {
+            let _ = RUN_LOG.set((log_path.to_path_buf(), std::sync::Mutex::new(file)));
+            log_line(&format!(
+                "Command: {}",
+                env::args().collect::<Vec<_>>().join(" ")
+            ));
+        }
+        Err(err) => eprintln!(
+            "Warning: failed to open run log {}: {err}",
+            log_path.display()
+        ),
+    }
+}
+
 pub fn run_log_path() -> Option<&'static Path> {
     RUN_LOG.get().map(|(path, _)| path.as_path())
 }

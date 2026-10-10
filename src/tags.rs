@@ -1,3 +1,4 @@
+use crate::protocol::{EditLabels, FileEdit, FileState, Labels, Outcome};
 use crate::schema::{
     DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
@@ -339,7 +340,7 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
     }
 
     let xmp = sidecar_from_media(media, &mut row, media_modified_time.as_deref())?;
-    write_xmp_with_backup(&xmp_path, &xmp)?;
+    write_xmp_with_backup(&xmp_path, &xmp, true)?;
     log_line(&format!("Created {}", xmp_path.display()));
     row.xmp_status = "created";
     Ok(row)
@@ -2226,20 +2227,26 @@ fn rewrite_tag_array(
     Ok(changed)
 }
 
-/// Serialize `xmp` to `file_path` atomically; an existing file is kept as a
-/// timestamped .backup first.
-fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta) -> anyhow::Result<()> {
+/// Serialize `xmp` to `file_path` atomically; with `backup`, an existing file
+/// is kept as a timestamped .backup first.
+fn write_xmp_with_backup(file_path: &Path, xmp: &XmpMeta, backup: bool) -> anyhow::Result<()> {
     let modified_xmp =
         xmp.to_string_with_options(ToStringOptions::default().set_newline("\n".to_string()))?;
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    write_with_backup(file_path, &modified_xmp, &timestamp)
+    write_with_backup(file_path, &modified_xmp, &timestamp, backup)
 }
 
-/// Replace `file_path` with `content` via a temp file and rename. An existing
-/// file is first copied to `<file>.<timestamp>.backup`; backups never replace
-/// an earlier one, so several writes within one second each keep theirs.
-fn write_with_backup(file_path: &Path, content: &str, timestamp: &str) -> anyhow::Result<()> {
-    if file_path.exists() {
+/// Replace `file_path` with `content` via a temp file and rename. With `backup`,
+/// an existing file is first copied to `<file>.<timestamp>.backup`; backups
+/// never replace an earlier one, so several writes within one second each keep
+/// theirs.
+fn write_with_backup(
+    file_path: &Path,
+    content: &str,
+    timestamp: &str,
+    backup: bool,
+) -> anyhow::Result<()> {
+    if backup && file_path.exists() {
         let (mut backup, _) = create_new_sibling(file_path, timestamp, "backup")?;
         io::copy(&mut fs::File::open(file_path)?, &mut backup)?;
     }
@@ -2433,7 +2440,7 @@ fn apply_xmp_updates<T: Sync>(
         pb_status(&pb, format!("Updating {}", path.display()));
         let result = load(path).and_then(|mut xmp| {
             apply(&mut xmp, ops)?;
-            write_xmp_with_backup(path, &xmp)
+            write_xmp_with_backup(path, &xmp, true)
         });
         if let Err(err) = result {
             pb.abandon();
@@ -2672,15 +2679,7 @@ pub fn write_tags(
             continue;
         };
         let path = PathBuf::from(path);
-        let sidecar = if resource_extension(&path).as_deref() == Some("xmp") {
-            path
-        } else {
-            ["xmp", "XMP"]
-                .into_iter()
-                .map(|ext| path.with_added_extension(ext))
-                .find(|p| p.exists())
-                .unwrap_or_else(|| path.with_added_extension("xmp"))
-        };
+        let sidecar = sidecar_for(path);
         let entry = desired.entry(sidecar.clone()).or_insert_with(|| {
             order.push(sidecar.clone());
             (Desired::default(), Vec::new(), Vec::new())
@@ -2899,6 +2898,27 @@ pub fn write_tags(
     Ok(())
 }
 
+/// The sidecar of `path`: the path itself for an .xmp file, else the media file's existing `.xmp`/`.XMP` sidecar,
+/// else where `xmp init` would create it.
+fn sidecar_for(path: PathBuf) -> PathBuf {
+    if resource_extension(&path).as_deref() == Some("xmp") {
+        return path;
+    }
+    ["xmp", "XMP"]
+        .into_iter()
+        .map(|ext| path.with_added_extension(ext))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| path.with_added_extension("xmp"))
+}
+
+/// The species or individual list of a file, from hierarchicalSubject (as observe reads it).
+fn tag_list(xmp: &XmpMeta, tag_type: TagType) -> Vec<String> {
+    let adobe = tag_type.adobe_tag_prefix();
+    xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT)
+        .filter_map(|item| item.value.strip_prefix(adobe).map(str::to_string))
+        .collect()
+}
+
 /// Make the species or individual list of a file exactly `desired`: entries of that field not in `desired` are
 /// removed and missing ones added, in hierarchicalSubject, digiKam's TagsList and dc:subject. hierarchicalSubject
 /// is the reference for what the file says now. Returns (changed, removed some value).
@@ -2908,10 +2928,7 @@ fn set_tag_list(
     desired: &[String],
 ) -> anyhow::Result<(bool, bool)> {
     let adobe = tag_type.adobe_tag_prefix();
-    let current: Vec<String> = xmp
-        .property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT)
-        .filter_map(|item| item.value.strip_prefix(adobe).map(str::to_string))
-        .collect();
+    let current = tag_list(xmp, tag_type);
     let removed: Vec<&String> = current.iter().filter(|v| !desired.contains(v)).collect();
     let added: Vec<&String> = desired.iter().filter(|v| !current.contains(v)).collect();
     if removed.is_empty() && added.is_empty() {
@@ -2948,6 +2965,356 @@ fn set_tag_list(
     Ok((true, !removed.is_empty()))
 }
 
+/// A file's labels as observe reads them: species and individuals from hierarchicalSubject, rating (0 when
+/// there is none), DateTimeOriginal or else a usable CreateDate.
+fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
+    let date = |ns: &str, name: &str| xmp.property_date(ns, name).map(|v| v.value.to_string());
+    let datetime = date(xmp_ns::EXIF, "DateTimeOriginal").or_else(|| {
+        date(xmp_ns::XMP, "CreateDate")
+            .filter(|value| !value.starts_with("1904") && !value.starts_with("1970"))
+    });
+    let rating = match xmp.property(xmp_ns::XMP, "Rating") {
+        // xmp:Rating is a real number in the XMP specification
+        Some(value) => value
+            .value
+            .parse::<f64>()
+            .map(|r| r.round() as i32)
+            .map_err(|_| anyhow::anyhow!("invalid rating '{}'", value.value))?,
+        None => 0,
+    };
+    Ok(Labels {
+        species: tag_list(xmp, TagType::Species),
+        individuals: tag_list(xmp, TagType::Individual),
+        rating,
+        datetime: match datetime {
+            Some(value) => Some(iso_datetime_to_csv_format(&ignore_timezone(value)?)),
+            None => None,
+        },
+    })
+}
+
+/// Print one JSON line per state on stdout. A path that is not valid UTF-8 cannot be written as JSON and fails
+/// the run, naming the path, rather than being changed.
+fn print_states(states: &[FileState]) -> anyhow::Result<()> {
+    let mut out = io::stdout().lock();
+    for state in states {
+        let line = serde_json::to_string(state)
+            .map_err(|err| anyhow::anyhow!("{}: {err}", state.path.to_string_lossy()))?;
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// `xmp get`: print the labels of each file as one JSON line on stdout, in the order given. `paths` are sidecars
+/// or media files; without paths, they are read from stdin, one per line.
+pub fn get_labels(paths: Vec<PathBuf>) -> anyhow::Result<()> {
+    let paths = if paths.is_empty() {
+        io::stdin()
+            .lines()
+            .map(|line| line.map(|l| PathBuf::from(l.trim())))
+            .filter(|line| !line.as_ref().is_ok_and(|p| p.as_os_str().is_empty()))
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        paths
+    };
+    let pb = crate::ui::progress_bar(paths.len() as u64, "read");
+    let states: Vec<FileState> = paths
+        .into_par_iter()
+        .map(|path| {
+            let sidecar = sidecar_for(path);
+            let mut state = FileState {
+                exists: sidecar.exists(),
+                path: sidecar,
+                result: None,
+                labels: None,
+                modified: None,
+                message: None,
+            };
+            if state.exists {
+                match read_xmp(&state.path).and_then(|xmp| read_labels(&xmp)) {
+                    Ok(labels) => {
+                        state.labels = Some(labels);
+                        state.modified = modified_millis(&state.path);
+                    }
+                    Err(err) => state.message = Some(format!("{err:#}")),
+                }
+            }
+            pb.inc(1);
+            state
+        })
+        .collect();
+    pb.finish_and_clear();
+    print_states(&states)
+}
+
+/// The sidecar's modification time in milliseconds since the Unix epoch, so Waxbill can tell when a file changed.
+fn modified_millis(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Keep only the first backup of each file: files that already have one in their folder.
+#[derive(Default)]
+struct FirstBackups(std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<BTreeSet<String>>>>);
+
+impl FirstBackups {
+    fn has_backup(&self, file: &Path) -> bool {
+        let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let names = self
+            .0
+            .lock()
+            .unwrap()
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                // `<name>.<timestamp>.backup` → `<name>`, listed once per folder
+                let names = fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let stem = name.strip_suffix(".backup")?;
+                        Some(stem.rsplit_once('.')?.0.to_string())
+                    })
+                    .collect();
+                std::sync::Arc::new(names)
+            })
+            .clone();
+        file.file_name()
+            .is_some_and(|name| names.contains(name.to_string_lossy().as_ref()))
+    }
+}
+
+/// How `xmp set` keeps backups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum BackupMode {
+    /// One backup per write (as every other command)
+    Each,
+    /// Only each file's original: no new backup when the file already has one
+    First,
+}
+
+/// `xmp set`: apply edits read as JSON lines from stdin (`FileEdit`), written once per file. Prints one result per
+/// file on stdout (`written`, `unchanged`, `conflict` or `error`) with the labels now on disk. A file whose labels
+/// no longer match `expect` is a conflict and is left untouched. Malformed input stops the run before anything is
+/// written.
+pub fn set_labels(backup: BackupMode, create_missing: bool) -> anyhow::Result<()> {
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut groups: HashMap<PathBuf, Vec<FileEdit>> = HashMap::new();
+    for (i, line) in io::stdin().lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let edit = serde_json::from_str::<FileEdit>(&line)
+            .map_err(anyhow::Error::from)
+            .and_then(|edit| validate_edit(&edit).map(|()| edit))
+            .map_err(|err| anyhow::anyhow!("Edit on line {}: {err}", i + 1))?;
+        let sidecar = sidecar_for(edit.path.clone());
+        groups
+            .entry(sidecar.clone())
+            .or_insert_with(|| {
+                order.push(sidecar.clone());
+                Vec::new()
+            })
+            .push(edit);
+    }
+    XmpMeta::register_namespace(LIGHTROOM_NS, "lr")?;
+    XmpMeta::register_namespace(DIGIKAM_NS, "digiKam")?;
+    let first_backups = FirstBackups::default();
+    let pb = crate::ui::progress_bar(order.len() as u64, "write");
+    let states: Vec<FileState> = order
+        .par_iter()
+        .map(|sidecar| {
+            let mut state = FileState {
+                path: sidecar.clone(),
+                result: Some(Outcome::Error),
+                exists: sidecar.exists(),
+                labels: None,
+                modified: None,
+                message: None,
+            };
+            match set_one(
+                sidecar,
+                &groups[sidecar],
+                backup,
+                create_missing,
+                &first_backups,
+            ) {
+                Ok((outcome, message, labels)) => {
+                    match (&outcome, &message) {
+                        (Outcome::Written, _) => {
+                            log_line(&format!("Updated {}", sidecar.display()))
+                        }
+                        (_, Some(message)) => {
+                            log_line(&format!("Conflict: {}: {message}", sidecar.display()))
+                        }
+                        _ => {}
+                    }
+                    state.result = Some(outcome);
+                    state.message = message;
+                    state.exists = sidecar.exists();
+                    state.labels = Some(labels);
+                    state.modified = modified_millis(sidecar);
+                }
+                Err(err) => {
+                    log_line(&format!("Error: {}: {err:#}", sidecar.display()));
+                    state.message = Some(format!("{err:#}"));
+                }
+            }
+            pb.inc(1);
+            state
+        })
+        .collect();
+    pb.finish_and_clear();
+    let count = |outcome: Outcome| states.iter().filter(|s| s.result == Some(outcome)).count();
+    crate::ui::summary(serde_json::json!({
+        "written": count(Outcome::Written),
+        "unchanged": count(Outcome::Unchanged),
+        "conflict": count(Outcome::Conflict),
+        "failed": count(Outcome::Error),
+    }));
+    print_states(&states)
+}
+
+/// Values the files can hold: ratings -1–5, datetimes `yyyy-MM-dd HH:mm:ss`, no empty tags.
+fn validate_edit(edit: &FileEdit) -> anyhow::Result<()> {
+    for labels in [&edit.expect, &edit.set] {
+        if let Some(rating) = labels.rating {
+            anyhow::ensure!((-1..=5).contains(&rating), "rating {rating} is not -1–5");
+        }
+        if let Some(datetime) = &labels.datetime {
+            anyhow::ensure!(
+                NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S").is_ok(),
+                "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss"
+            );
+        }
+    }
+    let tags = [&edit.set.species, &edit.set.individuals]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .chain(&edit.add.species)
+        .chain(&edit.add.individuals);
+    for tag in tags {
+        anyhow::ensure!(!tag.trim().is_empty(), "empty species or individual");
+    }
+    Ok(())
+}
+
+/// Whether the file's current labels show what Waxbill expected. Lists compare as sets.
+fn expect_matches(expect: &EditLabels, current: &Labels) -> bool {
+    let same_set = |expected: &Option<Vec<String>>, current: &[String]| {
+        expected.as_ref().is_none_or(|expected| {
+            expected.iter().collect::<BTreeSet<_>>() == current.iter().collect::<BTreeSet<_>>()
+        })
+    };
+    same_set(&expect.species, &current.species)
+        && same_set(&expect.individuals, &current.individuals)
+        && expect.rating.is_none_or(|r| current.rating == r)
+        && expect
+            .datetime
+            .as_ref()
+            .is_none_or(|d| current.datetime.as_ref() == Some(d))
+}
+
+/// Apply one file's edits. Returns the outcome, a message for a conflict, and the labels now on disk.
+fn set_one(
+    sidecar: &Path,
+    edits: &[FileEdit],
+    backup: BackupMode,
+    create_missing: bool,
+    first_backups: &FirstBackups,
+) -> anyhow::Result<(Outcome, Option<String>, Labels)> {
+    let missing = !sidecar.exists();
+    let mut xmp = if !missing {
+        read_xmp(sidecar)?
+    } else if create_missing {
+        let media = underlying_media_path(sidecar);
+        sidecar_from_media(
+            &media,
+            &mut InitRow::default(),
+            media_modified_time(&media).as_deref(),
+        )?
+    } else {
+        anyhow::bail!("no XMP sidecar (create it with --create-missing)");
+    };
+    let before = read_labels(&xmp)?;
+    if !edits
+        .iter()
+        .all(|edit| expect_matches(&edit.expect, &before))
+    {
+        let message = "the file's labels changed since they were shown".to_string();
+        return Ok((Outcome::Conflict, Some(message), before));
+    }
+    let mut after = before.clone();
+    for edit in edits {
+        for (list, set, add, remove) in [
+            (
+                &mut after.species,
+                &edit.set.species,
+                &edit.add.species,
+                &edit.remove.species,
+            ),
+            (
+                &mut after.individuals,
+                &edit.set.individuals,
+                &edit.add.individuals,
+                &edit.remove.individuals,
+            ),
+        ] {
+            if let Some(set) = set {
+                list.clear();
+                add_missing(list, set);
+            }
+            add_missing(list, add);
+            list.retain(|v| !remove.contains(v));
+        }
+        if let Some(rating) = edit.set.rating {
+            after.rating = rating;
+        }
+        if edit.set.datetime.is_some() {
+            after.datetime = edit.set.datetime.clone();
+        }
+    }
+    if after == before && !missing {
+        return Ok((Outcome::Unchanged, None, before));
+    }
+    for (tag_type, list) in [
+        (TagType::Species, &after.species),
+        (TagType::Individual, &after.individuals),
+    ] {
+        set_tag_list(&mut xmp, tag_type, list)?;
+    }
+    if after.rating != before.rating {
+        match after.rating {
+            0 => xmp.delete_property(xmp_ns::XMP, "Rating")?,
+            rating => {
+                xmp.set_property(xmp_ns::XMP, "Rating", &XmpValue::new(rating.to_string()))?
+            }
+        }
+    }
+    if after.datetime != before.datetime
+        && let Some(datetime) = &after.datetime
+    {
+        set_xmp_datetime_fields(&mut xmp, &datetime.replace(' ', "T"))?;
+    }
+    let keep_backup = backup == BackupMode::Each || !first_backups.has_backup(sidecar);
+    write_xmp_with_backup(sidecar, &xmp, keep_backup)?;
+    Ok((Outcome::Written, None, read_labels(&xmp)?))
+}
+
+fn add_missing(list: &mut Vec<String>, values: &[String]) {
+    for v in values {
+        if !list.contains(v) {
+            list.push(v.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2957,8 +3324,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.jpg.xmp");
         fs::write(&file, "original").unwrap();
-        write_with_backup(&file, "first", "20260930_120000").unwrap();
-        write_with_backup(&file, "second", "20260930_120000").unwrap();
+        write_with_backup(&file, "first", "20260930_120000", true).unwrap();
+        write_with_backup(&file, "second", "20260930_120000", true).unwrap();
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "second");
         let backup = |name: &str| fs::read_to_string(dir.path().join(name)).unwrap();

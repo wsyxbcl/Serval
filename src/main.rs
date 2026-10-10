@@ -1,3 +1,4 @@
+mod protocol;
 mod schema;
 mod tags;
 mod transfer;
@@ -7,16 +8,16 @@ mod utils;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
-    CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField, extract_resources,
-    get_classifications, get_temporal_independence, init_xmp, update_datetime, update_tags,
-    write_taglist, write_tags,
+    BackupMode, CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField,
+    extract_resources, get_classifications, get_labels, get_temporal_independence, init_xmp,
+    set_labels, update_datetime, update_tags, write_taglist, write_tags,
 };
 use transfer::OnConflict;
 use utils::{
     AlignOptions, ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType,
-    absolute_path, copy_xmp, deployments_align, deployments_rename, init_run_log, log_line,
-    remove_xmp_files, resources_flatten, run_log_path, sync_xmp_directory, sync_xmp_from_csv,
-    tags_csv_translate,
+    absolute_path, copy_xmp, deployments_align, deployments_rename, init_run_log,
+    init_run_log_file, log_line, remove_xmp_files, resources_flatten, run_log_path,
+    sync_xmp_directory, sync_xmp_from_csv, tags_csv_translate,
 };
 
 /// Exit codes: 0 success (possibly with warnings), 1 failed, 2 usage error (clap), 3 stopped for a decision
@@ -29,12 +30,19 @@ fn main() -> anyhow::Result<()> {
         ui::enable_json(args.command.name());
     }
 
+    // `xmp get` and `xmp set` print JSON lines on stdout and nothing else.
+    let json_stdout = matches!(
+        args.command,
+        Commands::Xmp(XmpCommands::Get { .. } | XmpCommands::Set { .. })
+    );
     let result = run(args.command);
     match &result {
         Ok(()) => log_line("Run completed"),
         Err(err) => log_line(&format!("Run failed: {err:#}")),
     }
-    if let Some(log_path) = run_log_path() {
+    if let Some(log_path) = run_log_path()
+        && !json_stdout
+    {
         println!("Log saved to {}", log_path.display());
     }
     ui::flush_progress();
@@ -70,6 +78,8 @@ impl Commands {
             Commands::Xmp(XmpCommands::Init { .. }) => "xmp init",
             Commands::Xmp(XmpCommands::Update { .. }) => "xmp update",
             Commands::Xmp(XmpCommands::Write { .. }) => "xmp write",
+            Commands::Xmp(XmpCommands::Get { .. }) => "xmp get",
+            Commands::Xmp(XmpCommands::Set { .. }) => "xmp set",
             Commands::Xmp(XmpCommands::Remove { .. }) => "xmp remove",
             Commands::Xmp(XmpCommands::Sync { .. }) => "xmp sync",
         }
@@ -259,6 +269,17 @@ fn run(command: Commands) -> anyhow::Result<()> {
                     init_run_log("xmp_write", None);
                 }
                 write_tags(absolute_path(csv_path)?, &fields, dry_run, create_missing)?;
+            }
+            XmpCommands::Get { paths } => get_labels(paths)?,
+            XmpCommands::Set {
+                backup,
+                log_to,
+                create_missing,
+            } => {
+                if let Some(log_to) = log_to {
+                    init_run_log_file(&log_to);
+                }
+                set_labels(backup, create_missing)?;
             }
             XmpCommands::Remove { source_dir } => {
                 init_run_log("xmp_remove", None);
@@ -573,6 +594,20 @@ enum XmpCommands {
         #[arg(long)]
         dry_run: bool,
         /// Create missing sidecars from the media files (as `xmp init` does)
+        #[arg(long)]
+        create_missing: bool,
+    },
+    /// For Waxbill: print each file's labels as a JSON line (paths from stdin when none are given)
+    #[command(hide = true)]
+    Get { paths: Vec<PathBuf> },
+    /// For Waxbill: apply label edits read as JSON lines from stdin, one JSON result per file
+    #[command(hide = true)]
+    Set {
+        #[arg(long, value_enum, default_value = "each")]
+        backup: BackupMode,
+        /// Append to this log instead of creating a log for the run
+        #[arg(long)]
+        log_to: Option<PathBuf>,
         #[arg(long)]
         create_missing: bool,
     },

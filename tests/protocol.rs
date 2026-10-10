@@ -3,6 +3,7 @@
 //! writing anything with exit code 3 and a `needs` event.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -103,4 +104,52 @@ fn runs_without_a_terminal_and_reports_decisions() {
         fs::read_to_string(dir.join("out/a.jpg.xmp")).unwrap(),
         "<x:xmpmeta/>"
     );
+}
+
+#[test]
+fn set_leaves_files_that_changed_since_shown_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let xmp = tmp.path().join("a.jpg.xmp");
+    fs::write(
+        &xmp,
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns:lr="http://ns.adobe.com/lightroom/1.0/">
+        <lr:hierarchicalSubject><rdf:Bag><rdf:li>Species|Fox</rdf:li></rdf:Bag></lr:hierarchicalSubject>
+        </rdf:Description></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    let set = |values: &str, expect: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_serval"))
+            .args(["xmp", "set", "--backup", "first"])
+            .current_dir(tmp.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let edit = format!(
+            r#"{{"path":"{}","expect":{{"species":{expect}}},"set":{{"species":{values}}}}}"#,
+            xmp.display()
+        );
+        writeln!(child.stdin.take().unwrap(), "{edit}").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let backups = || {
+        fs::read_dir(tmp.path())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension().unwrap() == "backup")
+            .count()
+    };
+
+    let original = fs::read_to_string(&xmp).unwrap();
+    let result = set(r#"["Red fox"]"#, r#"["Wolf"]"#);
+    assert_eq!(result["result"], "conflict");
+    assert_eq!(result["labels"]["species"][0], "Fox");
+    assert_eq!(fs::read_to_string(&xmp).unwrap(), original);
+
+    assert_eq!(set(r#"["Red fox"]"#, r#"["Fox"]"#)["result"], "written");
+    assert_eq!(set(r#"["Deer"]"#, r#"["Red fox"]"#)["result"], "written");
+    // --backup first: only the original is kept
+    assert_eq!(backups(), 1);
 }
