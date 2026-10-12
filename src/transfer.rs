@@ -12,7 +12,7 @@ use indicatif::ProgressBar;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes};
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -272,15 +272,7 @@ fn slots(transfer: &Transfer, target: &Path) -> Vec<(Option<PathBuf>, PathBuf)> 
         let alternate = target.with_added_extension(if ext == "XMP" { "xmp" } else { "XMP" });
         // Both supported spellings occupy the sidecar slot. On a case-insensitive
         // filesystem they can name the same file, which must not be removed twice.
-        let regular_entries = [&selected, &alternate]
-            .iter()
-            .all(|path| fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink()));
-        let same_file = regular_entries
-            && fs::canonicalize(&selected)
-                .ok()
-                .zip(fs::canonicalize(&alternate).ok())
-                .is_some_and(|(a, b)| a == b);
-        if !same_file {
+        if !same_entry(&selected, &alternate) {
             slots.push((None, alternate));
         }
         slots.push((transfer.sidecar.clone(), selected));
@@ -336,31 +328,46 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)], mode: Mode) -> anyhow::Result<Che
     })
 }
 
-/// Metadata is only a preliminary filter; matching media must also match byte for byte.
+/// Whether `target` already holds `source`: sidecars by content, media by
+/// size and modified time (which copies keep; allow for coarse timestamps).
+/// Media are not read: a rerun after an interruption checks every finished file,
+/// and reading them would cost as much as copying them again on an HDD or NAS.
 fn is_same(source: &Path, target: &Path) -> io::Result<bool> {
     if is_xmp(target) {
         return Ok(fs::read(source)? == fs::read(target)?);
     }
-    let (source_meta, target_meta) = (fs::metadata(source)?, fs::metadata(target)?);
-    if source_meta.len() != target_meta.len() {
+    let (source, target) = (fs::metadata(source)?, fs::metadata(target)?);
+    if source.len() != target.len() {
         return Ok(false);
     }
-    let (a, b) = (source_meta.modified()?, target_meta.modified()?);
+    let (a, b) = (source.modified()?, target.modified()?);
     let diff = a.duration_since(b).or_else(|_| b.duration_since(a));
-    if !diff.is_ok_and(|d| d <= Duration::from_secs(2)) {
-        return Ok(false);
+    Ok(diff.is_ok_and(|d| d <= Duration::from_secs(2)))
+}
+
+/// Whether two existing names are one file (`a.jpg.xmp` and `a.jpg.XMP` on a
+/// case-insensitive filesystem), from the metadata already read rather than by
+/// resolving whole paths. A symlink is never the same entry as its target here,
+/// so replacing removes the link and not the file behind it.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    let (Ok(a), Ok(b)) = (fs::symlink_metadata(a), fs::symlink_metadata(b)) else {
+        return false;
+    };
+    if a.file_type().is_symlink() || b.file_type().is_symlink() {
+        return false;
     }
-    let (mut source, mut target) = (File::open(source)?, File::open(target)?);
-    let (mut a, mut b) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
-    loop {
-        let n = source.read(&mut a)?;
-        if n == 0 {
-            return Ok(target.read(&mut b[..1])? == 0);
-        }
-        target.read_exact(&mut b[..n])?;
-        if a[..n] != b[..n] {
-            return Ok(false);
-        }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: two spellings that both exist are one file unless the folder is
+        // set case-sensitive, where two distinct files would also differ here.
+        a.len() == b.len()
+            && a.modified().ok() == b.modified().ok()
+            && a.created().ok() == b.created().ok()
     }
 }
 
@@ -568,73 +575,6 @@ mod tests {
                 "labels"
             );
         }
-    }
-
-    #[test]
-    fn matching_media_metadata_does_not_bypass_conflict_policy() {
-        for policy in [OnConflict::Skip, OnConflict::Replace, OnConflict::Rename] {
-            let dir = tempfile::tempdir().unwrap();
-            let source = dir.path().join("source.jpg");
-            let target = dir.path().join("target.jpg");
-            fs::write(&source, "new").unwrap();
-            copy_via_temp(&source, &target).unwrap();
-            let time = fs::metadata(&source).unwrap().modified().unwrap();
-            fs::write(&target, "old").unwrap();
-            File::options()
-                .write(true)
-                .open(&target)
-                .unwrap()
-                .set_times(FileTimes::new().set_modified(time))
-                .unwrap();
-            run_transfers(
-                vec![Transfer {
-                    source,
-                    sidecar: None,
-                    target: target.clone(),
-                    sidecar_slot: true,
-                }],
-                Mode::Copy,
-                Some(policy),
-                false,
-            )
-            .unwrap();
-            assert_eq!(
-                fs::read_to_string(&target).unwrap(),
-                if policy == OnConflict::Replace {
-                    "new"
-                } else {
-                    "old"
-                }
-            );
-            if policy == OnConflict::Rename {
-                assert_eq!(
-                    fs::read_to_string(dir.path().join("target_1.jpg")).unwrap(),
-                    "new"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn media_comparison_checks_beyond_the_first_buffer() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source.mp4");
-        let target = dir.path().join("target.mp4");
-        let mut data = vec![1u8; 128 * 1024 + 1];
-        fs::write(&source, &data).unwrap();
-        copy_via_temp(&source, &target).unwrap();
-        assert!(is_same(&source, &target).unwrap());
-        *data.last_mut().unwrap() = 2;
-        fs::write(&target, data).unwrap();
-        File::options()
-            .write(true)
-            .open(&target)
-            .unwrap()
-            .set_times(
-                FileTimes::new().set_modified(fs::metadata(&source).unwrap().modified().unwrap()),
-            )
-            .unwrap();
-        assert!(!is_same(&source, &target).unwrap());
     }
 
     #[test]

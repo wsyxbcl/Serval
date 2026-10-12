@@ -271,7 +271,7 @@ fn invalid_ratings_stop_the_table_before_any_write() {
     let xmp = tmp.path().join("a.jpg.xmp");
     empty_xmp(&xmp);
     let original = fs::read(&xmp).unwrap();
-    for rating in ["3.5", "NaN", "inf", "2147483648", "bad"] {
+    for rating in ["3.5", "NaN", "inf", "7", "bad"] {
         fs::write(
             tmp.path().join("tags.csv"),
             format!("path,species,rating\na.jpg,Fox,{rating}\n"),
@@ -304,4 +304,41 @@ fn set_groups_symlink_aliases_without_replacing_the_link() {
     assert_eq!(state["labels"]["species"], serde_json::json!(["Fox"]));
     assert_eq!(state["labels"]["rating"], 3);
     assert!(fs::symlink_metadata(&alias).unwrap().is_symlink());
+}
+
+#[test]
+fn extract_keeps_an_uppercase_sidecar_with_its_media() {
+    let tmp = tempfile::tempdir().unwrap();
+    let media = tmp.path().join("a.jpg");
+    fs::write(&media, "jpeg").unwrap();
+    fs::write(tmp.path().join("a.jpg.XMP"), "<x:xmpmeta/>").unwrap();
+    fs::write(
+        tmp.path().join("tags.csv"),
+        format!("path,species\n{},Fox\n", media.display()),
+    )
+    .unwrap();
+    let out = serval(
+        &[
+            "extract",
+            "tags.csv",
+            "-f",
+            "species",
+            "-v",
+            "Fox",
+            "--keep-dirs",
+            "0",
+            "-o",
+            "out",
+        ],
+        tmp.path(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("out/a.jpg.XMP")).unwrap(),
+        "<x:xmpmeta/>"
+    );
 }

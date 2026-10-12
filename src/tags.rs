@@ -1413,7 +1413,9 @@ pub fn extract_resources(
         };
         let media_path = underlying_media_path(Path::new(path_str));
         let (input_path_xmp, input_path_media) = if media_path == Path::new(path_str) {
-            (format!("{path_str}.xmp"), path_str.to_string())
+            // Either spelling of the sidecar travels with its media file.
+            let sidecar = sidecar_for(PathBuf::from(path_str));
+            (sidecar.to_string_lossy().into_owned(), path_str.to_string())
         } else {
             (
                 path_str.to_string(),
@@ -2701,15 +2703,13 @@ pub fn write_tags(
             let normalized = rating
                 .parse::<f64>()
                 .ok()
-                .filter(|r| {
-                    r.is_finite()
-                        && r.fract() == 0.0
-                        && *r >= i32::MIN as f64
-                        && *r <= i32::MAX as f64
-                })
+                // -1 (rejected) to 5, as xmp set accepts; "3.0" is 3.
+                .filter(|r| r.fract() == 0.0 && (-1.0..=5.0).contains(r))
                 .map(|r| (r as i32).to_string());
             if normalized.is_none() {
-                problems.push(format!("rating '{rating}' is not an integer (row {row})"));
+                problems.push(format!(
+                    "rating '{rating}' is not a whole number from -1 to 5 (row {row})"
+                ));
             } else if want.rating.is_some() && want.rating != normalized {
                 problems.push(format!("different ratings for the same file (row {row})"));
             } else {
