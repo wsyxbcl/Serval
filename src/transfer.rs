@@ -12,7 +12,7 @@ use indicatif::ProgressBar;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,7 +77,7 @@ pub fn run_transfers(
     transfers.sort_by(|a, b| (&a.source, &a.target).cmp(&(&b.source, &b.target)));
     transfers.dedup_by(|a, b| a.source == b.source && a.target == b.target);
 
-    let mut planned = plan(&transfers, false)?;
+    let mut planned = plan(&transfers, false, mode)?;
     let conflicts: Vec<(&Path, &str)> = planned
         .iter()
         .filter_map(|p| match &p.check {
@@ -106,7 +106,7 @@ pub fn run_transfers(
         }
     };
     if choice == Some(OnConflict::Rename) {
-        planned = plan(&transfers, true)?;
+        planned = plan(&transfers, true, mode)?;
     }
 
     let to_write = planned
@@ -229,7 +229,7 @@ fn report_needs_decision(planned: &[Planned]) {
 
 /// Assign every transfer a target. Clashes within the plan get "_1", "_2", ...
 /// in order; with `avoid_conflicts`, so do targets holding something else.
-fn plan(transfers: &[Transfer], avoid_conflicts: bool) -> anyhow::Result<Vec<Planned>> {
+fn plan(transfers: &[Transfer], avoid_conflicts: bool, mode: Mode) -> anyhow::Result<Vec<Planned>> {
     let mut claimed: HashSet<PathBuf> = HashSet::new();
     let mut planned = Vec::with_capacity(transfers.len());
     for transfer in transfers {
@@ -241,7 +241,7 @@ fn plan(transfers: &[Transfer], avoid_conflicts: bool) -> anyhow::Result<Vec<Pla
                 n += 1;
                 continue;
             }
-            let check = check(&slots)?;
+            let check = check(&slots, mode)?;
             if avoid_conflicts && matches!(check, Check::Conflict { .. }) {
                 n += 1;
                 continue;
@@ -268,13 +268,28 @@ fn slots(transfer: &Transfer, target: &Path) -> Vec<(Option<PathBuf>, PathBuf)> 
             .as_deref()
             .and_then(Path::extension)
             .unwrap_or("xmp".as_ref());
-        slots.push((transfer.sidecar.clone(), target.with_added_extension(ext)));
+        let selected = target.with_added_extension(ext);
+        let alternate = target.with_added_extension(if ext == "XMP" { "xmp" } else { "XMP" });
+        // Both supported spellings occupy the sidecar slot. On a case-insensitive
+        // filesystem they can name the same file, which must not be removed twice.
+        let regular_entries = [&selected, &alternate]
+            .iter()
+            .all(|path| fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink()));
+        let same_file = regular_entries
+            && fs::canonicalize(&selected)
+                .ok()
+                .zip(fs::canonicalize(&alternate).ok())
+                .is_some_and(|(a, b)| a == b);
+        if !same_file {
+            slots.push((None, alternate));
+        }
+        slots.push((transfer.sidecar.clone(), selected));
     }
     slots.push((Some(transfer.source.clone()), target.to_path_buf()));
     slots
 }
 
-fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
+fn check(slots: &[(Option<PathBuf>, PathBuf)], mode: Mode) -> anyhow::Result<Check> {
     let mut writes = Vec::new();
     let mut all_writes = Vec::new();
     let mut removes = Vec::new();
@@ -311,6 +326,9 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
             writes: all_writes,
             removes,
         }
+    } else if mode == Mode::Move {
+        // A move must consume both sources, including already copied members.
+        Check::Write(all_writes)
     } else if writes.is_empty() {
         Check::Done
     } else {
@@ -318,19 +336,32 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)]) -> anyhow::Result<Check> {
     })
 }
 
-/// Whether `target` already holds `source`: sidecars by content, media by
-/// size and modified time (which copies keep; allow for coarse timestamps).
+/// Metadata is only a preliminary filter; matching media must also match byte for byte.
 fn is_same(source: &Path, target: &Path) -> io::Result<bool> {
     if is_xmp(target) {
         return Ok(fs::read(source)? == fs::read(target)?);
     }
-    let (source, target) = (fs::metadata(source)?, fs::metadata(target)?);
-    if source.len() != target.len() {
+    let (source_meta, target_meta) = (fs::metadata(source)?, fs::metadata(target)?);
+    if source_meta.len() != target_meta.len() {
         return Ok(false);
     }
-    let (a, b) = (source.modified()?, target.modified()?);
+    let (a, b) = (source_meta.modified()?, target_meta.modified()?);
     let diff = a.duration_since(b).or_else(|_| b.duration_since(a));
-    Ok(diff.is_ok_and(|d| d <= Duration::from_secs(2)))
+    if !diff.is_ok_and(|d| d <= Duration::from_secs(2)) {
+        return Ok(false);
+    }
+    let (mut source, mut target) = (File::open(source)?, File::open(target)?);
+    let (mut a, mut b) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
+    loop {
+        let n = source.read(&mut a)?;
+        if n == 0 {
+            return Ok(target.read(&mut b[..1])? == 0);
+        }
+        target.read_exact(&mut b[..n])?;
+        if a[..n] != b[..n] {
+            return Ok(false);
+        }
+    }
 }
 
 fn put_all(
@@ -497,6 +528,182 @@ fn ask_on_conflict() -> anyhow::Result<OnConflict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_finishes_both_members_of_a_partially_copied_pair() {
+        for existing in ["media", "sidecar", "both"] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("a.jpg");
+            let sidecar = source.with_added_extension("xmp");
+            let target = dir.path().join("out/a.jpg");
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(&source, "media").unwrap();
+            fs::write(&sidecar, "labels").unwrap();
+            if existing != "sidecar" {
+                copy_via_temp(&source, &target).unwrap();
+            }
+            if existing != "media" {
+                copy_via_temp(&sidecar, &target.with_added_extension("xmp")).unwrap();
+            }
+            run_transfers(
+                vec![Transfer {
+                    source: source.clone(),
+                    sidecar: Some(sidecar.clone()),
+                    target: target.clone(),
+                    sidecar_slot: true,
+                }],
+                Mode::Move,
+                Some(OnConflict::Replace),
+                false,
+            )
+            .unwrap();
+            assert!(
+                !source.exists(),
+                "source media remains when {existing} exists"
+            );
+            assert!(!sidecar.exists());
+            assert_eq!(fs::read_to_string(&target).unwrap(), "media");
+            assert_eq!(
+                fs::read_to_string(target.with_added_extension("xmp")).unwrap(),
+                "labels"
+            );
+        }
+    }
+
+    #[test]
+    fn matching_media_metadata_does_not_bypass_conflict_policy() {
+        for policy in [OnConflict::Skip, OnConflict::Replace, OnConflict::Rename] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("source.jpg");
+            let target = dir.path().join("target.jpg");
+            fs::write(&source, "new").unwrap();
+            copy_via_temp(&source, &target).unwrap();
+            let time = fs::metadata(&source).unwrap().modified().unwrap();
+            fs::write(&target, "old").unwrap();
+            File::options()
+                .write(true)
+                .open(&target)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(time))
+                .unwrap();
+            run_transfers(
+                vec![Transfer {
+                    source,
+                    sidecar: None,
+                    target: target.clone(),
+                    sidecar_slot: true,
+                }],
+                Mode::Copy,
+                Some(policy),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                if policy == OnConflict::Replace {
+                    "new"
+                } else {
+                    "old"
+                }
+            );
+            if policy == OnConflict::Rename {
+                assert_eq!(
+                    fs::read_to_string(dir.path().join("target_1.jpg")).unwrap(),
+                    "new"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn media_comparison_checks_beyond_the_first_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let target = dir.path().join("target.mp4");
+        let mut data = vec![1u8; 128 * 1024 + 1];
+        fs::write(&source, &data).unwrap();
+        copy_via_temp(&source, &target).unwrap();
+        assert!(is_same(&source, &target).unwrap());
+        *data.last_mut().unwrap() = 2;
+        fs::write(&target, data).unwrap();
+        File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_times(
+                FileTimes::new().set_modified(fs::metadata(&source).unwrap().modified().unwrap()),
+            )
+            .unwrap();
+        assert!(!is_same(&source, &target).unwrap());
+    }
+
+    #[test]
+    fn replacement_clears_alternate_sidecar_spelling() {
+        for (old_ext, new_ext) in [("xmp", "XMP"), ("XMP", "xmp")] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("source.jpg");
+            let sidecar = source.with_added_extension(new_ext);
+            let target = dir.path().join("target.jpg");
+            fs::write(&source, "new media").unwrap();
+            fs::write(&sidecar, "new labels").unwrap();
+            fs::write(&target, "old").unwrap();
+            fs::write(target.with_added_extension(old_ext), "old labels").unwrap();
+            run_transfers(
+                vec![Transfer {
+                    source,
+                    sidecar: Some(sidecar),
+                    target: target.clone(),
+                    sidecar_slot: true,
+                }],
+                Mode::Copy,
+                Some(OnConflict::Replace),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(target.with_added_extension(new_ext)).unwrap(),
+                "new labels"
+            );
+            if let Ok(labels) = fs::read_to_string(target.with_added_extension(old_ext)) {
+                // On case-insensitive filesystems both spellings name the new sidecar.
+                assert_eq!(labels, "new labels");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_clears_sidecar_behind_alternate_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        let sidecar = source.with_added_extension("XMP");
+        let target = dir.path().join("target.jpg");
+        fs::write(&source, "new media").unwrap();
+        fs::write(&sidecar, "new labels").unwrap();
+        fs::write(target.with_added_extension("xmp"), "old labels").unwrap();
+        std::os::unix::fs::symlink(
+            target.with_added_extension("xmp"),
+            target.with_added_extension("XMP"),
+        )
+        .unwrap();
+        run_transfers(
+            vec![Transfer {
+                source,
+                sidecar: Some(sidecar),
+                target: target.clone(),
+                sidecar_slot: true,
+            }],
+            Mode::Copy,
+            Some(OnConflict::Replace),
+            false,
+        )
+        .unwrap();
+        assert!(!target.with_added_extension("xmp").exists());
+        assert_eq!(
+            fs::read_to_string(target.with_added_extension("XMP")).unwrap(),
+            "new labels"
+        );
+    }
 
     #[test]
     fn media_and_sidecar_stay_paired() {
