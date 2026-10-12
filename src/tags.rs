@@ -1413,7 +1413,9 @@ pub fn extract_resources(
         };
         let media_path = underlying_media_path(Path::new(path_str));
         let (input_path_xmp, input_path_media) = if media_path == Path::new(path_str) {
-            (format!("{path_str}.xmp"), path_str.to_string())
+            // Either spelling of the sidecar travels with its media file.
+            let sidecar = sidecar_for(PathBuf::from(path_str));
+            (sidecar.to_string_lossy().into_owned(), path_str.to_string())
         } else {
             (
                 path_str.to_string(),
@@ -2698,12 +2700,20 @@ pub fn write_tags(
             }
         }
         if let Some(rating) = cell(&ratings, i) {
-            if rating.parse::<i32>().is_err() {
-                problems.push(format!("rating '{rating}' is not a number (row {row})"));
-            } else if want.rating.as_ref().is_some_and(|r| r != &rating) {
+            let normalized = rating
+                .parse::<f64>()
+                .ok()
+                // -1 (rejected) to 5, as xmp set accepts; "3.0" is 3.
+                .filter(|r| r.fract() == 0.0 && (-1.0..=5.0).contains(r))
+                .map(|r| (r as i32).to_string());
+            if normalized.is_none() {
+                problems.push(format!(
+                    "rating '{rating}' is not a whole number from -1 to 5 (row {row})"
+                ));
+            } else if want.rating.is_some() && want.rating != normalized {
                 problems.push(format!("different ratings for the same file (row {row})"));
             } else {
-                want.rating = Some(rating);
+                want.rating = normalized;
             }
         }
         if let Some(datetime) = cell(&datetimes, i) {
@@ -3062,7 +3072,11 @@ struct FirstBackups(std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<BTreeSet<St
 
 impl FirstBackups {
     fn has_backup(&self, file: &Path) -> bool {
-        let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let dir = file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
         let names = self
             .0
             .lock()
@@ -3113,7 +3127,7 @@ pub fn set_labels(backup: BackupMode, create_missing: bool) -> anyhow::Result<()
             .map_err(anyhow::Error::from)
             .and_then(|edit| validate_edit(&edit).map(|()| edit))
             .map_err(|err| anyhow::anyhow!("Edit on line {}: {err}", i + 1))?;
-        let sidecar = sidecar_for(edit.path.clone());
+        let sidecar = sidecar_identity(&sidecar_for(edit.path.clone()))?;
         groups
             .entry(sidecar.clone())
             .or_insert_with(|| {
@@ -3130,7 +3144,7 @@ pub fn set_labels(backup: BackupMode, create_missing: bool) -> anyhow::Result<()
         .par_iter()
         .map(|sidecar| {
             let mut state = FileState {
-                path: sidecar.clone(),
+                path: sidecar_for(groups[sidecar][0].path.clone()),
                 result: Some(Outcome::Error),
                 exists: sidecar.exists(),
                 labels: None,
@@ -3180,18 +3194,33 @@ pub fn set_labels(backup: BackupMode, create_missing: bool) -> anyhow::Result<()
     print_states(&states)
 }
 
-/// Values the files can hold: ratings -1–5, datetimes `yyyy-MM-dd HH:mm:ss`, no empty tags.
+/// Resolve relative paths and symlinks before assigning parallel writers. For a
+/// missing sidecar, resolve its parent so --create-missing also groups aliases.
+fn sidecar_identity(path: &Path) -> io::Result<PathBuf> {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+    let absolute = std::path::absolute(path)?;
+    if let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name())
+        && let Ok(parent) = fs::canonicalize(parent)
+    {
+        return Ok(parent.join(name));
+    }
+    Ok(absolute)
+}
+
+/// New datetimes require a time; expectations may contain any value returned by get.
 fn validate_edit(edit: &FileEdit) -> anyhow::Result<()> {
     for labels in [&edit.expect, &edit.set] {
         if let Some(rating) = labels.rating {
             anyhow::ensure!((-1..=5).contains(&rating), "rating {rating} is not -1–5");
         }
-        if let Some(datetime) = &labels.datetime {
-            anyhow::ensure!(
-                NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S").is_ok(),
-                "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss"
-            );
-        }
+    }
+    if let Some(datetime) = &edit.set.datetime {
+        anyhow::ensure!(
+            NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S").is_ok(),
+            "datetime '{datetime}' is not yyyy-MM-dd HH:mm:ss"
+        );
     }
     let tags = [&edit.set.species, &edit.set.individuals]
         .into_iter()

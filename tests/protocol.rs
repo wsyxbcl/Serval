@@ -126,10 +126,11 @@ fn set_leaves_files_that_changed_since_shown_untouched() {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let edit = format!(
-            r#"{{"path":"{}","expect":{{"species":{expect}}},"set":{{"species":{values}}}}}"#,
-            xmp.display()
-        );
+        let edit = serde_json::json!({
+            "path": "a.jpg.xmp",
+            "expect": {"species": serde_json::from_str::<serde_json::Value>(expect).unwrap()},
+            "set": {"species": serde_json::from_str::<serde_json::Value>(values).unwrap()},
+        });
         writeln!(child.stdin.take().unwrap(), "{edit}").unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
@@ -152,4 +153,192 @@ fn set_leaves_files_that_changed_since_shown_untouched() {
     assert_eq!(set(r#"["Deer"]"#, r#"["Red fox"]"#)["result"], "written");
     // --backup first: only the original is kept
     assert_eq!(backups(), 1);
+}
+
+fn set_edits(dir: &Path, edits: &[serde_json::Value]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_serval"))
+        .args(["xmp", "set", "--backup", "first"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for edit in edits {
+        writeln!(stdin, "{edit}").unwrap();
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+fn empty_xmp(path: &Path) {
+    fs::write(path, r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2023-12-08"/></rdf:RDF></x:xmpmeta>"#).unwrap();
+}
+
+#[test]
+fn set_groups_relative_and_absolute_aliases_before_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let xmp = tmp.path().join("a.jpg.xmp");
+    empty_xmp(&xmp);
+    let out = set_edits(
+        tmp.path(),
+        &[
+            serde_json::json!({"path": "a.jpg.xmp", "set": {"species": ["Fox"]}}),
+            serde_json::json!({"path": xmp, "set": {"rating": 3}}),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let states: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0]["result"], "written");
+    assert_eq!(states[0]["labels"]["species"], serde_json::json!(["Fox"]));
+    assert_eq!(states[0]["labels"]["rating"], 3);
+    let out = serval(&["xmp", "get", "a.jpg.xmp"], tmp.path());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["labels"], states[0]["labels"]);
+}
+
+#[test]
+fn set_accepts_date_only_expectations_returned_by_get() {
+    let tmp = tempfile::tempdir().unwrap();
+    empty_xmp(&tmp.path().join("a.jpg.xmp"));
+    let out = serval(&["xmp", "get", "a.jpg.xmp"], tmp.path());
+    assert!(out.status.success());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["labels"]["datetime"], "2023-12-08");
+    let out = set_edits(
+        tmp.path(),
+        &[serde_json::json!({
+            "path": "a.jpg.xmp", "expect": state["labels"], "set": {"species": ["Fox"]}
+        })],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "written");
+    assert_eq!(state["labels"]["datetime"], "2023-12-08");
+    let out = set_edits(
+        tmp.path(),
+        &[serde_json::json!({
+            "path": "a.jpg.xmp", "set": {"datetime": "2023-12-09"}
+        })],
+    );
+    assert!(
+        !out.status.success(),
+        "new assignments must still require a time"
+    );
+}
+
+#[test]
+fn write_accepts_equivalent_integral_decimal_ratings() {
+    let tmp = tempfile::tempdir().unwrap();
+    empty_xmp(&tmp.path().join("a.jpg.xmp"));
+    fs::write(
+        tmp.path().join("tags.csv"),
+        "path,species,rating\na.jpg,Fox,3.0\na.jpg,Wolf,3\n",
+    )
+    .unwrap();
+    let out = serval(&["xmp", "write", "tags.csv"], tmp.path());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = serval(&["xmp", "get", "a.jpg.xmp"], tmp.path());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["labels"]["rating"], 3);
+    assert_eq!(
+        state["labels"]["species"],
+        serde_json::json!(["Fox", "Wolf"])
+    );
+}
+
+#[test]
+fn invalid_ratings_stop_the_table_before_any_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let xmp = tmp.path().join("a.jpg.xmp");
+    empty_xmp(&xmp);
+    let original = fs::read(&xmp).unwrap();
+    for rating in ["3.5", "NaN", "inf", "7", "bad"] {
+        fs::write(
+            tmp.path().join("tags.csv"),
+            format!("path,species,rating\na.jpg,Fox,{rating}\n"),
+        )
+        .unwrap();
+        let out = serval(&["xmp", "write", "tags.csv"], tmp.path());
+        assert!(!out.status.success(), "accepted {rating}");
+        assert_eq!(fs::read(&xmp).unwrap(), original);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn set_groups_symlink_aliases_without_replacing_the_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let xmp = tmp.path().join("a.jpg.xmp");
+    let alias = tmp.path().join("alias.xmp");
+    empty_xmp(&xmp);
+    std::os::unix::fs::symlink(&xmp, &alias).unwrap();
+    let out = set_edits(
+        tmp.path(),
+        &[
+            serde_json::json!({"path": alias, "set": {"species": ["Fox"]}}),
+            serde_json::json!({"path": xmp, "set": {"rating": 3}}),
+        ],
+    );
+    assert!(out.status.success());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "written");
+    assert_eq!(state["labels"]["species"], serde_json::json!(["Fox"]));
+    assert_eq!(state["labels"]["rating"], 3);
+    assert!(fs::symlink_metadata(&alias).unwrap().is_symlink());
+}
+
+#[test]
+fn extract_keeps_an_uppercase_sidecar_with_its_media() {
+    let tmp = tempfile::tempdir().unwrap();
+    let media = tmp.path().join("a.jpg");
+    fs::write(&media, "jpeg").unwrap();
+    fs::write(tmp.path().join("a.jpg.XMP"), "<x:xmpmeta/>").unwrap();
+    fs::write(
+        tmp.path().join("tags.csv"),
+        format!("path,species\n{},Fox\n", media.display()),
+    )
+    .unwrap();
+    let out = serval(
+        &[
+            "extract",
+            "tags.csv",
+            "-f",
+            "species",
+            "-v",
+            "Fox",
+            "--keep-dirs",
+            "0",
+            "-o",
+            "out",
+        ],
+        tmp.path(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("out/a.jpg.XMP")).unwrap(),
+        "<x:xmpmeta/>"
+    );
 }
