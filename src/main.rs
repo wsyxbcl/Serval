@@ -142,8 +142,15 @@ fn run(command: Commands) -> anyhow::Result<()> {
             } else {
                 utils::ResourceType::Media
             };
+            let media_dir = absolute_path(media_dir)?;
+            // Without this a missing folder "succeeds" with empty tables.
+            anyhow::ensure!(
+                media_dir.is_dir(),
+                "Media folder does not exist: {}",
+                media_dir.display()
+            );
             get_classifications(
-                absolute_path(media_dir)?,
+                media_dir,
                 output,
                 resource_type,
                 debug,
