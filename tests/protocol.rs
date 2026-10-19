@@ -342,3 +342,18 @@ fn extract_keeps_an_uppercase_sidecar_with_its_media() {
         "<x:xmpmeta/>"
     );
 }
+
+#[test]
+fn observe_on_a_missing_folder_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = serval(
+        &["observe", "--progress", "json", "no-such-folder"],
+        tmp.path(),
+    );
+    assert!(!output.status.success());
+    assert!(events(&output).iter().any(|e| e["serval"] == "error"));
+    assert!(
+        !tmp.path().join("serval_output").exists(),
+        "no empty tables are written"
+    );
+}
