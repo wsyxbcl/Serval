@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# The C runtime is built in (+crt-static), so serval.exe runs without the Visual C++ Redistributable. The cc builds
+# (XMP Toolkit, expat) follow this setting.
+rustflags = ["-C", "target-feature=+crt-static"]
