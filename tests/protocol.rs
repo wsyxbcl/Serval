@@ -50,6 +50,7 @@ fn runs_without_a_terminal_and_reports_decisions() {
             "species",
             "--deployment-level",
             "2",
+            "--event",
             "-o",
             "cap",
             "--progress",
@@ -66,6 +67,25 @@ fn runs_without_a_terminal_and_reports_decisions() {
     assert_eq!(ev[0]["serval"], "hello");
     assert_eq!(ev[0]["protocol"], 1);
     assert!(ev.iter().any(|e| e["serval"] == "output"));
+    // The time column is `datetime`, as in tags.csv: Caracal reads these tables by that name.
+    for prefix in ["temporal-independence", "events"] {
+        let table = fs::read_dir(dir.join("cap"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(prefix))
+            .unwrap();
+        let header = fs::read_to_string(&table).unwrap();
+        let header = header
+            .trim_start_matches('\u{feff}')
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            header.split(',').any(|c| c == "datetime"),
+            "{prefix}: {header}"
+        );
+    }
 
     // extract: a differing target without --on-existing stops with exit code 3, nothing written
     let extract = |extra: &[&str]| {
