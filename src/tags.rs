@@ -1878,7 +1878,7 @@ pub fn get_temporal_independence(
         SortMultipleOptions::default().with_maintain_order(true),
     )?;
 
-    let mut df_capture_independent;
+    let df_capture_independent;
     if delta_time_compared_to == "LastRecord" {
         df_capture_independent = df_sorted
             .clone()
@@ -1970,10 +1970,13 @@ pub fn get_temporal_independence(
     fs::create_dir_all(output_dir.clone())?;
     let filename = format!("temporal-independence{output_suffix}");
     let mut file = std::fs::File::create(output_dir.join(filename.clone()))?;
+    // The time column is `datetime` in every table Serval writes, as in tags.csv (Caracal reads it by that name).
+    let mut df_written = df_capture_independent.clone();
+    df_written.rename("time", DATETIME_COLUMN.into())?;
     CsvWriter::new(&mut file)
         .include_bom(true)
         .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
-        .finish(&mut df_capture_independent)?;
+        .finish(&mut df_written)?;
     crate::ui::output("csv", &output_dir.join(&filename), None);
 
     if event {
@@ -1999,7 +2002,7 @@ pub fn get_temporal_independence(
             .select([
                 col(id_col_name),
                 col("deployment"),
-                col("time"),
+                col("time").alias(DATETIME_COLUMN),
                 col(target.col_name()),
                 col("event_id"),
             ])
