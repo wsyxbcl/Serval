@@ -294,7 +294,7 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)], mode: Mode) -> anyhow::Result<Che
                 all_writes.push((source.clone(), dst.clone()));
                 if !exists {
                     writes.push((source.clone(), dst.clone()));
-                } else if !is_same(source, dst)? {
+                } else if !is_same(source, dst, mode)? {
                     reasons.push(format!("{} differs", file_name(dst)));
                     codes.push(if is_xmp(dst) {
                         "sidecar-differs"
@@ -328,13 +328,16 @@ fn check(slots: &[(Option<PathBuf>, PathBuf)], mode: Mode) -> anyhow::Result<Che
     })
 }
 
-/// Whether `target` already holds `source`: sidecars by content, media by
-/// size and modified time (which copies keep; allow for coarse timestamps).
-/// Media are not read: a rerun after an interruption checks every finished file,
-/// and reading them would cost as much as copying them again on an HDD or NAS.
-fn is_same(source: &Path, target: &Path) -> io::Result<bool> {
-    if is_xmp(target) {
-        return Ok(fs::read(source)? == fs::read(target)?);
+/// Whether `target` already holds `source`. Sidecars, and media in a move, by
+/// content: a move then never replaces a different file behind the conflict
+/// choice, and reading is cheap there, since moved files leave the source (at
+/// most the one cut off by an interruption is in both places). Media in a copy
+/// by size and modified time (which copies keep; allow for coarse timestamps):
+/// a rerun after an interruption checks every finished file, and reading them
+/// would cost as much as copying them again on an HDD or NAS.
+fn is_same(source: &Path, target: &Path, mode: Mode) -> io::Result<bool> {
+    if is_xmp(target) || mode == Mode::Move {
+        return same_content(source, target);
     }
     let (source, target) = (fs::metadata(source)?, fs::metadata(target)?);
     if source.len() != target.len() {
@@ -345,12 +348,31 @@ fn is_same(source: &Path, target: &Path) -> io::Result<bool> {
     Ok(diff.is_ok_and(|d| d <= Duration::from_secs(2)))
 }
 
+fn same_content(a: &Path, b: &Path) -> io::Result<bool> {
+    use std::io::Read;
+    let (mut a, mut b) = (File::open(a)?, File::open(b)?);
+    if a.metadata()?.len() != b.metadata()?.len() {
+        return Ok(false);
+    }
+    let (mut x, mut y) = (vec![0; 1 << 16], vec![0; 1 << 16]);
+    loop {
+        let n = a.read(&mut x)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        b.read_exact(&mut y[..n])?;
+        if x[..n] != y[..n] {
+            return Ok(false);
+        }
+    }
+}
+
 /// Whether two existing names are one file (`a.jpg.xmp` and `a.jpg.XMP` on a
 /// case-insensitive filesystem), from the metadata already read rather than by
 /// resolving whole paths. A symlink is never the same entry as its target here,
 /// so replacing removes the link and not the file behind it.
-fn same_entry(a: &Path, b: &Path) -> bool {
-    let (Ok(a), Ok(b)) = (fs::symlink_metadata(a), fs::symlink_metadata(b)) else {
+fn same_entry(a_path: &Path, b_path: &Path) -> bool {
+    let (Ok(a), Ok(b)) = (fs::symlink_metadata(a_path), fs::symlink_metadata(b_path)) else {
         return false;
     };
     if a.file_type().is_symlink() || b.file_type().is_symlink() {
@@ -359,7 +381,9 @@ fn same_entry(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        a.dev() == b.dev() && a.ino() == b.ino()
+        // Two hard links on a case-sensitive filesystem share the inode too, but
+        // are two entries: the folder lists both names.
+        a.dev() == b.dev() && a.ino() == b.ino() && !both_listed(a_path, b_path)
     }
     #[cfg(not(unix))]
     {
@@ -369,6 +393,23 @@ fn same_entry(a: &Path, b: &Path) -> bool {
             && a.modified().ok() == b.modified().ok()
             && a.created().ok() == b.created().ok()
     }
+}
+
+#[cfg(unix)]
+fn both_listed(a: &Path, b: &Path) -> bool {
+    let (Some(dir), Some(a), Some(b)) = (a.parent(), a.file_name(), b.file_name()) else {
+        return false;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let (mut seen_a, mut seen_b) = (false, false);
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        seen_a |= name == a;
+        seen_b |= name == b;
+    }
+    seen_a && seen_b
 }
 
 fn put_all(
@@ -608,6 +649,72 @@ mod tests {
                 // On case-insensitive filesystems both spellings name the new sidecar.
                 assert_eq!(labels, "new labels");
             }
+        }
+    }
+
+    #[test]
+    fn a_move_never_takes_a_different_file_for_the_same_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("a.jpg");
+        let target = dir.path().join("out/a.jpg");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&source, "new").unwrap();
+        fs::write(&target, "old").unwrap();
+        let time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for file in [&source, &target] {
+            File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+        run_transfers(
+            vec![Transfer {
+                source: source.clone(),
+                sidecar: None,
+                target: target.clone(),
+                sidecar_slot: false,
+            }],
+            Mode::Move,
+            Some(OnConflict::Skip),
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "old");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_clears_the_other_spelling_hard_linked_to_the_old_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        let sidecar = source.with_added_extension("XMP");
+        let target = dir.path().join("target.jpg");
+        fs::write(&source, "new media").unwrap();
+        fs::write(&sidecar, "new labels").unwrap();
+        fs::write(&target, "old").unwrap();
+        fs::write(target.with_added_extension("xmp"), "old labels").unwrap();
+        fs::hard_link(
+            target.with_added_extension("xmp"),
+            target.with_added_extension("XMP"),
+        )
+        .unwrap();
+        run_transfers(
+            vec![Transfer {
+                source,
+                sidecar: Some(sidecar),
+                target: target.clone(),
+                sidecar_slot: true,
+            }],
+            Mode::Copy,
+            Some(OnConflict::Replace),
+            false,
+        )
+        .unwrap();
+        if let Ok(labels) = fs::read_to_string(target.with_added_extension("xmp")) {
+            assert_eq!(labels, "new labels");
         }
     }
 
