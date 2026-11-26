@@ -377,3 +377,86 @@ fn observe_on_a_missing_folder_is_an_error() {
         "no empty tables are written"
     );
 }
+
+#[test]
+fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("camera")).unwrap();
+    for file in ["a.jpg", "b.jpg", "c.jpg"] {
+        fs::write(dir.join("camera").join(file), file).unwrap();
+        fs::write(dir.join("camera").join(format!("{file}.xmp")), "labels").unwrap();
+    }
+    let rows = "path,event_id,species\ncamera/a.jpg,1,Fox\ncamera/b.jpg,1,Cat\ncamera/a.jpg,2,Fox\ncamera/a.jpg,2,Fox\ncamera/c.jpg,3,Pika\ncamera/c.jpg,,Fox\n";
+    fs::write(dir.join("events.csv"), rows).unwrap();
+    let out = serval(
+        &[
+            "extract",
+            "events.csv",
+            "--unit",
+            "event",
+            "-f",
+            "species",
+            "-v",
+            "Fox",
+            "--keep-dirs",
+            "1",
+            "-o",
+            "out",
+        ],
+        dir,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for path in [
+        "event_1/camera/a.jpg",
+        "event_1/camera/b.jpg",
+        "event_2/camera/a.jpg",
+    ] {
+        assert!(dir.join("out").join(path).is_file());
+        assert!(dir.join("out").join(format!("{path}.xmp")).is_file());
+    }
+    assert_eq!(
+        fs::read_dir(dir.join("out"))
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_dir())
+            .count(),
+        2
+    );
+    assert_eq!(
+        fs::read_dir(dir.join("out/event_2/camera"))
+            .unwrap()
+            .count(),
+        2
+    );
+    let by_id = serval(
+        &[
+            "extract",
+            "events.csv",
+            "--unit",
+            "event",
+            "-f",
+            "event",
+            "-v",
+            "2",
+            "-v",
+            "3",
+            "--keep-dirs",
+            "0",
+            "-o",
+            "by_id",
+        ],
+        dir,
+    );
+    assert!(
+        by_id.status.success(),
+        "{}",
+        String::from_utf8_lossy(&by_id.stderr)
+    );
+    assert!(dir.join("by_id/event_2/a.jpg").is_file());
+    assert!(dir.join("by_id/event_3/c.jpg.xmp").is_file());
+    assert!(!dir.join("by_id/event_1").exists());
+}

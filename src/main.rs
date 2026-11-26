@@ -14,7 +14,7 @@ use tags::{
 };
 use transfer::OnConflict;
 use utils::{
-    AlignOptions, ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType,
+    AlignOptions, ExtractFilterType, ExtractUnit, ResourceType, SubdirType, TagType, XmpUpdateType,
     absolute_path, copy_xmp, deployments_align, deployments_rename, init_run_log,
     init_run_log_file, log_line, remove_xmp_files, resources_flatten, run_log_path,
     sync_xmp_directory, sync_xmp_from_csv, tags_csv_translate,
@@ -206,6 +206,7 @@ fn run(command: Commands) -> anyhow::Result<()> {
         }
         Commands::Extract {
             csv_path,
+            unit,
             value,
             filter_type,
             rename,
@@ -221,8 +222,9 @@ fn run(command: Commands) -> anyhow::Result<()> {
                 csv_path,
                 output,
                 ExtractOptions {
+                    unit,
                     filter_type,
-                    filter_value: value,
+                    filter_values: value,
                     rename,
                     skip_existing,
                     use_subdir,
@@ -483,14 +485,18 @@ enum Commands {
     Comparisons:     rating:>=4, rating:>4, rating:<5, rating:<=5"
     )]
     Extract {
-        /// Path for tags.csv
+        /// tags.csv for media, or a capture --event CSV for whole events
+        #[arg(value_name = "CSV")]
         csv_path: PathBuf,
+        /// Select media or whole events. Event copies go under event_<id>/.
+        #[arg(long, value_enum, default_value = "media")]
+        unit: ExtractUnit,
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
         /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
         #[arg(short, long, value_name = "VALUE", required = true)]
-        value: String,
+        value: Vec<String>,
         /// Name copies after all tags of the image:
         /// {species}__{individuals}__{original name}, values joined by "+"
         /// (e.g. Fox+Pika__F03__IMG_0001.JPG)

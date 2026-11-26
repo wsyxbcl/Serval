@@ -7,11 +7,11 @@ use crate::schema::{
 };
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
-    ExtractFilterType, ResourceType, SubdirType, TagType, WarningCollector, XmpUpdateType,
-    absolute_path, csv_projection_columns, deployment_from_path_expr, detect_deployment_path_index,
-    filter_expr_to_polars, get_path_levels, has_same_field_and_conditions, ignore_timezone,
-    iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
-    reject_duplicate_csv_columns,
+    ExtractFilterType, ExtractUnit, ResourceType, SubdirType, TagType, WarningCollector,
+    XmpUpdateType, absolute_path, csv_projection_columns, deployment_from_path_expr,
+    detect_deployment_path_index, filter_expr_to_polars, get_path_levels,
+    has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format, log_line,
+    parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
@@ -1166,7 +1166,8 @@ fn ask_id_species(ambiguous: &[&(&str, Vec<&str>, Vec<&str>)]) -> anyhow::Result
 /// when absent; without a terminal, a missing `keep_dirs` is an error and conflicts stop the run (exit code 3).
 pub struct ExtractOptions {
     pub filter_type: ExtractFilterType,
-    pub filter_value: String,
+    pub unit: ExtractUnit,
+    pub filter_values: Vec<String>,
     pub rename: bool,
     pub skip_existing: bool,
     pub use_subdir: bool,
@@ -1182,7 +1183,8 @@ pub fn extract_resources(
 ) -> anyhow::Result<()> {
     let ExtractOptions {
         filter_type,
-        filter_value,
+        filter_values,
+        unit,
         rename,
         skip_existing,
         use_subdir,
@@ -1190,11 +1192,17 @@ pub fn extract_resources(
         keep_dirs,
         on_existing,
     } = options;
+    anyhow::ensure!(!filter_values.is_empty(), "Pass a filter value with -v");
+    anyhow::ensure!(
+        unit == ExtractUnit::Event || filter_values.len() == 1,
+        "Repeated -v requires --unit event"
+    );
+    let filter_value = filter_values[0].clone();
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
         // remove dot from output_dir
-        let sanitized_filter_value = filter_value.replace('.', "");
+        let sanitized_filter_value = file_name_part(&filter_value);
         output_dir.join(format!("{current_time}_{sanitized_filter_value}"))
     } else {
         output_dir
@@ -1243,72 +1251,75 @@ pub fn extract_resources(
         HashMap::new()
     };
 
-    let filter_expr = if filter_value == "ALL_VALUES" {
-        match filter_type {
-            ExtractFilterType::Species => col(TagType::Species.col_name()).is_not_null(),
-            ExtractFilterType::Path => col("path").is_not_null(),
-            ExtractFilterType::Individual => col(TagType::Individual.col_name()).is_not_null(),
-            ExtractFilterType::Rating => col("rating").is_not_null(),
-            ExtractFilterType::Event => col("event_id").is_not_null(),
-            ExtractFilterType::Custom => col("custom").is_not_null(),
-            ExtractFilterType::Advanced => {
-                return Err(anyhow::anyhow!(
-                    "Advanced filter requires a specific filter expression, not 'ALL_VALUES'"
-                ));
-            }
-        }
+    let df_filtered = if unit == ExtractUnit::Event {
+        select_events(&df, filter_type, &filter_values)?
     } else {
-        match filter_type {
-            ExtractFilterType::Species => {
-                col(TagType::Species.col_name()).eq(lit(filter_value.clone()))
+        let filter_expr = if filter_value == "ALL_VALUES" {
+            match filter_type {
+                ExtractFilterType::Species => col(TagType::Species.col_name()).is_not_null(),
+                ExtractFilterType::Path => col("path").is_not_null(),
+                ExtractFilterType::Individual => col(TagType::Individual.col_name()).is_not_null(),
+                ExtractFilterType::Rating => col("rating").is_not_null(),
+                ExtractFilterType::Event => col("event_id").is_not_null(),
+                ExtractFilterType::Custom => col("custom").is_not_null(),
+                ExtractFilterType::Advanced => {
+                    return Err(anyhow::anyhow!(
+                        "Advanced filter requires a specific filter expression, not 'ALL_VALUES'"
+                    ));
+                }
             }
-            ExtractFilterType::Path => col("path")
-                .str()
-                .contains_literal(lit(filter_value.clone())),
-            ExtractFilterType::Individual => {
-                col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
-            }
-            ExtractFilterType::Rating => {
-                // Support range syntax like "0-5" or "1-5", or exact match
-                if let Some((min_str, max_str)) = filter_value.split_once('-') {
-                    // Range filter
-                    if let (Ok(min), Ok(max)) =
-                        (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
-                    {
-                        // Cast to Float64 to handle decimal ratings
-                        let rating_col = col("rating").cast(DataType::Float64);
-                        rating_col
-                            .clone()
-                            .is_not_null()
-                            .and(rating_col.clone().gt_eq(lit(min)))
-                            .and(rating_col.lt_eq(lit(max)))
+        } else {
+            match filter_type {
+                ExtractFilterType::Species => {
+                    col(TagType::Species.col_name()).eq(lit(filter_value.clone()))
+                }
+                ExtractFilterType::Path => col("path")
+                    .str()
+                    .contains_literal(lit(filter_value.clone())),
+                ExtractFilterType::Individual => {
+                    col(TagType::Individual.col_name()).eq(lit(filter_value.clone()))
+                }
+                ExtractFilterType::Rating => {
+                    // Support range syntax like "0-5" or "1-5", or exact match
+                    if let Some((min_str, max_str)) = filter_value.split_once('-') {
+                        // Range filter
+                        if let (Ok(min), Ok(max)) =
+                            (min_str.trim().parse::<f64>(), max_str.trim().parse::<f64>())
+                        {
+                            // Cast to Float64 to handle decimal ratings
+                            let rating_col = col("rating").cast(DataType::Float64);
+                            rating_col
+                                .clone()
+                                .is_not_null()
+                                .and(rating_col.clone().gt_eq(lit(min)))
+                                .and(rating_col.lt_eq(lit(max)))
+                        } else {
+                            col("rating").eq(lit(filter_value.clone()))
+                        }
                     } else {
+                        // Exact match
                         col("rating").eq(lit(filter_value.clone()))
                     }
-                } else {
-                    // Exact match
-                    col("rating").eq(lit(filter_value.clone()))
                 }
-            }
-            ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
-            ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
-            ExtractFilterType::Advanced => {
-                // Parse the advanced filter expression
-                let advanced_expr = parse_advanced_filter(&filter_value)?;
+                ExtractFilterType::Event => col("event_id").eq(lit(filter_value.clone())),
+                ExtractFilterType::Custom => col("custom").eq(lit(filter_value.clone())),
+                ExtractFilterType::Advanced => {
+                    // Parse the advanced filter expression
+                    let advanced_expr = parse_advanced_filter(&filter_value)?;
 
-                // Same-field AND ("sp:A and sp:B") can only hold per image, not per
-                // row: then each condition asks whether any row of the image matches.
-                let per_image = has_same_field_and_conditions(&advanced_expr);
-                if per_image {
-                    println!("Matching conditions per image (a field is used twice with AND)");
+                    // Same-field AND ("sp:A and sp:B") can only hold per image, not per
+                    // row: then each condition asks whether any row of the image matches.
+                    let per_image = has_same_field_and_conditions(&advanced_expr);
+                    if per_image {
+                        println!("Matching conditions per image (a field is used twice with AND)");
+                    }
+                    filter_expr_to_polars(&advanced_expr, per_image)?
                 }
-                filter_expr_to_polars(&advanced_expr, per_image)?
             }
-        }
+        };
+
+        df.lazy().filter(filter_expr).collect()?
     };
-
-    let df_filtered = df.lazy().filter(filter_expr).collect()?;
-
     // Check if any records match the filter
     if df_filtered.height() == 0 {
         return Err(anyhow::anyhow!("No records found matching the filter."));
@@ -1385,13 +1396,20 @@ pub fn extract_resources(
         .str()?
         .replace_all(r"\.", "")?;
 
-    for (path, species_tag, individual_tag, rating_tag, custom_tag) in izip!(
+    let event_ids = if unit == ExtractUnit::Event {
+        Some(df_filtered.column("event_id")?.str()?)
+    } else {
+        None
+    };
+    for (row, (path, species_tag, individual_tag, rating_tag, custom_tag)) in izip!(
         paths.iter(),
         species_tags.iter(),
         individual_tags.iter(),
         rating_tags.iter(),
         custom_tags.iter()
-    ) {
+    )
+    .enumerate()
+    {
         let subdir = if use_subdir {
             let (tag, fallback) = match subdir_value {
                 SubdirType::Species => (species_tag, "untagged_species"),
@@ -1448,7 +1466,12 @@ pub fn extract_resources(
             input_media.strip_prefix(path_strip)?.parent().unwrap()
         };
         let media_name = input_media.file_name().unwrap().to_string_lossy();
+        let event_dir = event_ids
+            .and_then(|ids| ids.get(row))
+            .map(|id| format!("event_{id}"))
+            .unwrap_or_default();
         let output_path_media = output_dir
+            .join(event_dir)
             .join(kept_dirs)
             .join(subdir)
             .join(format!("{filename_prefix}{media_name}"));
@@ -1475,6 +1498,40 @@ pub fn extract_resources(
     run_transfers(transfers, Mode::Copy, preset, false)?;
     crate::ui::output("folder", &output_dir, None);
     Ok(())
+}
+
+/// Expand matching rows to every member of their event in this capture table.
+fn select_events(
+    df: &DataFrame,
+    kind: ExtractFilterType,
+    values: &[String],
+) -> anyhow::Result<DataFrame> {
+    let column = match kind {
+        ExtractFilterType::Species => "species",
+        ExtractFilterType::Event => "event_id",
+        _ => anyhow::bail!("Event mode supports -f species or -f event"),
+    };
+    let ids = df.column("event_id")?.str()?;
+    let wanted: BTreeSet<_> = values.iter().map(String::as_str).collect();
+    let mut selected = BTreeSet::new();
+    for (id, value) in ids.iter().zip(df.column(column)?.str()?.iter()) {
+        if let (Some(id), Some(value)) = (id, value)
+            && !id.is_empty()
+            && !value.is_empty()
+            && (wanted.contains(value) || wanted.contains("ALL_VALUES"))
+        {
+            anyhow::ensure!(
+                id.bytes().all(|b| b.is_ascii_digit()),
+                "Expected numeric capture event_id, got {id:?}"
+            );
+            selected.insert(id);
+        }
+    }
+    let mask: BooleanChunked = ids
+        .iter()
+        .map(|id| Some(id.is_some_and(|id| selected.contains(id))))
+        .collect();
+    Ok(df.filter(&mask)?)
 }
 
 /// File name prefix per path for `extract --rename`:
