@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
     BackupMode, CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField,
-    extract_resources, get_classifications, get_labels, get_temporal_independence, init_xmp,
+    extract_with_unit, get_classifications, get_labels, get_temporal_independence, init_xmp,
     set_labels, update_datetime, update_tags, write_taglist, write_tags,
 };
 use transfer::OnConflict;
@@ -218,21 +218,23 @@ fn run(command: Commands) -> anyhow::Result<()> {
             on_existing,
         } => {
             init_run_log("extract", Some(&output));
-            extract_resources(
-                csv_path,
-                output,
-                ExtractOptions {
-                    unit,
-                    filter_type,
-                    filter_values: value,
-                    rename,
-                    skip_existing,
-                    use_subdir,
-                    subdir_type,
-                    keep_dirs,
-                    on_existing,
-                },
-            )?;
+            let mut values = value.into_iter();
+            let filter_value = values.next().expect("clap requires -v");
+            let options = ExtractOptions {
+                filter_type,
+                filter_value,
+                rename,
+                skip_existing,
+                use_subdir,
+                subdir_type,
+                keep_dirs,
+                on_existing,
+            };
+            if unit == ExtractUnit::Media && values.len() == 0 {
+                tags::extract_resources(csv_path, output, options)?;
+            } else {
+                extract_with_unit(csv_path, output, options, unit, values.collect())?;
+            }
         }
         Commands::Xmp(xmp_cmd) => match xmp_cmd {
             XmpCommands::Copy {
