@@ -73,5 +73,5 @@ In embedded mode, a listed `a.jpg.xmp` resolves to `a.jpg`. With `-x`, a
 listed media path resolves to its appended `.xmp` or `.XMP` sidecar, and a
 listed sidecar is read directly. `--image` and `--video` filter by the
 underlying media extension. A missing selected file or a metadata read error
-fails the list run before it writes result tables. Readable media without tags
+produces a warning and skips that resource. Both directory and list scans continue. With `--progress json`, a `file_error` event carries the path and error message, and the summary counts successful and failed reads. Readable media without tags
 produce the usual empty annotation fields.

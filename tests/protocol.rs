@@ -512,17 +512,44 @@ fn observe_list_selects_and_deduplicates_csv_paths() {
             "-x",
             "-o",
             "bad",
+            "--progress",
+            "json",
         ],
         root,
     );
-    assert!(!invalid.status.success());
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("unlisted.jpg.xmp"));
+    assert!(invalid.status.success());
+    let diagnostics = events(&invalid);
+    assert!(diagnostics.iter().any(|e| e["serval"] == "file_error"
+        && e["path"] == media.join("unlisted.jpg.xmp").to_str().unwrap()));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|e| e["serval"] == "summary" && e["read"] == 0 && e["failed"] == 1)
+    );
+    let directory = serval(
+        &[
+            "observe",
+            "media",
+            "-x",
+            "-o",
+            "folder",
+            "--progress",
+            "json",
+        ],
+        root,
+    );
+    assert!(directory.status.success());
+    assert!(
+        events(&directory)
+            .iter()
+            .any(|e| e["serval"] == "summary" && e["read"] == 1 && e["failed"] == 1)
+    );
 
     let missing_media = serval(
         &["observe", "media", "--files-from", "list.csv", "-o", "bad"],
         root,
     );
-    assert!(!missing_media.status.success());
+    assert!(missing_media.status.success());
     assert!(String::from_utf8_lossy(&missing_media.stderr).contains("unlisted.jpg"));
 
     fs::write(root.join("empty.csv"), "path\n").unwrap();

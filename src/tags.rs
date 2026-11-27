@@ -525,22 +525,32 @@ type Metadata = (
     String, // rating
 );
 
-fn retrieve_metadata(
-    file_path: &Path,
-    debug_mode: bool,
-    strict_sidecar: bool,
-) -> anyhow::Result<Metadata> {
-    if strict_sidecar && ResourceType::Xmp.is_resource(file_path) {
-        let content = fs::read_to_string(file_path)?;
+fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
+    if ResourceType::Xmp.is_resource(file_path) {
+        let bytes = fs::read(file_path)?;
+        let content = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+            anyhow::ensure!(bytes.len() % 2 == 0, "Truncated UTF-16 sidecar");
+            let decode = if bytes[0] == 0xff {
+                u16::from_le_bytes
+            } else {
+                u16::from_be_bytes
+            };
+            String::from_utf16(
+                &bytes[2..]
+                    .chunks_exact(2)
+                    .map(|b| decode([b[0], b[1]]))
+                    .collect::<Vec<_>>(),
+            )?
+        } else {
+            String::from_utf8(bytes)?
+        };
+        let doc = roxmltree::Document::parse(&content)?;
+        anyhow::ensure!(
+            doc.descendants()
+                .any(|e| e.has_tag_name(("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"))),
+            "Sidecar has no XMP RDF element"
+        );
         let xmp = XmpMeta::from_str_with_options(&content, FromStrOptions::default())?;
-        // The toolkit also returns an empty property set for non-XMP input.
-        if xmp.iter(Default::default()).next().is_none() {
-            let doc = roxmltree::Document::parse(&content)?;
-            anyhow::ensure!(
-                doc.descendants().any(|e| e.has_tag_name(("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"))),
-                "Sidecar has no XMP RDF element"
-            );
-        }
         return metadata_fields(file_path, debug_mode, Some(xmp));
     }
     // Retrieve metadata from given file
@@ -779,30 +789,10 @@ pub fn get_classifications_with_list(
         suffix
     };
 
-    let image_paths: Vec<String> = file_paths
-        .iter()
-        .map(|x| x.to_string_lossy().into_owned())
-        .collect();
-    let image_filenames: Vec<String> = file_paths
-        .iter()
-        .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
     let warnings = WarningCollector::default();
-    // Keep resources whose media_type cannot be inferred (e.g. orphan sidecars
-    // like orphan.xmp) in the output, with an empty media_type.
-    let media_types: Vec<String> = file_paths
-        .iter()
-        .map(|path| match infer_media_type(path) {
-            Ok(media_type) => media_type.to_string(),
-            Err(_) => {
-                warnings.warn_plain(format!(
-                    "cannot infer media_type of {}, leaving it empty",
-                    path.display()
-                ));
-                String::new()
-            }
-        })
-        .collect();
+    let mut image_paths = Vec::new();
+    let mut image_filenames = Vec::new();
+    let mut media_types = Vec::new();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = crate::ui::progress_bar(num_images as u64, "read");
@@ -820,10 +810,10 @@ pub fn get_classifications_with_list(
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
-    let result: anyhow::Result<Vec<_>> = (0..num_images)
+    let result: Vec<_> = (0..num_images)
         .into_par_iter()
         .map(|i| {
-            match retrieve_metadata(&file_paths[i], debug_mode, list.is_some()) {
+            match retrieve_metadata(&file_paths[i], debug_mode) {
                 Ok((
                     species,
                     individuals,
@@ -839,7 +829,7 @@ pub fn get_classifications_with_list(
                     rating,
                 )) => {
                     pb.inc(1);
-                    Ok((
+                    Some((
                         species.join("|"),
                         individuals.join("|"),
                         count.join("|"),
@@ -855,29 +845,28 @@ pub fn get_classifications_with_list(
                     ))
                 }
                 Err(error) => {
-                    if list.is_some() {
-                        return Err(error.context(format!("Reading {}", file_paths[i].display())));
-                    }
+                    crate::ui::event(serde_json::json!({"serval":"file_error","path":file_paths[i],"message":error.to_string()}));
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
-                    Ok((
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                    ))
+                    None
                 }
             }
         })
         .collect();
-    for tag in result? {
+    for (path, tag) in file_paths.iter().zip(result) {
+        let Some(tag) = tag else { continue };
+        image_paths.push(path.to_string_lossy().into_owned());
+        image_filenames.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        media_types.push(match infer_media_type(path) {
+            Ok(kind) => kind.to_string(),
+            Err(_) => {
+                warnings.warn_plain(format!(
+                    "cannot infer media_type of {}, leaving it empty",
+                    path.display()
+                ));
+                String::new()
+            }
+        });
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
         count_tags.push(tag.2);
@@ -908,6 +897,9 @@ pub fn get_classifications_with_list(
     let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
     let df_raw_height = image_paths.len();
+    crate::ui::summary(
+        serde_json::json!({"read": df_raw_height, "failed": num_images - df_raw_height}),
+    );
     let mut df_raw = DataFrame::new(
         df_raw_height,
         vec![
