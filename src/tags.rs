@@ -647,8 +647,9 @@ fn read_observe_sidecar(file_path: &Path) -> anyhow::Result<XmpMeta> {
             .any(|e| e.has_tag_name((xmp_ns::RDF, "RDF"))),
         "Sidecar has no XMP RDF element"
     );
+    // The root is already decoded UTF-8. The packet declaration describes the original bytes.
     Ok(XmpMeta::from_str_with_options(
-        xml,
+        &xml[doc.root_element().range()],
         FromStrOptions::default(),
     )?)
 }
@@ -938,7 +939,11 @@ pub fn get_classifications_with_list(
                     ))
                 }
                 Err(error) => {
-                    crate::ui::event(serde_json::json!({"serval":"file_error","path":file_paths[i],"message":error.to_string()}));
+                    crate::ui::event(serde_json::json!({
+                        "serval": "file_error",
+                        "path": file_paths[i].to_string_lossy(),
+                        "message": error.to_string(),
+                    }));
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     None

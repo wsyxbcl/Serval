@@ -635,13 +635,26 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
 fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let xml = include_str!("../assets/dummy.xmp").replacen("?>", "?>\n<?xml version=\"1.0\"?>", 1);
+    let xml = include_str!("../assets/dummy.xmp")
+        .replace("<rdf:li>Dummy</rdf:li>", "<rdf:li>Species|藏狐</rdf:li>")
+        .replacen("?>", "?>\n<?xml version=\"1.0\"?>", 1);
     fs::write(dir.join("utf8.jpg.xmp"), &xml).unwrap();
-    let utf16: Vec<_> = std::iter::once(0xfeffu16)
-        .chain(xml.encode_utf16())
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    fs::write(dir.join("utf16.jpg.xmp"), utf16).unwrap();
+    for encoding in ["UTF-16", "UTF-16LE", "UTF-16BE"] {
+        let declared = xml.replace(
+            "version=\"1.0\"",
+            &format!("version=\"1.0\" encoding=\"{encoding}\""),
+        );
+        let encode = if encoding == "UTF-16BE" {
+            u16::to_be_bytes
+        } else {
+            u16::to_le_bytes
+        };
+        let bytes: Vec<_> = std::iter::once(0xfeffu16)
+            .chain(declared.encode_utf16())
+            .flat_map(encode)
+            .collect();
+        fs::write(dir.join(format!("{encoding}.jpg.xmp")), bytes).unwrap();
+    }
     fs::write(
         dir.join("broken.jpg.xmp"),
         xml.split("</rdf:Description>").next().unwrap(),
@@ -649,7 +662,7 @@ fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
     .unwrap();
     fs::write(
         dir.join("list.csv"),
-        "path\nutf8.jpg.xmp\nutf16.jpg.xmp\nbroken.jpg.xmp\n",
+        "path\nutf8.jpg.xmp\nUTF-16.jpg.xmp\nUTF-16LE.jpg.xmp\nUTF-16BE.jpg.xmp\nbroken.jpg.xmp\n",
     )
     .unwrap();
     for list in [false, true] {
@@ -670,7 +683,7 @@ fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
         assert!(
             events(&out)
                 .iter()
-                .any(|e| e["serval"] == "summary" && e["read"] == 2 && e["failed"] == 1),
+                .any(|e| e["serval"] == "summary" && e["read"] == 4 && e["failed"] == 1),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
@@ -687,9 +700,64 @@ fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
             .iter()
             .position(|h| h == "datetime")
             .unwrap();
+        let species = csv
+            .headers()
+            .unwrap()
+            .iter()
+            .position(|h| h == "species")
+            .unwrap();
         let rows: Vec<_> = csv.records().collect::<Result<_, _>>().unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| &r[species] == "藏狐"));
         assert!(rows.iter().all(|r| &r[datetime] == "2023-12-19 22:19:50"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn observe_skips_unreadable_sidecar_with_non_utf8_name() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let broken = dir.join(OsStr::from_bytes(b"bad-\xff.jpg.xmp"));
+    fs::write(&broken, "truncated").unwrap();
+    fs::write(
+        dir.join("good.jpg.xmp"),
+        include_bytes!("../assets/dummy.xmp"),
+    )
+    .unwrap();
+    for mode in ["terminal", "json"] {
+        let out = serval(&["observe", ".", "-x", "--progress", mode, "-o", mode], dir);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if mode == "json" {
+            let events = events(&out);
+            assert!(
+                events.iter().any(|e| e["serval"] == "file_error"
+                    && e["path"] == broken.to_string_lossy().as_ref())
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e["serval"] == "summary" && e["read"] == 1 && e["failed"] == 1)
+            );
+        }
+        let table = fs::read_dir(dir.join(mode))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.file_name().to_string_lossy().starts_with("tags_"))
+            .unwrap();
+        let mut csv = csv::Reader::from_path(table.path()).unwrap();
+        let rows = csv.records().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            Path::new(&rows[0][0]).file_name(),
+            Some(OsStr::new("good.jpg.xmp"))
+        );
     }
 }
 
