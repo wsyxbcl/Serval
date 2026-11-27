@@ -632,17 +632,82 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
 }
 
 #[test]
+fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let xml = include_str!("../assets/dummy.xmp").replacen("?>", "?>\n<?xml version=\"1.0\"?>", 1);
+    fs::write(dir.join("utf8.jpg.xmp"), &xml).unwrap();
+    let utf16: Vec<_> = std::iter::once(0xfeffu16)
+        .chain(xml.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    fs::write(dir.join("utf16.jpg.xmp"), utf16).unwrap();
+    fs::write(
+        dir.join("broken.jpg.xmp"),
+        xml.split("</rdf:Description>").next().unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("list.csv"),
+        "path\nutf8.jpg.xmp\nutf16.jpg.xmp\nbroken.jpg.xmp\n",
+    )
+    .unwrap();
+    for list in [false, true] {
+        let mut args = vec![
+            "observe",
+            ".",
+            "-x",
+            "--progress",
+            "json",
+            "-o",
+            if list { "files" } else { "folder" },
+        ];
+        if list {
+            args.extend(["--files-from", "list.csv"]);
+        }
+        let out = serval(&args, dir);
+        assert!(out.status.success());
+        assert!(
+            events(&out)
+                .iter()
+                .any(|e| e["serval"] == "summary" && e["read"] == 2 && e["failed"] == 1),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tags = events(&out)
+            .into_iter()
+            .find(|e| {
+                e["serval"] == "output" && e["path"].as_str().is_some_and(|p| p.contains("tags_"))
+            })
+            .unwrap();
+        let mut csv = csv::Reader::from_path(dir.join(tags["path"].as_str().unwrap())).unwrap();
+        let datetime = csv
+            .headers()
+            .unwrap()
+            .iter()
+            .position(|h| h == "datetime")
+            .unwrap();
+        let rows: Vec<_> = csv.records().collect::<Result<_, _>>().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| &r[datetime] == "2023-12-19 22:19:50"));
+    }
+}
+
+#[test]
 fn observe_list_selects_and_deduplicates_csv_paths() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
+    let missing_list = serval(&["observe", "--files-from", "missing/list.csv"], root);
+    assert!(!missing_list.status.success());
+    assert!(String::from_utf8_lossy(&missing_list.stderr).contains("list.csv"));
     let media = root.join("media");
     fs::create_dir(&media).unwrap();
-    let sidecar = media.join("cat,1.jpg.XMP");
+    let sidecar = media.join("cat,1.jpg.xmp");
     fs::write(&sidecar, include_bytes!("../assets/dummy.xmp")).unwrap();
     fs::write(media.join("unlisted.jpg.xmp"), "malformed").unwrap();
     fs::write(
         media.join("list.csv"),
-        "\u{feff}species,path\r\nFox,\"cat,1.jpg\"\r\nDog,\"cat,1.jpg.XMP\"\r\n,skip.mp4\r\n",
+        "\u{feff}species,path\r\nFox,\"cat,1.jpg\"\r\nDog,\"cat,1.jpg.xmp\"\r\n,skip.mp4\r\n",
     )
     .unwrap();
     let out = serval(

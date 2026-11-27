@@ -614,33 +614,52 @@ type Metadata = (
     String, // rating
 );
 
+fn read_observe_sidecar(file_path: &Path) -> anyhow::Result<XmpMeta> {
+    let bytes = fs::read(file_path)?;
+    let content = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        anyhow::ensure!(bytes.len() % 2 == 0, "Truncated UTF-16 sidecar");
+        let decode = if bytes[0] == 0xff {
+            u16::from_le_bytes
+        } else {
+            u16::from_be_bytes
+        };
+        String::from_utf16(
+            &bytes[2..]
+                .chunks_exact(2)
+                .map(|b| decode([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        )?
+    } else {
+        String::from_utf8(bytes)?
+    };
+    // An XMP packet can wrap an XML document with its own declaration.
+    // The declaration must be first when handing the document to XML parsers.
+    let content = content.trim_start_matches('\u{feff}');
+    let xml = content
+        .strip_prefix("<?xpacket ")
+        .and_then(|packet| packet.split_once("?>"))
+        .map(|(_, document)| document.trim_start())
+        .filter(|document| document.starts_with("<?xml "))
+        .unwrap_or(content);
+    let doc = roxmltree::Document::parse(xml)?;
+    anyhow::ensure!(
+        doc.descendants()
+            .any(|e| e.has_tag_name((xmp_ns::RDF, "RDF"))),
+        "Sidecar has no XMP RDF element"
+    );
+    Ok(XmpMeta::from_str_with_options(
+        xml,
+        FromStrOptions::default(),
+    )?)
+}
+
 fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
     if ResourceType::Xmp.is_resource(file_path) {
-        let bytes = fs::read(file_path)?;
-        let content = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-            anyhow::ensure!(bytes.len() % 2 == 0, "Truncated UTF-16 sidecar");
-            let decode = if bytes[0] == 0xff {
-                u16::from_le_bytes
-            } else {
-                u16::from_be_bytes
-            };
-            String::from_utf16(
-                &bytes[2..]
-                    .chunks_exact(2)
-                    .map(|b| decode([b[0], b[1]]))
-                    .collect::<Vec<_>>(),
-            )?
-        } else {
-            String::from_utf8(bytes)?
-        };
-        let doc = roxmltree::Document::parse(&content)?;
-        anyhow::ensure!(
-            doc.descendants()
-                .any(|e| e.has_tag_name(("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"))),
-            "Sidecar has no XMP RDF element"
+        return metadata_fields(
+            file_path,
+            debug_mode,
+            Some(read_observe_sidecar(file_path)?),
         );
-        let xmp = XmpMeta::from_str_with_options(&content, FromStrOptions::default())?;
-        return metadata_fields(file_path, debug_mode, Some(xmp));
     }
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
@@ -827,7 +846,7 @@ pub fn get_classifications_with_list(
         Some((csv, filter)) => observe_list_paths(csv, &file_dir, resource_type, filter)?,
         None => path_enumerate(file_dir.clone(), resource_type, None),
     };
-    fs::create_dir_all(output_dir.clone())?;
+    fs::create_dir_all(&output_dir)?;
     // Debug mode doubles as the info-table workflow (cf. xmp init --info):
     // ask which path level is the deployment so raw.csv gains a deployment column.
     let deploy_path_index = if debug_mode && !file_paths.is_empty() {

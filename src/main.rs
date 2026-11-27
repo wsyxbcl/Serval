@@ -138,19 +138,21 @@ fn run(command: Commands) -> anyhow::Result<()> {
             let resource_type = if xmp { ResourceType::Xmp } else { media_filter };
             let files_from = files_from.map(absolute_path).transpose()?;
             let media_dir = match media_dir {
-                Some(dir) => absolute_path(dir)?,
+                Some(dir) => {
+                    let dir = absolute_path(dir)?;
+                    anyhow::ensure!(
+                        dir.is_dir(),
+                        "Media folder does not exist: {}",
+                        dir.display()
+                    );
+                    dir
+                }
                 None => files_from
                     .as_deref()
                     .and_then(|csv| csv.parent())
                     .ok_or_else(|| anyhow::anyhow!("Provide a media directory or --files-from"))?
                     .to_path_buf(),
             };
-            // Without this a missing folder "succeeds" with empty tables.
-            anyhow::ensure!(
-                media_dir.is_dir(),
-                "Media folder does not exist: {}",
-                media_dir.display()
-            );
             let species = (!id_species.is_empty()).then_some(id_species);
             if let Some(csv) = files_from {
                 get_classifications_with_list(

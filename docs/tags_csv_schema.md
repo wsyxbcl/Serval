@@ -75,3 +75,5 @@ listed sidecar is read directly. `--image` and `--video` filter by the
 underlying media extension. A missing selected file or a metadata read error
 produces a warning and skips that resource. Both directory and list scans continue. With `--progress json`, a `file_error` event carries the path and error message, and the summary counts successful and failed reads. Readable media without tags
 produce the usual empty annotation fields.
+
+In embedded mode, a media file for which the toolkit finds no XMP packet produces an empty annotation row. This can also happen for an empty or damaged media file. Observe reads metadata without checking whether the media can be decoded.
