@@ -1,9 +1,10 @@
 use crate::protocol::{EditLabels, FileEdit, FileState, Labels, Outcome};
 use crate::schema::{
-    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, IMAGE_EXTENSIONS, LATITUDE_COLUMN,
-    LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
-    SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
-    canonicalize_observe_tags_df, infer_media_type, resource_extension, underlying_media_path,
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, EVENT_ID_COLUMN, FILENAME_COLUMN, IMAGE_EXTENSIONS,
+    LATITUDE_COLUMN, LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN,
+    RATING_COLUMN, SPECIES_COLUMN, SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN,
+    XMP_UPDATE_DATETIME_COLUMN, canonicalize_observe_tags_df, infer_media_type, resource_extension,
+    underlying_media_path,
 };
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
@@ -614,7 +615,7 @@ type Metadata = (
     String, // rating
 );
 
-fn read_observe_sidecar(file_path: &Path) -> anyhow::Result<XmpMeta> {
+fn read_xmp(file_path: &Path) -> anyhow::Result<XmpMeta> {
     let bytes = fs::read(file_path)?;
     let content = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         anyhow::ensure!(bytes.len() % 2 == 0, "Truncated UTF-16 sidecar");
@@ -647,7 +648,8 @@ fn read_observe_sidecar(file_path: &Path) -> anyhow::Result<XmpMeta> {
             .any(|e| e.has_tag_name((xmp_ns::RDF, "RDF"))),
         "Sidecar has no XMP RDF element"
     );
-    // The root is already decoded UTF-8. The packet declaration describes the original bytes.
+    // The root is already UTF-8. Passing the original UTF-16 declaration to the
+    // toolkit can silently return empty metadata when it reinterprets the bytes.
     Ok(XmpMeta::from_str_with_options(
         &xml[doc.root_element().range()],
         FromStrOptions::default(),
@@ -656,11 +658,7 @@ fn read_observe_sidecar(file_path: &Path) -> anyhow::Result<XmpMeta> {
 
 fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
     if ResourceType::Xmp.is_resource(file_path) {
-        return metadata_fields(
-            file_path,
-            debug_mode,
-            Some(read_observe_sidecar(file_path)?),
-        );
+        return metadata_fields(file_path, debug_mode, Some(read_xmp(file_path)?));
     }
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
@@ -939,11 +937,7 @@ pub fn get_classifications_with_list(
                     ))
                 }
                 Err(error) => {
-                    crate::ui::event(serde_json::json!({
-                        "serval": "file_error",
-                        "path": file_paths[i].to_string_lossy(),
-                        "message": error.to_string(),
-                    }));
+                    crate::ui::file_error(&file_paths[i], &error);
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
                     None
@@ -1721,11 +1715,11 @@ fn select_events(
     values: &BTreeSet<&str>,
 ) -> anyhow::Result<DataFrame> {
     let column = match kind {
-        ExtractFilterType::Species => crate::schema::SPECIES_COLUMN,
-        ExtractFilterType::Event => crate::schema::EVENT_ID_COLUMN,
+        ExtractFilterType::Species => SPECIES_COLUMN,
+        ExtractFilterType::Event => EVENT_ID_COLUMN,
         _ => anyhow::bail!("Event mode supports -f species or -f event"),
     };
-    let ids = df.column(crate::schema::EVENT_ID_COLUMN)?.str()?;
+    let ids = df.column(EVENT_ID_COLUMN)?.str()?;
     let mut selected = BTreeSet::new();
     for (id, value) in ids.iter().zip(df.column(column)?.str()?.iter()) {
         if let (Some(id), Some(value)) = (id, value)
@@ -2328,12 +2322,6 @@ struct UpdateOp {
     row: usize,
     old: String,
     new: String,
-}
-
-fn read_xmp(file_path: &Path) -> anyhow::Result<XmpMeta> {
-    let xmp_content = fs::read_to_string(file_path)?;
-    XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))
 }
 
 /// Apply all update rows of one file to `xmp`, judged against its current

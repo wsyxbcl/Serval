@@ -138,6 +138,7 @@ fn observe_and_init_keep_exif_midnight() {
     assert!(observed.contains("2024-10-19 08:30:45"), "{observed}");
     assert_eq!(fs::read_to_string(&xmp).unwrap(), corrected_time);
 
+    // Replace the raw EXIF time in place to keep the JPEG fixture and its offsets valid.
     let mut daytime = include_bytes!("fixtures/exif-midnight.jpg").to_vec();
     let mut replaced = 0;
     while let Some(offset) = daytime.windows(8).position(|s| s == b"00:00:00") {
@@ -711,6 +712,55 @@ fn observe_reads_wrapped_xml_declarations_in_both_encodings() {
         assert!(rows.iter().all(|r| &r[species] == "藏狐"));
         assert!(rows.iter().all(|r| &r[datetime] == "2023-12-19 22:19:50"));
     }
+}
+
+#[test]
+fn xmp_edits_read_utf16_and_preserve_untouched_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let xmp = dir.path().join("good.jpg.xmp");
+    let xml = include_str!("../assets/dummy.xmp")
+        .replace("<rdf:li>Dummy</rdf:li>", "<rdf:li>Species|藏狐</rdf:li>")
+        .replacen("?>", "?>\n<?xml version=\"1.0\" encoding=\"UTF-16\"?>", 1);
+    let bytes: Vec<_> = std::iter::once(0xfeffu16)
+        .chain(xml.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    fs::write(&xmp, bytes).unwrap();
+    let labels = || {
+        let out = serval(&["xmp", "get", "good.jpg.xmp"], dir.path());
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["labels"].clone()
+    };
+    assert_eq!(labels()["species"], serde_json::json!(["藏狐"]));
+    let out = set_edits(
+        dir.path(),
+        &[serde_json::json!({"path":xmp,"expect":{"species":["藏狐"]},"set":{"rating":4}})],
+    );
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "written");
+    let after = labels();
+    assert_eq!(after["rating"], 4);
+    assert_eq!(after["species"], serde_json::json!(["藏狐"]));
+}
+
+#[test]
+fn xmp_edits_leave_truncated_sidecars_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let xmp = dir.path().join("broken.jpg.xmp");
+    let truncated = include_str!("../assets/dummy.xmp")
+        .split("</rdf:Description>")
+        .next()
+        .unwrap();
+    fs::write(&xmp, truncated).unwrap();
+    let out = serval(&["xmp", "get", "broken.jpg.xmp"], dir.path());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(state["message"].is_string() && state["labels"].is_null());
+    let out = set_edits(
+        dir.path(),
+        &[serde_json::json!({"path":xmp,"set":{"rating":4}})],
+    );
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "error");
+    assert_eq!(fs::read(&xmp).unwrap(), truncated.as_bytes());
 }
 
 #[cfg(unix)]
