@@ -1211,11 +1211,22 @@ pub fn extract_with_unit(
         unit == ExtractUnit::Event || additional_values.is_empty(),
         "Repeated -v requires --unit event"
     );
+    anyhow::ensure!(
+        unit != ExtractUnit::Event || !use_subdir,
+        "--use-subdir cannot be used with --unit event"
+    );
     // Use subdir for default output_dir in case of overwrite
     let output_dir = if output_dir.ends_with("serval_extract") {
         let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
-        // remove dot from output_dir
-        let sanitized_filter_value = file_name_part(&filter_value);
+        let sanitized_filter_value = if additional_values.is_empty() {
+            file_name_part(&filter_value)
+        } else {
+            let values = std::iter::once(&filter_value)
+                .chain(&additional_values)
+                .map(|v| file_name_part(v))
+                .collect();
+            join_capped(&values)
+        };
         output_dir.join(format!("{current_time}_{sanitized_filter_value}"))
     } else {
         output_dir
@@ -1528,11 +1539,11 @@ fn select_events(
     values: &BTreeSet<&str>,
 ) -> anyhow::Result<DataFrame> {
     let column = match kind {
-        ExtractFilterType::Species => "species",
-        ExtractFilterType::Event => "event_id",
+        ExtractFilterType::Species => crate::schema::SPECIES_COLUMN,
+        ExtractFilterType::Event => crate::schema::EVENT_ID_COLUMN,
         _ => anyhow::bail!("Event mode supports -f species or -f event"),
     };
-    let ids = df.column("event_id")?.str()?;
+    let ids = df.column(crate::schema::EVENT_ID_COLUMN)?.str()?;
     let mut selected = BTreeSet::new();
     for (id, value) in ids.iter().zip(df.column(column)?.str()?.iter()) {
         if let (Some(id), Some(value)) = (id, value)
