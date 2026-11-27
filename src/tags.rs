@@ -331,11 +331,36 @@ fn recover_exif_midnight(
     let exif::Value::Ascii(values) = &exif.get_field(tag, exif::In::PRIMARY)?.value else {
         return None;
     };
-    let date = values.first()?.strip_suffix(b" 00:00:00")?;
-    let date =
-        chrono::NaiveDate::parse_from_str(std::str::from_utf8(date).ok()?, "%Y:%m:%d").ok()?;
-    let date = date.format("%Y-%m-%d").to_string();
-    (date == xmp_date.to_string()).then(|| format!("{date}T00:00:00"))
+    let raw = std::str::from_utf8(values.first()?.strip_suffix(b" 00:00:00")?).ok()?;
+    let date = chrono::NaiveDate::parse_from_str(raw, "%Y:%m:%d").ok()?;
+    let expected = xmp_date.date.as_ref()?;
+    (date.year() == expected.year
+        && date.month() as i32 == expected.month
+        && date.day() as i32 == expected.day)
+        .then(|| format!("{date}T00:00:00"))
+}
+
+fn observation_datetime(resource: &Path, xmp: &XmpMeta) -> anyhow::Result<Option<String>> {
+    let (value, tag) = if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+        (value.value, exif::Tag::DateTimeOriginal)
+    } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+        // QuickTime uses these years for an unset creation time.
+        if value
+            .value
+            .date
+            .as_ref()
+            .is_some_and(|date| matches!(date.year, 1904 | 1970))
+        {
+            return Ok(None);
+        }
+        (value.value, exif::Tag::DateTimeDigitized)
+    } else {
+        return Ok(None);
+    };
+    match recover_exif_midnight(resource, &value, tag) {
+        Some(time) => Ok(Some(time)),
+        None => Ok(Some(ignore_timezone(value.to_string())?)),
+    }
 }
 
 /// Create the sidecar of `media` if it has none. Existing sidecars are only
@@ -659,36 +684,7 @@ fn metadata_fields(
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
     if let Some(xmp) = xmp {
-        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            datetime = match recover_exif_midnight(
-                file_path,
-                &value.value,
-                exif::Tag::DateTimeOriginal,
-            ) {
-                Some(time) => time,
-                None => ignore_timezone(value.value.to_string())?,
-            };
-        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-            // And timezone is ignored for they write UTC-8 time but label as UTC
-            // i.e. we follow time shown in the picture without considering timezone in metadata
-            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-            if !value.value.to_string().starts_with("1904")
-                && !value.value.to_string().starts_with("1970")
-            {
-                datetime = match recover_exif_midnight(
-                    file_path,
-                    &value.value,
-                    exif::Tag::DateTimeDigitized,
-                ) {
-                    Some(time) => time,
-                    None => ignore_timezone(value.value.to_string())?,
-                };
-            }
-        }
-        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-        // }
+        datetime = observation_datetime(file_path, &xmp)?.unwrap_or_default();
         if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
             rating = value.value.to_string();
         }
@@ -3219,12 +3215,8 @@ fn set_tag_list(
 
 /// A file's labels as observe reads them: species and individuals from hierarchicalSubject, rating (0 when
 /// there is none), DateTimeOriginal or else a usable CreateDate.
-fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
-    let date = |ns: &str, name: &str| xmp.property_date(ns, name).map(|v| v.value.to_string());
-    let datetime = date(xmp_ns::EXIF, "DateTimeOriginal").or_else(|| {
-        date(xmp_ns::XMP, "CreateDate")
-            .filter(|value| !value.starts_with("1904") && !value.starts_with("1970"))
-    });
+fn read_labels(resource: &Path, xmp: &XmpMeta) -> anyhow::Result<Labels> {
+    let datetime = observation_datetime(resource, xmp)?;
     let rating = match xmp.property(xmp_ns::XMP, "Rating") {
         // xmp:Rating is a real number in the XMP specification
         Some(value) => value
@@ -3238,10 +3230,7 @@ fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
         species: tag_list(xmp, TagType::Species),
         individuals: tag_list(xmp, TagType::Individual),
         rating,
-        datetime: match datetime {
-            Some(value) => Some(iso_datetime_to_csv_format(&ignore_timezone(value)?)),
-            None => None,
-        },
+        datetime: datetime.as_deref().map(iso_datetime_to_csv_format),
     })
 }
 
@@ -3283,7 +3272,7 @@ pub fn get_labels(paths: Vec<PathBuf>) -> anyhow::Result<()> {
                 message: None,
             };
             if state.exists {
-                match read_xmp(&state.path).and_then(|xmp| read_labels(&xmp)) {
+                match read_xmp(&state.path).and_then(|xmp| read_labels(&state.path, &xmp)) {
                     Ok(labels) => {
                         state.labels = Some(labels);
                         state.modified = modified_millis(&state.path);
@@ -3513,7 +3502,7 @@ fn set_one(
     } else {
         anyhow::bail!("no XMP sidecar (create it with --create-missing)");
     };
-    let before = read_labels(&xmp)?;
+    let before = read_labels(sidecar, &xmp)?;
     if !edits
         .iter()
         .all(|edit| expect_matches(&edit.expect, &before))
@@ -3575,7 +3564,7 @@ fn set_one(
     }
     let keep_backup = backup == BackupMode::Each || !first_backups.has_backup(sidecar);
     write_xmp_with_backup(sidecar, &xmp, keep_backup)?;
-    Ok((Outcome::Written, None, read_labels(&xmp)?))
+    Ok((Outcome::Written, None, read_labels(sidecar, &xmp)?))
 }
 
 fn add_missing(list: &mut Vec<String>, values: &[String]) {
