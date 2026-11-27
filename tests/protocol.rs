@@ -460,3 +460,86 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
     assert!(dir.join("by_id/event_3/c.jpg.xmp").is_file());
     assert!(!dir.join("by_id/event_1").exists());
 }
+
+#[test]
+fn observe_list_selects_and_deduplicates_csv_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let media = root.join("media");
+    fs::create_dir(&media).unwrap();
+    let sidecar = media.join("cat,1.jpg.XMP");
+    fs::write(&sidecar, include_bytes!("../assets/dummy.xmp")).unwrap();
+    fs::write(media.join("unlisted.jpg.xmp"), "malformed").unwrap();
+    fs::write(
+        media.join("list.csv"),
+        "\u{feff}species,path\r\nFox,\"cat,1.jpg\"\r\nDog,\"cat,1.jpg.XMP\"\r\n,skip.mp4\r\n",
+    )
+    .unwrap();
+    let out = serval(
+        &[
+            "observe",
+            "--files-from",
+            "media/list.csv",
+            "-x",
+            "--image",
+            "-o",
+            "out",
+        ],
+        root,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let table = fs::read_dir(root.join("out"))
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("tags_"))
+        .unwrap();
+    let mut csv = csv::Reader::from_path(table.path()).unwrap();
+    let records: Vec<_> = csv.records().collect::<Result<_, _>>().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(&records[0][0], sidecar.to_str().unwrap());
+
+    fs::write(root.join("list.csv"), "path\nunlisted.jpg.xmp\n").unwrap();
+    let invalid = serval(
+        &[
+            "observe",
+            "media",
+            "--files-from",
+            "list.csv",
+            "-x",
+            "-o",
+            "bad",
+        ],
+        root,
+    );
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("unlisted.jpg.xmp"));
+
+    let missing_media = serval(
+        &["observe", "media", "--files-from", "list.csv", "-o", "bad"],
+        root,
+    );
+    assert!(!missing_media.status.success());
+    assert!(String::from_utf8_lossy(&missing_media.stderr).contains("unlisted.jpg"));
+
+    fs::write(root.join("empty.csv"), "path\n").unwrap();
+    let empty = serval(
+        &["observe", "--files-from", "empty.csv", "-o", "empty"],
+        root,
+    );
+    assert!(
+        empty.status.success(),
+        "{}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    let path = fs::read_dir(root.join("empty"))
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("tags_"))
+        .unwrap()
+        .path();
+    assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 1);
+}

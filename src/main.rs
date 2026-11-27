@@ -9,8 +9,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
     BackupMode, CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField,
-    extract_with_unit, get_classifications, get_labels, get_temporal_independence, init_xmp,
-    set_labels, update_datetime, update_tags, write_taglist, write_tags,
+    extract_with_unit, get_classifications_with_list, get_labels, get_temporal_independence,
+    init_xmp, set_labels, update_datetime, update_tags, write_taglist, write_tags,
 };
 use transfer::OnConflict;
 use utils::{
@@ -121,6 +121,7 @@ fn run(command: Commands) -> anyhow::Result<()> {
         }
         Commands::Observe {
             media_dir,
+            files_from,
             output,
             xmp,
             video,
@@ -129,35 +130,50 @@ fn run(command: Commands) -> anyhow::Result<()> {
             deployment_level,
             id_species,
         } => {
-            let resource_type = if xmp {
-                utils::ResourceType::Xmp
-            } else if video {
-                if image {
-                    utils::ResourceType::Media
-                } else {
-                    utils::ResourceType::Video
-                }
-            } else if image {
-                utils::ResourceType::Image
-            } else {
-                utils::ResourceType::Media
+            let media_filter = match (image, video) {
+                (true, false) => ResourceType::Image,
+                (false, true) => ResourceType::Video,
+                _ => ResourceType::Media,
             };
-            let media_dir = absolute_path(media_dir)?;
+            let resource_type = if xmp { ResourceType::Xmp } else { media_filter };
+            let files_from = files_from.map(absolute_path).transpose()?;
+            let media_dir = match media_dir {
+                Some(dir) => absolute_path(dir)?,
+                None => files_from
+                    .as_deref()
+                    .and_then(|csv| csv.parent())
+                    .ok_or_else(|| anyhow::anyhow!("Provide a media directory or --files-from"))?
+                    .to_path_buf(),
+            };
             // Without this a missing folder "succeeds" with empty tables.
             anyhow::ensure!(
                 media_dir.is_dir(),
                 "Media folder does not exist: {}",
                 media_dir.display()
             );
-            get_classifications(
-                media_dir,
-                output,
-                resource_type,
-                debug,
-                false,
-                deployment_level,
-                (!id_species.is_empty()).then_some(id_species),
-            )?;
+            let species = (!id_species.is_empty()).then_some(id_species);
+            if let Some(csv) = files_from {
+                get_classifications_with_list(
+                    media_dir,
+                    output,
+                    resource_type,
+                    debug,
+                    false,
+                    deployment_level,
+                    species,
+                    Some((&csv, media_filter)),
+                )?;
+            } else {
+                tags::get_classifications(
+                    media_dir,
+                    output,
+                    resource_type,
+                    debug,
+                    false,
+                    deployment_level,
+                    species,
+                )?;
+            }
         }
         Commands::Rename {
             project_dir,
@@ -372,7 +388,12 @@ enum Commands {
     /// Retrieve tags from media metadata
     #[command(arg_required_else_help = true)]
     Observe {
-        media_dir: PathBuf,
+        /// Folder to scan, or base for relative CSV paths (defaults to the CSV folder)
+        #[arg(required_unless_present = "files_from")]
+        media_dir: Option<PathBuf>,
+        /// Read only files named in the CSV path column
+        #[arg(long, value_name = "CSV")]
+        files_from: Option<PathBuf>,
         /// Output directory
         #[arg(
             short,

@@ -56,3 +56,22 @@ The following are not part of the canonical base `tags.csv` schema:
 - `deployment`
 
 They may appear in debug, derived, or workflow-specific outputs, but they are not part of the base editable schema.
+
+## Observing a file list
+
+`serval observe --files-from review.csv -o results` reads the files named in
+the UTF-8 CSV's `path` column. A complete tags table works as input. Additional
+columns are ignored, and quoted paths and a UTF-8 BOM are supported. A list
+with only its header produces empty result tables. A blank path cell is an error.
+
+Relative paths use the list's containing folder. To use another base, run
+`serval observe /path/to/media --files-from review.csv`. Absolute paths work
+with either form. Serval reads each selected resource once and does not scan
+the folder. The output `path` is the absolute path to the resource read.
+
+In embedded mode, a listed `a.jpg.xmp` resolves to `a.jpg`. With `-x`, a
+listed media path resolves to its appended `.xmp` or `.XMP` sidecar, and a
+listed sidecar is read directly. `--image` and `--video` filter by the
+underlying media extension. A missing selected file or a metadata read error
+fails the list run before it writes result tables. Readable media without tags
+produce the usual empty annotation fields.

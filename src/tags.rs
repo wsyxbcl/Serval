@@ -13,6 +13,7 @@ use crate::utils::{
     has_same_field_and_conditions, ignore_timezone, iso_datetime_to_csv_format, log_line,
     parse_advanced_filter, path_enumerate, pb_status, reject_duplicate_csv_columns,
 };
+use anyhow::Context;
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -524,7 +525,24 @@ type Metadata = (
     String, // rating
 );
 
-fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
+fn retrieve_metadata(
+    file_path: &Path,
+    debug_mode: bool,
+    strict_sidecar: bool,
+) -> anyhow::Result<Metadata> {
+    if strict_sidecar && ResourceType::Xmp.is_resource(file_path) {
+        let content = fs::read_to_string(file_path)?;
+        let xmp = XmpMeta::from_str_with_options(&content, FromStrOptions::default())?;
+        // The toolkit also returns an empty property set for non-XMP input.
+        if xmp.iter(Default::default()).next().is_none() {
+            let doc = roxmltree::Document::parse(&content)?;
+            anyhow::ensure!(
+                doc.descendants().any(|e| e.has_tag_name(("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"))),
+                "Sidecar has no XMP RDF element"
+            );
+        }
+        return metadata_fields(file_path, debug_mode, Some(xmp));
+    }
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime, datetime_digitized, rating and file modified time
@@ -532,6 +550,15 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default())?;
 
+    let result = metadata_fields(file_path, debug_mode, f.xmp());
+    finalize_xmp_file(&mut f, result)
+}
+
+fn metadata_fields(
+    file_path: &Path,
+    debug_mode: bool,
+    xmp: Option<XmpMeta>,
+) -> anyhow::Result<Metadata> {
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
     let mut count: Vec<String> = Vec::new();
@@ -557,88 +584,85 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
-    let metadata_result = (|| -> anyhow::Result<Metadata> {
-        if let Some(xmp) = f.xmp() {
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+    if let Some(xmp) = xmp {
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            datetime = ignore_timezone(value.value.to_string())?;
+        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+            // And timezone is ignored for they write UTC-8 time but label as UTC
+            // i.e. we follow time shown in the picture without considering timezone in metadata
+            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
+            if !value.value.to_string().starts_with("1904")
+                && !value.value.to_string().starts_with("1970")
+            {
                 datetime = ignore_timezone(value.value.to_string())?;
-            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-                // And timezone is ignored for they write UTC-8 time but label as UTC
-                // i.e. we follow time shown in the picture without considering timezone in metadata
-                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-                if !value.value.to_string().starts_with("1904")
-                    && !value.value.to_string().starts_with("1970")
-                {
-                    datetime = ignore_timezone(value.value.to_string())?;
-                }
-            }
-            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-            // }
-            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
-                rating = value.value.to_string();
-            }
-            let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
-            latitude = gps_latitude.unwrap_or_default();
-            longitude = gps_longitude.unwrap_or_default();
-            if debug_mode {
-                for property in xmp.property_array(xmp_ns::DC, "subject") {
-                    subjects.push(property.value.to_string());
-                }
-            }
-
-            // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
-                let tag = property.value;
-                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                    species.push(
-                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                    individuals.push(
-                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                    count.push(
-                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                    sex.push(
-                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                    bodyparts.push(
-                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                }
             }
         }
-        Ok((
-            species,
-            individuals,
-            count,
-            sex,
-            bodyparts,
-            subjects,
-            datetime,
-            latitude,
-            longitude,
-            // datetime_digitized,
-            time_modified,
-            rating,
-        ))
-    })();
-    finalize_xmp_file(&mut f, metadata_result)
+        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+        // }
+        if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+            rating = value.value.to_string();
+        }
+        let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
+        latitude = gps_latitude.unwrap_or_default();
+        longitude = gps_longitude.unwrap_or_default();
+        if debug_mode {
+            for property in xmp.property_array(xmp_ns::DC, "subject") {
+                subjects.push(property.value.to_string());
+            }
+        }
+
+        // use adobe hierarchicalSubject if available (digikam also writes to this field)
+        for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
+            let tag = property.value;
+            if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
+                species.push(
+                    tag.strip_prefix(TagType::Species.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
+                individuals.push(
+                    tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                count.push(
+                    tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                sex.push(
+                    tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                bodyparts.push(
+                    tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok((
+        species,
+        individuals,
+        count,
+        sex,
+        bodyparts,
+        subjects,
+        datetime,
+        latitude,
+        longitude,
+        // datetime_digitized,
+        time_modified,
+        rating,
+    ))
 }
 
 pub fn get_classifications(
@@ -650,10 +674,75 @@ pub fn get_classifications(
     deployment_level: Option<i32>,
     id_species: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
-    // Get tag info from the old digikam workflow in shanshui
-    // by enumerating file_dir and read xmp metadata from resources
+    get_classifications_with_list(
+        file_dir,
+        output_dir,
+        resource_type,
+        debug_mode,
+        volunteer_mode,
+        deployment_level,
+        id_species,
+        None,
+    )
+}
 
-    let file_paths = path_enumerate(file_dir.clone(), resource_type, None);
+fn observe_list_paths(
+    csv_path: &Path,
+    root: &Path,
+    resource_type: ResourceType,
+    media_filter: ResourceType,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut csv = csv::Reader::from_path(csv_path)
+        .with_context(|| format!("Opening {}", csv_path.display()))?;
+    let header = csv.headers()?;
+    let columns: Vec<_> = header
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| *name == PATH_COLUMN)
+        .collect();
+    anyhow::ensure!(
+        columns.len() == 1,
+        "{} must contain exactly one path column",
+        csv_path.display()
+    );
+    let column = columns[0].0;
+    let mut paths = BTreeSet::new();
+    for record in csv.records() {
+        let record = record?;
+        let value = &record[column];
+        anyhow::ensure!(
+            !value.trim().is_empty(),
+            "Empty path in {} at line {}",
+            csv_path.display(),
+            record.position().map_or(0, |p| p.line())
+        );
+        let path = root.join(value);
+        let media = underlying_media_path(&path);
+        let sidecars = matches!(resource_type, ResourceType::Xmp);
+        let orphan = sidecars
+            && ResourceType::Xmp.is_resource(&path)
+            && matches!(media_filter, ResourceType::Media);
+        if media_filter.is_resource(&media) || orphan {
+            paths.insert(if sidecars { sidecar_for(path) } else { media });
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+pub fn get_classifications_with_list(
+    file_dir: PathBuf,
+    output_dir: PathBuf,
+    resource_type: ResourceType,
+    debug_mode: bool,
+    volunteer_mode: bool, //TODO: make a mode argument
+    deployment_level: Option<i32>,
+    id_species: Option<Vec<String>>,
+    list: Option<(&Path, ResourceType)>,
+) -> anyhow::Result<()> {
+    let file_paths = match list {
+        Some((csv, filter)) => observe_list_paths(csv, &file_dir, resource_type, filter)?,
+        None => path_enumerate(file_dir.clone(), resource_type, None),
+    };
     fs::create_dir_all(output_dir.clone())?;
     // Debug mode doubles as the info-table workflow (cf. xmp init --info):
     // ask which path level is the deployment so raw.csv gains a deployment column.
@@ -731,10 +820,10 @@ pub fn get_classifications(
     let mut time_modifieds: Vec<String> = Vec::new();
     let mut ratings: Vec<String> = Vec::new();
 
-    let result: Vec<_> = (0..num_images)
+    let result: anyhow::Result<Vec<_>> = (0..num_images)
         .into_par_iter()
         .map(|i| {
-            match retrieve_metadata(&file_paths[i], debug_mode) {
+            match retrieve_metadata(&file_paths[i], debug_mode, list.is_some()) {
                 Ok((
                     species,
                     individuals,
@@ -750,7 +839,7 @@ pub fn get_classifications(
                     rating,
                 )) => {
                     pb.inc(1);
-                    (
+                    Ok((
                         species.join("|"),
                         individuals.join("|"),
                         count.join("|"),
@@ -763,12 +852,15 @@ pub fn get_classifications(
                         // datetime_digitized,
                         time_modified,
                         rating,
-                    )
+                    ))
                 }
                 Err(error) => {
+                    if list.is_some() {
+                        return Err(error.context(format!("Reading {}", file_paths[i].display())));
+                    }
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
-                    (
+                    Ok((
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -780,12 +872,12 @@ pub fn get_classifications(
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
-                    )
+                    ))
                 }
             }
         })
         .collect();
-    for tag in result {
+    for tag in result? {
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
         count_tags.push(tag.2);

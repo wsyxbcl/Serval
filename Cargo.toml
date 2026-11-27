@@ -15,6 +15,7 @@ keywords = ["camtrap", "camera-trap"]
 [dependencies]
 anyhow = "1.0.102"
 chrono = "0.4.44"
+csv = "1.4"
 clap = { version = "4.6.1", features = ["derive"] }
 indicatif = "0.18.4"
 itertools = "0.15.0"
@@ -23,6 +24,7 @@ pest_derive = "2.8.6"
 polars = { version = "0.54.4", default-features = false, features = ["lazy", "fmt", "strings", "dtype-struct", "is_in", "dynamic_group_by", "temporal", "timezones", "dtype-datetime", "asof_join"] }
 polars-io = { version = "0.54.4", default-features = false, features = ["csv"] }
 rayon = "1.12.0"
+roxmltree = "0.21.1"
 regex = "1.12.3"
 rustyline = { version = "18.0.0", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
