@@ -516,7 +516,7 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
         fs::write(dir.join("camera").join(file), file).unwrap();
         fs::write(dir.join("camera").join(format!("{file}.xmp")), "labels").unwrap();
     }
-    let rows = "path,event_id,species\ncamera/a.jpg,1,Fox\ncamera/b.jpg,1,Cat\ncamera/a.jpg,2,Fox\ncamera/a.jpg,2,Fox\ncamera/c.jpg,3,Pika\ncamera/c.jpg,,Fox\n";
+    let rows = "path,event_id,species\ncamera/a.jpg,1,Fox\ncamera/b.jpg,1,Cat\ncamera/a.jpg,2,Pika\ncamera/a.jpg,2,Pika\ncamera/c.jpg,3,Pika\ncamera/c.jpg,,Fox\n";
     fs::write(dir.join("events.csv"), rows).unwrap();
     let out = serval(
         &[
@@ -528,6 +528,8 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
             "species",
             "-v",
             "Fox",
+            "-v",
+            "Pika",
             "--keep-dirs",
             "1",
             "-o",
@@ -553,7 +555,7 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
             .unwrap()
             .filter(|e| e.as_ref().unwrap().path().is_dir())
             .count(),
-        2
+        3
     );
     assert_eq!(
         fs::read_dir(dir.join("out/event_2/camera"))
@@ -561,6 +563,45 @@ fn extracts_whole_selected_events_with_sidecars_and_kept_folders() {
             .count(),
         2
     );
+    let pika = serval(
+        &[
+            "extract",
+            "events.csv",
+            "--unit",
+            "event",
+            "-f",
+            "species",
+            "-v",
+            "Pika",
+            "--keep-dirs",
+            "0",
+            "-o",
+            "pika",
+        ],
+        dir,
+    );
+    assert!(pika.status.success());
+    assert!(dir.join("pika/event_2/a.jpg").is_file());
+    assert!(!dir.join("pika/event_1").exists());
+    let invalid = serval(
+        &[
+            "extract",
+            "events.csv",
+            "--unit",
+            "event",
+            "--use-subdir",
+            "-f",
+            "species",
+            "-v",
+            "Fox",
+            "-o",
+            "invalid",
+        ],
+        dir,
+    );
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("--use-subdir"));
+    assert!(!dir.join("invalid/event_1").exists());
     let by_id = serval(
         &[
             "extract",

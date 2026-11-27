@@ -517,7 +517,7 @@ enum Commands {
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
+        /// Target value (substring for path). Repeat -v in event mode. ALL_VALUES selects all non-empty values.
         #[arg(short, long, value_name = "VALUE", required = true)]
         value: Vec<String>,
         /// Name copies after all tags of the image:
