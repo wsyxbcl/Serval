@@ -24,6 +24,136 @@ fn events(output: &Output) -> Vec<serde_json::Value> {
 }
 
 #[test]
+fn observe_and_init_keep_exif_midnight() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let media = dir.join("media");
+    fs::create_dir(&media).unwrap();
+    fs::write(
+        media.join("a.jpg"),
+        include_bytes!("fixtures/exif-midnight.jpg"),
+    )
+    .unwrap();
+    let run = |args: &[&str], prefix: &str| {
+        let out = serval(args, dir);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let table = events(&out)
+            .into_iter()
+            .find(|e| {
+                e["serval"] == "output"
+                    && e["kind"] == "csv"
+                    && Path::new(e["path"].as_str().unwrap())
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(prefix)
+            })
+            .unwrap();
+        fs::read_to_string(dir.join(table["path"].as_str().unwrap())).unwrap()
+    };
+    let observe = |output: &str, sidecar: bool| {
+        let mut args = vec!["observe", "media", "-o", output, "--progress", "json"];
+        if sidecar {
+            args.push("--xmp");
+        }
+        run(&args, "tags_")
+    };
+    let init = |output: &str| {
+        run(
+            &["xmp", "init", "media", "-o", output, "--progress", "json"],
+            "xmp_init_",
+        )
+    };
+    let datetime = "2024-10-19 00:00:00";
+    let from_media = observe("embedded", false);
+    assert!(from_media.contains(datetime), "{from_media}");
+    let initialized = init("new");
+    assert!(initialized.contains(datetime), "{initialized}");
+    let xmp = media.join("a.jpg.xmp");
+    let sidecar = fs::read_to_string(&xmp).unwrap();
+    let labels = serval(&["xmp", "get", "media/a.jpg.xmp"], dir);
+    assert!(labels.status.success());
+    let labels: serde_json::Value = serde_json::from_slice(&labels.stdout).unwrap();
+    assert_eq!(labels["labels"]["datetime"], datetime);
+    let from_new_sidecar = observe("new_sidecar", true);
+    assert!(from_new_sidecar.contains(datetime), "{from_new_sidecar}");
+
+    // Older versions wrote a date-only sidecar for the same embedded midnight.
+    let date_only = sidecar.replace("2024-10-19T00:00:00", "2024-10-19");
+    fs::write(&xmp, &date_only).unwrap();
+    let from_old_sidecar = observe("old_sidecar", true);
+    assert!(from_old_sidecar.contains(datetime), "{from_old_sidecar}");
+    assert!(init("existing").contains(datetime));
+    assert_eq!(fs::read_to_string(&xmp).unwrap(), date_only);
+
+    for (mode, path, sidecar_mode) in [
+        ("media-list", "a.jpg", false),
+        ("media-as-xmp", "a.jpg", true),
+        ("xmp-list", "a.jpg.xmp", true),
+    ] {
+        fs::write(media.join("paths.csv"), format!("path\n{path}\n")).unwrap();
+        let mut args = vec![
+            "observe",
+            "--files-from",
+            "media/paths.csv",
+            "-o",
+            mode,
+            "--progress",
+            "json",
+        ];
+        if sidecar_mode {
+            args.push("-x");
+        }
+        assert!(run(&args, "tags_").contains(datetime));
+    }
+    let get = serval(&["xmp", "get", "media/a.jpg.xmp"], dir);
+    let labels: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(labels["labels"]["datetime"], datetime);
+    let written = set_edits(
+        dir,
+        &[serde_json::json!({
+            "path":"media/a.jpg.xmp", "expect":{"datetime":datetime}, "set":{"species":["Fox"]}
+        })],
+    );
+    let state: serde_json::Value = serde_json::from_slice(&written.stdout).unwrap();
+    assert_eq!(state["result"], "written");
+    assert_eq!(state["labels"]["datetime"], datetime);
+    let edited = fs::read_to_string(&xmp).unwrap();
+    assert!(edited.contains("2024-10-19") && !edited.contains("2024-10-19T00:00:00"));
+
+    // A different date in a sidecar cannot be repaired using the media's time.
+    let changed = date_only.replace("2024-10-19", "2024-10-20");
+    fs::write(&xmp, &changed).unwrap();
+    let corrected_date = observe("different_date", true);
+    assert!(!corrected_date.contains("00:00:00"), "{corrected_date}");
+    assert_eq!(fs::read_to_string(&xmp).unwrap(), changed);
+
+    let corrected_time = sidecar.replace("T00:00:00", "T08:30:45");
+    fs::write(&xmp, &corrected_time).unwrap();
+    let observed = observe("corrected_time", true);
+    assert!(observed.contains("2024-10-19 08:30:45"), "{observed}");
+    assert_eq!(fs::read_to_string(&xmp).unwrap(), corrected_time);
+
+    // Replace the raw EXIF time in place to keep the JPEG fixture and its offsets valid.
+    let mut daytime = include_bytes!("fixtures/exif-midnight.jpg").to_vec();
+    let mut replaced = 0;
+    while let Some(offset) = daytime.windows(8).position(|s| s == b"00:00:00") {
+        daytime[offset..offset + 8].copy_from_slice(b"12:34:56");
+        replaced += 1;
+    }
+    assert!(replaced > 0);
+    fs::write(media.join("a.jpg"), daytime).unwrap();
+    fs::write(&xmp, date_only).unwrap();
+    let get = serval(&["xmp", "get", "media/a.jpg.xmp"], dir);
+    let labels: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(labels["labels"]["datetime"], "2024-10-19");
+}
+
+#[test]
 fn runs_without_a_terminal_and_reports_decisions() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("work");
