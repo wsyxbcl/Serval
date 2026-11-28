@@ -5,7 +5,7 @@
 ## Canonical Header
 
 ```text
-path,filename,media_type,datetime,species,individual,count,sex,bodypart,rating,custom,xmp_update,xmp_update_datetime
+path,filename,media_type,datetime,latitude,longitude,species,individual,count,sex,bodypart,rating,custom,xmp_update,xmp_update_datetime,read_status,read_error
 ```
 
 ## Rules
@@ -25,6 +25,7 @@ path,filename,media_type,datetime,species,individual,count,sex,bodypart,rating,c
 | `filename` | File name for review and manual editing. |
 | `media_type` | Media type inferred from the underlying media path. For `*.xmp` sidecars, Serval strips the trailing `.xmp` before inferring the type. JPEG, PNG, MP4, and MOV use IANA-registered values. AVI currently uses the compatibility fallback `video/x-msvideo`. |
 | `datetime` | Observation datetime used by capture-related workflows. |
+| `latitude`, `longitude` | Coordinates read from metadata when available. |
 | `species` | Species annotation for the row. |
 | `individual` | Individual annotation for the row. |
 | `count` | Count annotation. |
@@ -34,6 +35,10 @@ path,filename,media_type,datetime,species,individual,count,sex,bodypart,rating,c
 | `custom` | Free-form user-maintained column. |
 | `xmp_update` | Replacement tag value used by `serval xmp update` tag mode. |
 | `xmp_update_datetime` | Replacement datetime used by `serval xmp update --datetime`. |
+| `read_status` | `succeeded` for a readable resource, including one without labels. `failed` for a resource that could not be read. |
+| `read_error` | Diagnostic for a failed read. Empty after success. |
+
+One successful resource can produce multiple annotation rows. A failed resource produces one row with its path, filename, inferred media type and diagnostic. Statistics, capture and XMP edits skip failed rows. Older tables without these columns retain their original behavior. A file list may include failed paths for retry.
 
 ## Writing Back to XMP
 

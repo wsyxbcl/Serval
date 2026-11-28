@@ -613,8 +613,24 @@ fn observe_list_selects_deduplicates_and_reports_failed_paths() {
         })
         .unwrap();
     let contents = fs::read_to_string(dir.path().join(table)).unwrap();
-    assert_eq!(contents.lines().count(), 2);
-    assert!(contents.lines().nth(1).unwrap().contains("cat,1.jpg.xmp"));
+    assert!(
+        contents
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with(",read_status,read_error")
+    );
+    let rows: Vec<_> = contents.lines().skip(1).collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("cat,1.jpg.xmp") && rows[0].ends_with(",succeeded,"));
+    assert!(rows[1].contains("missing.jpg.xmp") && rows[1].contains(",failed,"));
+    assert!(!rows[1].ends_with(",failed,"));
+    let stats = events
+        .iter()
+        .find_map(|e| e["path"].as_str().filter(|p| p.contains("species_stats_")))
+        .unwrap();
+    let stats = fs::read_to_string(dir.path().join(stats)).unwrap();
+    assert!(stats.lines().skip(1).all(|line| line.ends_with(",1")));
 }
 
 #[cfg(unix)]

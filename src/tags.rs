@@ -2,8 +2,10 @@ use crate::protocol::{EditLabels, FileEdit, FileState, Labels, Outcome};
 use crate::schema::{
     DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, IMAGE_EXTENSIONS, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
-    SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
-    canonicalize_observe_tags_df, infer_media_type, resource_extension, underlying_media_path,
+    READ_ERROR_COLUMN, READ_FAILED, READ_STATUS_COLUMN, READ_SUCCEEDED, SUBJECTS_COLUMN,
+    TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
+    canonicalize_observe_tags_df, exclude_failed_reads, infer_media_type, resource_extension,
+    underlying_media_path,
 };
 use crate::transfer::{Mode, OnConflict, Transfer, create_new_sibling, run_transfers};
 use crate::utils::{
@@ -877,6 +879,8 @@ pub fn get_classifications_with_list(
     let mut image_paths = Vec::new();
     let mut image_filenames = Vec::new();
     let mut media_types = Vec::new();
+    let mut statuses = Vec::new();
+    let mut errors = Vec::new();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = crate::ui::progress_bar(num_images as u64, "read");
@@ -913,7 +917,7 @@ pub fn get_classifications_with_list(
                     rating,
                 )) => {
                     pb.inc(1);
-                    Some((
+                    Ok((
                         species.join("|"),
                         individuals.join("|"),
                         count.join("|"),
@@ -932,13 +936,24 @@ pub fn get_classifications_with_list(
                     crate::ui::file_error(&file_paths[i], &error);
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
-                    None
+                    Err(error.to_string())
                 }
             }
         })
         .collect();
     for (path, tag) in file_paths.iter().zip(result) {
-        let Some(tag) = tag else { continue };
+        let tag = match tag {
+            Ok(tag) => {
+                statuses.push(READ_SUCCEEDED);
+                errors.push(None);
+                tag
+            }
+            Err(message) => {
+                statuses.push(READ_FAILED);
+                errors.push(Some(message));
+                Default::default()
+            }
+        };
         image_paths.push(path.to_string_lossy().into_owned());
         image_filenames.push(path.file_name().unwrap().to_string_lossy().into_owned());
         media_types.push(match infer_media_type(path) {
@@ -981,15 +996,21 @@ pub fn get_classifications_with_list(
     let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
     let df_raw_height = image_paths.len();
-    crate::ui::summary(
-        serde_json::json!({"read": df_raw_height, "failed": num_images - df_raw_height}),
-    );
+    let failed = statuses
+        .iter()
+        .filter(|&&status| status == READ_FAILED)
+        .count();
+    let read = num_images - failed;
+    println!("{read} file(s) read, {failed} failed");
+    crate::ui::summary(serde_json::json!({"read": read, "failed": failed}));
     let mut df_raw = DataFrame::new(
         df_raw_height,
         vec![
             Column::new(PATH_COLUMN.into(), image_paths),
             Column::new(FILENAME_COLUMN.into(), image_filenames),
             Column::new(MEDIA_TYPE_COLUMN.into(), media_types),
+            Column::new(READ_STATUS_COLUMN.into(), statuses),
+            Column::new(READ_ERROR_COLUMN.into(), errors),
             s_species,
             s_individuals,
             s_count,
@@ -1005,7 +1026,7 @@ pub fn get_classifications_with_list(
         ],
     )?;
     if volunteer_mode {
-        // println!("{:?}", df_raw);
+        let df_raw = exclude_failed_reads(df_raw)?;
         let mut df_empty_species = df_raw
             .clone()
             .lazy()
@@ -1053,6 +1074,8 @@ pub fn get_classifications_with_list(
         .select([
             col(PATH_COLUMN),
             col(FILENAME_COLUMN),
+            col(READ_STATUS_COLUMN),
+            col(READ_ERROR_COLUMN),
             col(MEDIA_TYPE_COLUMN),
             col(DATETIME_COLUMN).str().strptime(
                 DataType::Datetime(TimeUnit::Milliseconds, None),
@@ -1141,8 +1164,7 @@ pub fn get_classifications_with_list(
     crate::ui::output("csv", &tags_csv_path, Some(df_flatten.height()));
 
     // Number of images per species (an image with three foxes counts once).
-    let mut df_count_species = df_flatten
-        .clone()
+    let mut df_count_species = exclude_failed_reads(df_flatten)?
         .lazy()
         .group_by([col(TagType::Species.col_name())])
         .agg([col(PATH_COLUMN).n_unique().alias("count")])
@@ -1379,6 +1401,7 @@ pub fn extract_resources(
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
+    let df = exclude_failed_reads(df)?;
     // Create default values for missing columns
     // TODO: https://github.com/pola-rs/polars/issues/18372, wait for polars ergonomic improve
     let required_columns = [
@@ -1805,6 +1828,7 @@ pub fn get_temporal_independence(
                     ));
                 }
             } else {
+                df = exclude_failed_reads(df)?;
                 // Old tags.csv files call the column datetime_original.
                 if df.column(DATETIME_COLUMN).is_err() {
                     let _ = df.rename(LEGACY_DATETIME_COLUMN, DATETIME_COLUMN.into());
@@ -2440,18 +2464,12 @@ pub fn update_tags(csv_path: PathBuf, update_type: XmpUpdateType) -> anyhow::Res
     let tag_column_name = update_type.col_name();
     let df = CsvReadOptions::default()
         .with_infer_schema_length(Some(0))
-        .with_columns(csv_projection_columns(&[
-            PATH_COLUMN,
-            XMP_UPDATE_COLUMN,
-            tag_column_name,
-        ]))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_filtered = df
-        .with_row_index(ROW_COLUMN.into(), Some(2))?
+    let df_filtered = exclude_failed_reads(df.with_row_index(ROW_COLUMN.into(), Some(2))?)?
         .lazy()
         .filter(col(XMP_UPDATE_COLUMN).is_not_null())
         .select([
@@ -2645,17 +2663,12 @@ fn report_updates(counts: &UpdateCounts) {
 /// same check-first and rerun behavior as `update_tags`.
 pub fn update_datetime(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
-        .with_columns(csv_projection_columns(&[
-            PATH_COLUMN,
-            XMP_UPDATE_DATETIME_COLUMN,
-        ]))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_filtered = df
-        .with_row_index(ROW_COLUMN.into(), Some(2))?
+    let df_filtered = exclude_failed_reads(df.with_row_index(ROW_COLUMN.into(), Some(2))?)?
         .lazy()
         .filter(col(XMP_UPDATE_DATETIME_COLUMN).is_not_null())
         .select([
@@ -2839,7 +2852,15 @@ pub fn write_tags(
     let mut order: Vec<PathBuf> = Vec::new();
     let mut desired: std::collections::HashMap<PathBuf, (Desired, Vec<usize>, Vec<String>)> =
         Default::default();
+    let statuses = df
+        .column(READ_STATUS_COLUMN)
+        .ok()
+        .map(|c| c.str())
+        .transpose()?;
     for i in 0..df.height() {
+        if statuses.and_then(|s| s.get(i)) == Some(READ_FAILED) {
+            continue;
+        }
         let row = i + 2; // the header is line 1
         let Some(path) = paths.get(i).map(str::trim).filter(|p| !p.is_empty()) else {
             warnings.warn_plain(format!("Missing path (row {row}), skipping."));

@@ -21,6 +21,10 @@ pub const SUBJECTS_COLUMN: &str = "subjects";
 pub const TIME_MODIFIED_COLUMN: &str = "time_modified";
 pub const EVENT_ID_COLUMN: &str = "event_id";
 pub const DEPLOYMENT_ID_COLUMN: &str = "deploymentID";
+pub const READ_STATUS_COLUMN: &str = "read_status";
+pub const READ_ERROR_COLUMN: &str = "read_error";
+pub const READ_SUCCEEDED: &str = "succeeded";
+pub const READ_FAILED: &str = "failed";
 pub const CANONICAL_TAGS_HEADER: &[&str] = &[
     PATH_COLUMN,
     FILENAME_COLUMN,
@@ -37,6 +41,8 @@ pub const CANONICAL_TAGS_HEADER: &[&str] = &[
     CUSTOM_COLUMN,
     XMP_UPDATE_COLUMN,
     XMP_UPDATE_DATETIME_COLUMN,
+    READ_STATUS_COLUMN,
+    READ_ERROR_COLUMN,
 ];
 
 pub const LEGACY_DATETIME_COLUMN: &str = "datetime_original";
@@ -109,6 +115,20 @@ pub fn canonicalize_observe_tags_df(df: DataFrame) -> PolarsResult<DataFrame> {
                 .iter()
                 .map(|name| col(*name))
                 .collect::<Vec<_>>(),
+        )
+        .collect()
+}
+
+/// Legacy tables lack read_status. Only an explicit failure excludes a row.
+pub fn exclude_failed_reads(df: DataFrame) -> PolarsResult<DataFrame> {
+    if df.get_column_index(READ_STATUS_COLUMN).is_none() {
+        return Ok(df);
+    }
+    df.lazy()
+        .filter(
+            col(READ_STATUS_COLUMN)
+                .neq(lit(READ_FAILED))
+                .fill_null(lit(true)),
         )
         .collect()
 }
