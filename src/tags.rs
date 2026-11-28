@@ -1,6 +1,6 @@
 use crate::protocol::{EditLabels, FileEdit, FileState, Labels, Outcome};
 use crate::schema::{
-    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, LATITUDE_COLUMN,
+    DATETIME_COLUMN, DEPLOYMENT_ID_COLUMN, FILENAME_COLUMN, IMAGE_EXTENSIONS, LATITUDE_COLUMN,
     LEGACY_DATETIME_COLUMN, LONGITUDE_COLUMN, MEDIA_TYPE_COLUMN, PATH_COLUMN, RATING_COLUMN,
     SUBJECTS_COLUMN, TIME_MODIFIED_COLUMN, XMP_UPDATE_COLUMN, XMP_UPDATE_DATETIME_COLUMN,
     canonicalize_observe_tags_df, infer_media_type, resource_extension, underlying_media_path,
@@ -308,6 +308,61 @@ fn csv_datetime(value: &XmpDateTime) -> anyhow::Result<String> {
     )?))
 }
 
+/// Adobe's EXIF-to-XMP conversion can collapse midnight to a date. Read the
+/// original EXIF field only for a date without a time, and require it to
+/// confirm both the date and the explicit zero time.
+fn recover_exif_midnight(
+    resource: &Path,
+    xmp_date: &XmpDateTime,
+    tag: exif::Tag,
+) -> Option<String> {
+    if xmp_date.time.is_some() {
+        return None;
+    }
+    let media = underlying_media_path(resource);
+    let ext = resource_extension(&media)?;
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return None;
+    }
+    let file = fs::File::open(media).ok()?;
+    let exif = exif::Reader::new()
+        .read_from_container(&mut io::BufReader::new(file))
+        .ok()?;
+    let exif::Value::Ascii(values) = &exif.get_field(tag, exif::In::PRIMARY)?.value else {
+        return None;
+    };
+    let raw = std::str::from_utf8(values.first()?.strip_suffix(b" 00:00:00")?).ok()?;
+    let date = chrono::NaiveDate::parse_from_str(raw, "%Y:%m:%d").ok()?;
+    let expected = xmp_date.date.as_ref()?;
+    (date.year() == expected.year
+        && date.month() as i32 == expected.month
+        && date.day() as i32 == expected.day)
+        .then(|| format!("{date}T00:00:00"))
+}
+
+fn observation_datetime(resource: &Path, xmp: &XmpMeta) -> anyhow::Result<Option<String>> {
+    let (value, tag) = if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+        (value.value, exif::Tag::DateTimeOriginal)
+    } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+        // QuickTime uses these years for an unset creation time.
+        if value
+            .value
+            .date
+            .as_ref()
+            .is_some_and(|date| matches!(date.year, 1904 | 1970))
+        {
+            return Ok(None);
+        }
+        (value.value, exif::Tag::DateTimeDigitized)
+    } else {
+        return Ok(None);
+    };
+    match recover_exif_midnight(resource, &value, tag) {
+        Some(time) => Ok(Some(time)),
+        None => Ok(Some(ignore_timezone(value.to_string())?)),
+    }
+}
+
 /// Create the sidecar of `media` if it has none. Existing sidecars are only
 /// read, since they may hold corrected times or tags.
 fn init_one(media: &Path) -> anyhow::Result<InitRow> {
@@ -331,7 +386,11 @@ fn init_one(media: &Path) -> anyhow::Result<InitRow> {
     if existing.is_some() {
         let xmp = read_xmp(&xmp_path)?;
         if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            row.datetime = csv_datetime(&value.value)?;
+            row.datetime =
+                match recover_exif_midnight(media, &value.value, exif::Tag::DateTimeOriginal) {
+                    Some(time) => iso_datetime_to_csv_format(&time),
+                    None => csv_datetime(&value.value)?,
+                };
         }
         let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
         row.latitude = latitude.unwrap_or_default();
@@ -372,11 +431,41 @@ fn sidecar_from_media(
     let xmp_result = (|| -> anyhow::Result<XmpMeta> {
         let mut xmp = media_xmp.xmp().unwrap_or_default();
         if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            row.embedded_datetime_original_raw = csv_datetime(&value.value)?;
+            row.embedded_datetime_original_raw = if let Some(time) =
+                recover_exif_midnight(media, &value.value, exif::Tag::DateTimeOriginal)
+            {
+                set_xmp_datetime_without_timezone(
+                    &mut xmp,
+                    xmp_ns::EXIF,
+                    "DateTimeOriginal",
+                    &time,
+                )?;
+                if xmp
+                    .property_date(xmp_ns::PHOTOSHOP, "DateCreated")
+                    .is_some_and(|date| date.value == value.value)
+                {
+                    set_xmp_datetime_without_timezone(
+                        &mut xmp,
+                        xmp_ns::PHOTOSHOP,
+                        "DateCreated",
+                        &time,
+                    )?;
+                }
+                iso_datetime_to_csv_format(&time)
+            } else {
+                csv_datetime(&value.value)?
+            };
             row.datetime = row.embedded_datetime_original_raw.clone();
         }
         if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-            row.embedded_create_date_raw = csv_datetime(&value.value)?;
+            row.embedded_create_date_raw = if let Some(time) =
+                recover_exif_midnight(media, &value.value, exif::Tag::DateTimeDigitized)
+            {
+                set_xmp_datetime_without_timezone(&mut xmp, xmp_ns::XMP, "CreateDate", &time)?;
+                iso_datetime_to_csv_format(&time)
+            } else {
+                csv_datetime(&value.value)?
+            };
         }
         let (latitude, longitude) = extract_xmp_gps_coordinates(&xmp);
         row.latitude = latitude.unwrap_or_default();
@@ -612,22 +701,7 @@ fn metadata_fields(
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
     if let Some(xmp) = xmp {
-        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
-            datetime = ignore_timezone(value.value.to_string())?;
-        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-            // And timezone is ignored for they write UTC-8 time but label as UTC
-            // i.e. we follow time shown in the picture without considering timezone in metadata
-            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-            if !value.value.to_string().starts_with("1904")
-                && !value.value.to_string().starts_with("1970")
-            {
-                datetime = ignore_timezone(value.value.to_string())?;
-            }
-        }
-        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-        // }
+        datetime = observation_datetime(file_path, &xmp)?.unwrap_or_default();
         if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
             rating = value.value.to_string();
         }
@@ -3068,12 +3142,8 @@ fn set_tag_list(
 
 /// A file's labels as observe reads them: species and individuals from hierarchicalSubject, rating (0 when
 /// there is none), DateTimeOriginal or else a usable CreateDate.
-fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
-    let date = |ns: &str, name: &str| xmp.property_date(ns, name).map(|v| v.value.to_string());
-    let datetime = date(xmp_ns::EXIF, "DateTimeOriginal").or_else(|| {
-        date(xmp_ns::XMP, "CreateDate")
-            .filter(|value| !value.starts_with("1904") && !value.starts_with("1970"))
-    });
+fn read_labels(resource: &Path, xmp: &XmpMeta) -> anyhow::Result<Labels> {
+    let datetime = observation_datetime(resource, xmp)?;
     let rating = match xmp.property(xmp_ns::XMP, "Rating") {
         // xmp:Rating is a real number in the XMP specification
         Some(value) => value
@@ -3087,10 +3157,7 @@ fn read_labels(xmp: &XmpMeta) -> anyhow::Result<Labels> {
         species: tag_list(xmp, TagType::Species),
         individuals: tag_list(xmp, TagType::Individual),
         rating,
-        datetime: match datetime {
-            Some(value) => Some(iso_datetime_to_csv_format(&ignore_timezone(value)?)),
-            None => None,
-        },
+        datetime: datetime.as_deref().map(iso_datetime_to_csv_format),
     })
 }
 
@@ -3132,7 +3199,7 @@ pub fn get_labels(paths: Vec<PathBuf>) -> anyhow::Result<()> {
                 message: None,
             };
             if state.exists {
-                match read_xmp(&state.path).and_then(|xmp| read_labels(&xmp)) {
+                match read_xmp(&state.path).and_then(|xmp| read_labels(&state.path, &xmp)) {
                     Ok(labels) => {
                         state.labels = Some(labels);
                         state.modified = modified_millis(&state.path);
@@ -3362,7 +3429,7 @@ fn set_one(
     } else {
         anyhow::bail!("no XMP sidecar (create it with --create-missing)");
     };
-    let before = read_labels(&xmp)?;
+    let before = read_labels(sidecar, &xmp)?;
     if !edits
         .iter()
         .all(|edit| expect_matches(&edit.expect, &before))
@@ -3424,7 +3491,7 @@ fn set_one(
     }
     let keep_backup = backup == BackupMode::Each || !first_backups.has_backup(sidecar);
     write_xmp_with_backup(sidecar, &xmp, keep_backup)?;
-    Ok((Outcome::Written, None, read_labels(&xmp)?))
+    Ok((Outcome::Written, None, read_labels(sidecar, &xmp)?))
 }
 
 fn add_missing(list: &mut Vec<String>, values: &[String]) {
