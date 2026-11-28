@@ -364,6 +364,106 @@ fn extract_keeps_an_uppercase_sidecar_with_its_media() {
 }
 
 #[test]
+fn observe_list_selects_deduplicates_and_reports_failed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("media");
+    fs::create_dir(&media).unwrap();
+    fs::write(
+        media.join("cat,1.jpg.xmp"),
+        include_bytes!("../assets/dummy.xmp"),
+    )
+    .unwrap();
+    fs::write(
+        media.join("unlisted.jpg.xmp"),
+        include_bytes!("../assets/dummy.xmp"),
+    )
+    .unwrap();
+    fs::write(
+        media.join("list.csv"),
+        "\u{feff}species,path\nFox,\"cat,1.jpg\"\n,\"cat,1.jpg.xmp\"\n,missing.jpg\n,ignore.mp4\n",
+    )
+    .unwrap();
+    let out = serval(
+        &[
+            "observe",
+            "--files-from",
+            "media/list.csv",
+            "-x",
+            "--image",
+            "--progress",
+            "json",
+            "-o",
+            "out",
+        ],
+        dir.path(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let events = events(&out);
+    assert!(events.iter().any(|e| e["serval"] == "file_error"
+        && e["path"] == media.join("missing.jpg.xmp").to_str().unwrap()));
+    assert!(
+        events
+            .iter()
+            .any(|e| e["serval"] == "summary" && e["read"] == 1 && e["failed"] == 1)
+    );
+    let table = events
+        .iter()
+        .find_map(|e| {
+            e["path"]
+                .as_str()
+                .filter(|p| e["serval"] == "output" && p.contains("tags_"))
+        })
+        .unwrap();
+    let contents = fs::read_to_string(dir.path().join(table)).unwrap();
+    assert!(
+        contents
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with(",read_status,read_error")
+    );
+    let rows: Vec<_> = contents.lines().skip(1).collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("cat,1.jpg.xmp") && rows[0].ends_with(",succeeded,"));
+    assert!(rows[1].contains("missing.jpg.xmp") && rows[1].contains(",failed,"));
+    assert!(!rows[1].ends_with(",failed,"));
+    let stats = events
+        .iter()
+        .find_map(|e| e["path"].as_str().filter(|p| p.contains("species_stats_")))
+        .unwrap();
+    let stats = fs::read_to_string(dir.path().join(stats)).unwrap();
+    assert!(stats.lines().skip(1).all(|line| line.ends_with(",1")));
+}
+
+#[cfg(unix)]
+#[test]
+fn observe_reports_non_utf8_read_failures() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    // A symlink loop reliably produces a read error even when running as root.
+    let path = dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"bad-\xff.jpg.xmp"));
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+    for mode in ["terminal", "json"] {
+        let out = serval(
+            &["observe", ".", "-x", "--progress", mode, "-o", mode],
+            dir.path(),
+        );
+        assert!(out.status.success());
+        if mode == "json" {
+            assert!(events(&out).iter().any(
+                |e| e["serval"] == "file_error" && e["path"] == path.to_string_lossy().as_ref()
+            ));
+        }
+    }
+}
+
+#[test]
 fn observe_on_a_missing_folder_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let output = serval(

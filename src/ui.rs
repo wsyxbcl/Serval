@@ -118,6 +118,15 @@ pub fn output(kind: &str, path: &Path, rows: Option<usize>) {
     event(value);
 }
 
+/// Report a recoverable file read failure to callers consuming JSON events.
+pub fn file_error(path: &Path, error: &impl fmt::Display) {
+    if json() {
+        event(
+            json!({"serval": "file_error", "path": path.to_string_lossy(), "message": error.to_string()}),
+        );
+    }
+}
+
 /// A `summary` event with the run's counts (the plain summary line is printed by the caller).
 pub fn summary(counts: Value) {
     flush_progress();
