@@ -525,7 +525,51 @@ type Metadata = (
     String, // rating
 );
 
+fn read_xmp(file_path: &Path) -> anyhow::Result<XmpMeta> {
+    let bytes = fs::read(file_path)?;
+    let content = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        anyhow::ensure!(bytes.len() % 2 == 0, "Truncated UTF-16 sidecar");
+        let decode = if bytes[0] == 0xff {
+            u16::from_le_bytes
+        } else {
+            u16::from_be_bytes
+        };
+        String::from_utf16(
+            &bytes[2..]
+                .chunks_exact(2)
+                .map(|b| decode([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        )?
+    } else {
+        String::from_utf8(bytes)?
+    };
+    // An XMP packet can wrap an XML document with its own declaration.
+    // The declaration must be first when handing the document to XML parsers.
+    let content = content.trim_start_matches('\u{feff}');
+    let xml = content
+        .strip_prefix("<?xpacket ")
+        .and_then(|packet| packet.split_once("?>"))
+        .map(|(_, document)| document.trim_start())
+        .filter(|document| document.starts_with("<?xml "))
+        .unwrap_or(content);
+    let doc = roxmltree::Document::parse(xml)?;
+    anyhow::ensure!(
+        doc.descendants()
+            .any(|e| e.has_tag_name((xmp_ns::RDF, "RDF"))),
+        "Sidecar has no XMP RDF element"
+    );
+    // The root is already UTF-8. Passing the original UTF-16 declaration to the
+    // toolkit can silently return empty metadata when it reinterprets the bytes.
+    Ok(XmpMeta::from_str_with_options(
+        &xml[doc.root_element().range()],
+        FromStrOptions::default(),
+    )?)
+}
+
 fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metadata> {
+    if ResourceType::Xmp.is_resource(file_path) {
+        return metadata_fields(file_path, debug_mode, Some(read_xmp(file_path)?));
+    }
     // Retrieve metadata from given file
     // species, individual, bodypart, sex, count in digikam taglist / adobe hierarchicalsubject (species only), subject (for debugging),
     // datetime, datetime_digitized, rating and file modified time
@@ -533,6 +577,15 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
     let mut f = XmpFile::new()?;
     f.open_file(file_path, OpenFileOptions::default())?;
 
+    let result = metadata_fields(file_path, debug_mode, f.xmp());
+    finalize_xmp_file(&mut f, result)
+}
+
+fn metadata_fields(
+    file_path: &Path,
+    debug_mode: bool,
+    xmp: Option<XmpMeta>,
+) -> anyhow::Result<Metadata> {
     let mut species: Vec<String> = Vec::new();
     let mut individuals: Vec<String> = Vec::new();
     let mut count: Vec<String> = Vec::new();
@@ -558,88 +611,85 @@ fn retrieve_metadata(file_path: &Path, debug_mode: bool) -> anyhow::Result<Metad
         let file_modified_time: DateTime<Local> = file_metadata.modified()?.into();
         time_modified = file_modified_time.format("%Y-%m-%dT%H:%M:%S").to_string();
     }
-    let metadata_result = (|| -> anyhow::Result<Metadata> {
-        if let Some(xmp) = f.xmp() {
-            if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+    if let Some(xmp) = xmp {
+        if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeOriginal") {
+            datetime = ignore_timezone(value.value.to_string())?;
+        } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
+            // Workaround for video files, as some manufacturer only write to xmp:CreateDate
+            // And timezone is ignored for they write UTC-8 time but label as UTC
+            // i.e. we follow time shown in the picture without considering timezone in metadata
+            // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
+            if !value.value.to_string().starts_with("1904")
+                && !value.value.to_string().starts_with("1970")
+            {
                 datetime = ignore_timezone(value.value.to_string())?;
-            } else if let Some(value) = xmp.property_date(xmp_ns::XMP, "CreateDate") {
-                // Workaround for video files, as some manufacturer only write to xmp:CreateDate
-                // And timezone is ignored for they write UTC-8 time but label as UTC
-                // i.e. we follow time shown in the picture without considering timezone in metadata
-                // Ignore 0 timestamp in QuickTime:CreateDate, i.e. not start with 1904 and 1970
-                if !value.value.to_string().starts_with("1904")
-                    && !value.value.to_string().starts_with("1970")
-                {
-                    datetime = ignore_timezone(value.value.to_string())?;
-                }
-            }
-            // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
-            //     datetime_digitized = ignore_timezone(value.value.to_string())?;
-            // }
-            if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
-                rating = value.value.to_string();
-            }
-            let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
-            latitude = gps_latitude.unwrap_or_default();
-            longitude = gps_longitude.unwrap_or_default();
-            if debug_mode {
-                for property in xmp.property_array(xmp_ns::DC, "subject") {
-                    subjects.push(property.value.to_string());
-                }
-            }
-
-            // use adobe hierarchicalSubject if available (digikam also writes to this field)
-            for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
-                let tag = property.value;
-                if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
-                    species.push(
-                        tag.strip_prefix(TagType::Species.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
-                    individuals.push(
-                        tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
-                    count.push(
-                        tag.strip_prefix(TagType::Count.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
-                    sex.push(
-                        tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
-                    bodyparts.push(
-                        tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
-                            .unwrap()
-                            .to_string(),
-                    );
-                }
             }
         }
-        Ok((
-            species,
-            individuals,
-            count,
-            sex,
-            bodyparts,
-            subjects,
-            datetime,
-            latitude,
-            longitude,
-            // datetime_digitized,
-            time_modified,
-            rating,
-        ))
-    })();
-    finalize_xmp_file(&mut f, metadata_result)
+        // if let Some(value) = xmp.property_date(xmp_ns::EXIF, "DateTimeDigitized") {
+        //     datetime_digitized = ignore_timezone(value.value.to_string())?;
+        // }
+        if let Some(value) = xmp.property(xmp_ns::XMP, "Rating") {
+            rating = value.value.to_string();
+        }
+        let (gps_latitude, gps_longitude) = extract_xmp_gps_coordinates(&xmp);
+        latitude = gps_latitude.unwrap_or_default();
+        longitude = gps_longitude.unwrap_or_default();
+        if debug_mode {
+            for property in xmp.property_array(xmp_ns::DC, "subject") {
+                subjects.push(property.value.to_string());
+            }
+        }
+
+        // use adobe hierarchicalSubject if available (digikam also writes to this field)
+        for property in xmp.property_array(LIGHTROOM_NS, LR_HIERARCHICAL_SUBJECT) {
+            let tag = property.value;
+            if tag.starts_with(TagType::Species.adobe_tag_prefix()) {
+                species.push(
+                    tag.strip_prefix(TagType::Species.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Individual.adobe_tag_prefix()) {
+                individuals.push(
+                    tag.strip_prefix(TagType::Individual.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Count.adobe_tag_prefix()) {
+                count.push(
+                    tag.strip_prefix(TagType::Count.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Sex.adobe_tag_prefix()) {
+                sex.push(
+                    tag.strip_prefix(TagType::Sex.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            } else if tag.starts_with(TagType::Bodypart.adobe_tag_prefix()) {
+                bodyparts.push(
+                    tag.strip_prefix(TagType::Bodypart.adobe_tag_prefix())
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok((
+        species,
+        individuals,
+        count,
+        sex,
+        bodyparts,
+        subjects,
+        datetime,
+        latitude,
+        longitude,
+        // datetime_digitized,
+        time_modified,
+        rating,
+    ))
 }
 
 pub fn get_classifications(
@@ -2104,12 +2154,6 @@ struct UpdateOp {
     new: String,
 }
 
-fn read_xmp(file_path: &Path) -> anyhow::Result<XmpMeta> {
-    let xmp_content = fs::read_to_string(file_path)?;
-    XmpMeta::from_str_with_options(&xmp_content, FromStrOptions::default())
-        .map_err(|e| anyhow::anyhow!("Failed to parse XMP: {e:?}"))
-}
-
 /// Apply all update rows of one file to `xmp`, judged against its current
 /// content. Returns `Ok(false)` when the file already shows the result (e.g.
 /// on a rerun after an interrupted update), so there is nothing to write.
@@ -3394,6 +3438,31 @@ fn add_missing(list: &mut Vec<String>, values: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_xmp_packets_with_declared_utf16_byte_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.jpg.xmp");
+        for (encoding, encode) in [
+            ("UTF-16LE", u16::to_le_bytes as fn(u16) -> [u8; 2]),
+            ("UTF-16BE", u16::to_be_bytes),
+        ] {
+            let declaration = format!("?>\n<?xml version=\"1.0\" encoding=\"{encoding}\"?>");
+            let xml = include_str!("../assets/dummy.xmp").replacen("?>", &declaration, 1);
+            let bytes: Vec<_> = std::iter::once(0xfeff)
+                .chain(xml.encode_utf16())
+                .flat_map(encode)
+                .collect();
+            fs::write(&path, bytes).unwrap();
+            let meta = read_xmp(&path).unwrap();
+            assert_eq!(
+                meta.property(xmp_ns::EXIF, "DateTimeOriginal")
+                    .unwrap()
+                    .value,
+                "2023-12-19T22:19:50"
+            );
+        }
+    }
 
     #[test]
     fn backups_within_one_second_do_not_overwrite() {
