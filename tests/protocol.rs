@@ -364,6 +364,70 @@ fn extract_keeps_an_uppercase_sidecar_with_its_media() {
 }
 
 #[test]
+fn xmp_edits_read_utf16_and_preserve_untouched_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let xmp = dir.path().join("good.jpg.xmp");
+    let xml = include_str!("../assets/dummy.xmp")
+        .replace("<rdf:li>Dummy</rdf:li>", "<rdf:li>Species|藏狐</rdf:li>")
+        .replacen("?>", "?>\n<?xml version=\"1.0\" encoding=\"UTF-16\"?>", 1);
+    let bytes: Vec<_> = std::iter::once(0xfeffu16)
+        .chain(xml.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    fs::write(&xmp, bytes).unwrap();
+    let observe = serval(
+        &["observe", ".", "-x", "--progress", "json", "-o", "out"],
+        dir.path(),
+    );
+    let table = events(&observe)
+        .into_iter()
+        .find(|e| {
+            e["serval"] == "output" && e["path"].as_str().is_some_and(|p| p.contains("tags_"))
+        })
+        .unwrap();
+    assert!(
+        fs::read_to_string(dir.path().join(table["path"].as_str().unwrap()))
+            .unwrap()
+            .contains("藏狐")
+    );
+    let labels = || {
+        let out = serval(&["xmp", "get", "good.jpg.xmp"], dir.path());
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["labels"].clone()
+    };
+    assert_eq!(labels()["species"], serde_json::json!(["藏狐"]));
+    let out = set_edits(
+        dir.path(),
+        &[serde_json::json!({"path":xmp,"expect":{"species":["藏狐"]},"set":{"rating":4}})],
+    );
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "written");
+    let after = labels();
+    assert_eq!(after["rating"], 4);
+    assert_eq!(after["species"], serde_json::json!(["藏狐"]));
+}
+
+#[test]
+fn xmp_edits_leave_truncated_sidecars_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let xmp = dir.path().join("broken.jpg.xmp");
+    let truncated = include_str!("../assets/dummy.xmp")
+        .split("</rdf:Description>")
+        .next()
+        .unwrap();
+    fs::write(&xmp, truncated).unwrap();
+    let out = serval(&["xmp", "get", "broken.jpg.xmp"], dir.path());
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(state["message"].is_string() && state["labels"].is_null());
+    let out = set_edits(
+        dir.path(),
+        &[serde_json::json!({"path":xmp,"set":{"rating":4}})],
+    );
+    let state: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["result"], "error");
+    assert_eq!(fs::read(&xmp).unwrap(), truncated.as_bytes());
+}
+
+#[test]
 fn observe_list_selects_deduplicates_and_reports_failed_paths() {
     let dir = tempfile::tempdir().unwrap();
     let media = dir.path().join("media");
