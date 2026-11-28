@@ -76,7 +76,7 @@ impl ResourceType {
         }
     }
 
-    fn is_resource(self, path: &Path) -> bool {
+    pub(crate) fn is_resource(self, path: &Path) -> bool {
         resource_extension(path).is_some_and(|ext| self.extension().contains(&ext.as_str()))
     }
 }

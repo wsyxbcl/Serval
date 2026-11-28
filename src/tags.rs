@@ -13,6 +13,7 @@ use crate::utils::{
     iso_datetime_to_csv_format, log_line, parse_advanced_filter, path_enumerate, pb_status,
     reject_duplicate_csv_columns,
 };
+use anyhow::Context;
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike};
 use indicatif::ProgressBar;
 use itertools::izip;
@@ -650,11 +651,69 @@ pub fn get_classifications(
     deployment_level: Option<i32>,
     id_species: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
-    // Get tag info from the old digikam workflow in shanshui
-    // by enumerating file_dir and read xmp metadata from resources
+    get_classifications_with_list(
+        file_dir,
+        output_dir,
+        resource_type,
+        debug_mode,
+        volunteer_mode,
+        deployment_level,
+        id_species,
+        None,
+    )
+}
 
-    let file_paths = path_enumerate(file_dir.clone(), resource_type, None);
-    fs::create_dir_all(output_dir.clone())?;
+fn observe_list_paths(
+    csv_path: &Path,
+    root: &Path,
+    resource_type: ResourceType,
+    media_filter: ResourceType,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let table = CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .try_into_reader_with_file_path(Some(csv_path.to_owned()))
+        .with_context(|| format!("Opening {}", csv_path.display()))?
+        .finish()
+        .with_context(|| format!("Reading {}", csv_path.display()))?;
+    reject_duplicate_csv_columns(&table)?;
+    let values = table.column(PATH_COLUMN)?.str()?;
+    let mut paths = BTreeSet::new();
+    for (row, value) in values.iter().enumerate() {
+        let value = value.unwrap_or_default();
+        anyhow::ensure!(
+            !value.trim().is_empty(),
+            "Empty path in {} at row {}",
+            csv_path.display(),
+            row + 2
+        );
+        let path = root.join(value);
+        let media = underlying_media_path(&path);
+        let sidecars = matches!(resource_type, ResourceType::Xmp);
+        let orphan = sidecars
+            && ResourceType::Xmp.is_resource(&path)
+            && matches!(media_filter, ResourceType::Media);
+        if media_filter.is_resource(&media) || orphan {
+            paths.insert(if sidecars { sidecar_for(path) } else { media });
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+pub fn get_classifications_with_list(
+    file_dir: PathBuf,
+    output_dir: PathBuf,
+    resource_type: ResourceType,
+    debug_mode: bool,
+    volunteer_mode: bool, //TODO: make a mode argument
+    deployment_level: Option<i32>,
+    id_species: Option<Vec<String>>,
+    list: Option<(&Path, ResourceType)>,
+) -> anyhow::Result<()> {
+    let file_paths = match list {
+        Some((csv, filter)) => observe_list_paths(csv, &file_dir, resource_type, filter)?,
+        None => path_enumerate(file_dir.clone(), resource_type, None),
+    };
+    fs::create_dir_all(&output_dir)?;
     // Debug mode doubles as the info-table workflow (cf. xmp init --info):
     // ask which path level is the deployment so raw.csv gains a deployment column.
     let deploy_path_index = if debug_mode && !file_paths.is_empty() {
@@ -690,30 +749,10 @@ pub fn get_classifications(
         suffix
     };
 
-    let image_paths: Vec<String> = file_paths
-        .iter()
-        .map(|x| x.to_string_lossy().into_owned())
-        .collect();
-    let image_filenames: Vec<String> = file_paths
-        .iter()
-        .map(|x| x.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
     let warnings = WarningCollector::default();
-    // Keep resources whose media_type cannot be inferred (e.g. orphan sidecars
-    // like orphan.xmp) in the output, with an empty media_type.
-    let media_types: Vec<String> = file_paths
-        .iter()
-        .map(|path| match infer_media_type(path) {
-            Ok(media_type) => media_type.to_string(),
-            Err(_) => {
-                warnings.warn_plain(format!(
-                    "cannot infer media_type of {}, leaving it empty",
-                    path.display()
-                ));
-                String::new()
-            }
-        })
-        .collect();
+    let mut image_paths = Vec::new();
+    let mut image_filenames = Vec::new();
+    let mut media_types = Vec::new();
     let num_images = file_paths.len();
     println!("Total {resource_type}: {num_images}.");
     let pb = crate::ui::progress_bar(num_images as u64, "read");
@@ -750,7 +789,7 @@ pub fn get_classifications(
                     rating,
                 )) => {
                     pb.inc(1);
-                    (
+                    Some((
                         species.join("|"),
                         individuals.join("|"),
                         count.join("|"),
@@ -763,29 +802,31 @@ pub fn get_classifications(
                         // datetime_digitized,
                         time_modified,
                         rating,
-                    )
+                    ))
                 }
                 Err(error) => {
+                    crate::ui::file_error(&file_paths[i], &error);
                     warnings.warn(&pb, format!("{} in {}", error, file_paths[i].display()));
                     pb.inc(1);
-                    (
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                        "".to_string(),
-                    )
+                    None
                 }
             }
         })
         .collect();
-    for tag in result {
+    for (path, tag) in file_paths.iter().zip(result) {
+        let Some(tag) = tag else { continue };
+        image_paths.push(path.to_string_lossy().into_owned());
+        image_filenames.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        media_types.push(match infer_media_type(path) {
+            Ok(kind) => kind.to_string(),
+            Err(_) => {
+                warnings.warn_plain(format!(
+                    "cannot infer media_type of {}, leaving it empty",
+                    path.display()
+                ));
+                String::new()
+            }
+        });
         species_tags.push(tag.0);
         individual_tags.push(tag.1);
         count_tags.push(tag.2);
@@ -816,6 +857,9 @@ pub fn get_classifications(
     let s_rating = Column::new(RATING_COLUMN.into(), ratings);
 
     let df_raw_height = image_paths.len();
+    crate::ui::summary(
+        serde_json::json!({"read": df_raw_height, "failed": num_images - df_raw_height}),
+    );
     let mut df_raw = DataFrame::new(
         df_raw_height,
         vec![
