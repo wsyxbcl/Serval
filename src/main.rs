@@ -9,12 +9,12 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tags::{
     BackupMode, CaptureOptions, CaptureTarget, ExtractOptions, MeasureFrom, WriteField,
-    extract_resources, get_classifications, get_labels, get_temporal_independence, init_xmp,
+    extract_with_unit, get_classifications, get_labels, get_temporal_independence, init_xmp,
     set_labels, update_datetime, update_tags, write_taglist, write_tags,
 };
 use transfer::OnConflict;
 use utils::{
-    AlignOptions, ExtractFilterType, ResourceType, SubdirType, TagType, XmpUpdateType,
+    AlignOptions, ExtractFilterType, ExtractUnit, ResourceType, SubdirType, TagType, XmpUpdateType,
     absolute_path, copy_xmp, deployments_align, deployments_rename, init_run_log,
     init_run_log_file, log_line, remove_xmp_files, resources_flatten, run_log_path,
     sync_xmp_directory, sync_xmp_from_csv, tags_csv_translate,
@@ -206,6 +206,7 @@ fn run(command: Commands) -> anyhow::Result<()> {
         }
         Commands::Extract {
             csv_path,
+            unit,
             value,
             filter_type,
             rename,
@@ -217,20 +218,23 @@ fn run(command: Commands) -> anyhow::Result<()> {
             on_existing,
         } => {
             init_run_log("extract", Some(&output));
-            extract_resources(
-                csv_path,
-                output,
-                ExtractOptions {
-                    filter_type,
-                    filter_value: value,
-                    rename,
-                    skip_existing,
-                    use_subdir,
-                    subdir_type,
-                    keep_dirs,
-                    on_existing,
-                },
-            )?;
+            let mut values = value.into_iter();
+            let filter_value = values.next().expect("clap requires -v");
+            let options = ExtractOptions {
+                filter_type,
+                filter_value,
+                rename,
+                skip_existing,
+                use_subdir,
+                subdir_type,
+                keep_dirs,
+                on_existing,
+            };
+            if unit == ExtractUnit::Media && values.len() == 0 {
+                tags::extract_resources(csv_path, output, options)?;
+            } else {
+                extract_with_unit(csv_path, output, options, unit, values.collect())?;
+            }
         }
         Commands::Xmp(xmp_cmd) => match xmp_cmd {
             XmpCommands::Copy {
@@ -483,14 +487,18 @@ enum Commands {
     Comparisons:     rating:>=4, rating:>4, rating:<5, rating:<=5"
     )]
     Extract {
-        /// Path for tags.csv
+        /// tags.csv for media, or a capture --event CSV for whole events
+        #[arg(value_name = "CSV")]
         csv_path: PathBuf,
+        /// Select media or whole events. Event copies go under event_<id>/.
+        #[arg(long, value_enum, default_value = "media")]
+        unit: ExtractUnit,
         /// Specify the filter type
         #[arg(short, long, value_name = "FILTER", required = true, value_enum)]
         filter_type: ExtractFilterType,
-        /// The target value (or substring for the path filter), use "ALL_VALUES" for all non-empty values
+        /// Target value (substring for path). Repeat -v in event mode. ALL_VALUES selects all non-empty values.
         #[arg(short, long, value_name = "VALUE", required = true)]
-        value: String,
+        value: Vec<String>,
         /// Name copies after all tags of the image:
         /// {species}__{individuals}__{original name}, values joined by "+"
         /// (e.g. Fox+Pika__F03__IMG_0001.JPG)

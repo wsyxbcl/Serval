@@ -168,6 +168,12 @@ pub enum ExtractFilterType {
     Advanced,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractUnit {
+    Media,
+    Event,
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum SubdirType {
     Species,
