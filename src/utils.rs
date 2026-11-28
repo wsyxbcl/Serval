@@ -1117,13 +1117,13 @@ pub fn sync_xmp_directory(source_dir: PathBuf) -> anyhow::Result<()> {
 
 pub fn sync_xmp_from_csv(csv_path: PathBuf) -> anyhow::Result<()> {
     let df = CsvReadOptions::default()
-        .with_columns(csv_projection_columns(&[PATH_COLUMN]))
+        .with_infer_schema_length(Some(0))
         .with_ignore_errors(false)
         .try_into_reader_with_file_path(Some(csv_path))?
         .finish()?;
     reject_duplicate_csv_columns(&df)?;
 
-    let df_unique = df
+    let df_unique = crate::schema::exclude_failed_reads(df)?
         .lazy()
         .filter(col(PATH_COLUMN).is_not_null())
         .select([col(PATH_COLUMN)])
